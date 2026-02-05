@@ -1,0 +1,1287 @@
+import json
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
+from concurrent.futures import ThreadPoolExecutor
+
+from crawling_kospi import CrawlingKospi
+from naver_news_crawler import NaverNewsCrawler
+from kakao_message import KakaoMessageSender
+from optimizer import BacktestOptimizer, get_period_dates
+
+from .data import DATA_DIR_DEFAULT, load_kospi_index, load_kospi_list, load_stock_data, load_finance_data
+from .signals import build_signals
+
+
+def render_sidebar() -> dict:
+    with st.sidebar:
+        st.header("필터 설정")
+        st.subheader("Turnover Spike")
+        turnover_window = st.number_input("직전 n거래일 평균", min_value=5, max_value=120, value=10, step=1, key="turnover_window")
+        turnover_multiplier = st.number_input("평균 대비 n배", min_value=1.0, max_value=20.0, value=3.0, step=0.1, key="turnover_multiplier")
+
+        st.subheader("백테스트 설정")
+        initial_cash = st.number_input("초기 자산(원)", min_value=0, max_value=1_000_000_000, value=50_000_000, step=500_000)
+        max_daily_buys = st.number_input("일일 최대 매수 종목 수", min_value=1, max_value=10, value=2, step=1, help="하루에 매수할 수 있는 최대 종목 수")
+
+        st.subheader("재무 필터 (선택)")
+        use_finance_filter = st.checkbox("재무 필터 사용", value=False)
+        per_max = None
+        pbr_max = None
+        dvr_min = None
+        
+        if use_finance_filter:
+            per_max = st.number_input("PER 최대값", min_value=0.0, max_value=100.0, value=20.0, step=1.0, help="낮을수록 저평가")
+            pbr_max = st.number_input("PBR 최대값", min_value=0.0, max_value=10.0, value=2.0, step=0.1, help="낮을수록 저평가")
+            dvr_min = st.number_input("배당수익률 최소(%)", min_value=0.0, max_value=10.0, value=1.0, step=0.1, help="배당주 필터")
+
+        signal_filter = st.multiselect("시그널", ["BUY", "SELL"], default=["BUY", "SELL"])
+        top_n = st.number_input("상위 N개(스파이크 순)", min_value=1, max_value=200, value=10, step=1)
+
+    return {
+        "data_dir": DATA_DIR_DEFAULT,
+        "turnover_window": int(turnover_window),
+        "turnover_multiplier": float(turnover_multiplier),
+        "signal_filter": signal_filter,
+        "top_n": int(top_n),
+        "initial_cash": float(initial_cash),
+        "max_daily_buys": int(max_daily_buys),
+        "use_finance_filter": use_finance_filter,
+        "per_max": per_max,
+        "pbr_max": pbr_max,
+        "dvr_min": dvr_min,
+    }
+
+
+def apply_signal_filters(signals: pd.DataFrame, signal_filter: list[str]) -> pd.DataFrame:
+    if signal_filter:
+        return signals[signals["signal"].isin(signal_filter)]
+    return signals
+
+
+def select_date(signals: pd.DataFrame) -> pd.Timestamp | None:
+    available_dates = signals["date"].dropna().sort_values().unique()
+    if len(available_dates) == 0:
+        st.warning("조건에 맞는 시그널이 없습니다.")
+        return None
+
+    latest_date = available_dates[-1]
+    st.subheader("백테스트 기준 날짜 선택")
+    selected_date = st.date_input(
+        "날짜",
+        value=latest_date.date(),
+        min_value=available_dates[0].date(),
+        max_value=latest_date.date(),
+    )
+    return pd.to_datetime(selected_date)
+
+
+def build_latest_table(signals: pd.DataFrame, selected_date: pd.Timestamp, top_n: int, finance_df: pd.DataFrame = None, price_df: pd.DataFrame = None) -> tuple[pd.DataFrame, list[str]]:
+    latest = signals[(signals["date"] == selected_date) & (signals["signal"] != "")].copy()
+    latest = latest.head(int(top_n))
+
+    # 재무 데이터 병합
+    if finance_df is not None and not finance_df.empty:
+        # 가장 최근 재무 데이터 가져오기 (날짜가 선택 날짜 이전)
+        finance_latest = finance_df[finance_df['date'] <= selected_date].copy()
+        finance_latest = finance_latest.sort_values('date').groupby('code').tail(1)
+        
+        # 필요한 재무 컬럼만 선택
+        finance_cols = ['code', 'per', 'pbr', 'eps', 'bps', 'dvr', 'foreigner_ratio']
+        finance_latest = finance_latest[[col for col in finance_cols if col in finance_latest.columns]]
+        
+        # 병합
+        latest = latest.merge(finance_latest, on='code', how='left')
+
+    # 다음날 종가 및 등락률 계산
+    if price_df is not None and not price_df.empty:
+        # 다음 거래일 찾기
+        next_date = price_df[price_df['date'] > selected_date]['date'].min()
+        
+        if pd.notna(next_date):
+            # 다음날 데이터 가져오기
+            next_day_data = price_df[price_df['date'] == next_date][['code', 'close']].copy()
+            next_day_data = next_day_data.rename(columns={'close': 'next_close'})
+            
+            # 병합
+            latest = latest.merge(next_day_data, on='code', how='left')
+            
+            # 등락률 계산 (당일 종가 대비)
+            if 'next_close' in latest.columns and 'close' in latest.columns:
+                latest['change_rate'] = ((latest['next_close'] - latest['close']) / latest['close'] * 100).round(2)
+
+    latest["date"] = latest["date"].dt.date
+    if "spike_rank" in latest.columns:
+        latest["spike_rank"] = latest["spike_rank"].round(0).astype("Int64")
+    if "name" in latest.columns and "code" in latest.columns:
+        latest["name"] = latest.apply(
+            lambda row: (
+                f'<a href="https://finance.naver.com/item/news.naver?code={row["code"]}" '
+                f'target="_blank">{row["name"]}</a>'
+                if pd.notna(row["name"]) and pd.notna(row["code"]) else row["name"]
+            ),
+            axis=1,
+        )
+
+    cols = [
+        "date",
+        "code",
+        "name",
+        "open",
+        "close",
+        "high",
+        "low",
+        "volume",
+    ]
+    
+    # 다음날 종가와 등락률 추가
+    if 'next_close' in latest.columns:
+        cols.append("next_close")
+    if 'change_rate' in latest.columns:
+        cols.append("change_rate")
+    
+    cols.append("signal")
+    
+    if "spike_ratio" in latest.columns:
+        cols.insert(-1, "spike_ratio")
+    
+    # 재무 데이터는 별도 표시를 위해 컬럼에서 제외
+    
+    return latest, cols
+
+
+def render_table(latest: pd.DataFrame, cols: list[str]) -> None:
+    def color_signal(val: str) -> str:
+        if val == "BUY":
+            return "color: red; font-weight: 600;"
+        if val == "SELL":
+            return "color: blue; font-weight: 600;"
+        return ""
+
+    format_map = {
+        "open": "{:,.0f}",
+        "close": "{:,.0f}",
+        "high": "{:,.0f}",
+        "low": "{:,.0f}",
+        "volume": "{:,.0f}",
+        "next_close": "{:,.0f}",
+        "change_rate": "{:+.2f}%",
+        "per": "{:.2f}",
+        "pbr": "{:.2f}",
+        "dvr": "{:.2f}%",
+        "foreigner_ratio": "{:.2f}%",
+    }
+    if "spike_ratio" in latest.columns:
+        format_map["spike_ratio"] = "{:.0%}"
+
+    # 등락률에 색상 적용
+    def color_change_rate(val):
+        if pd.isna(val):
+            return ""
+        if val > 0:
+            return "color: red; font-weight: 600;"
+        elif val < 0:
+            return "color: blue; font-weight: 600;"
+        return ""
+
+    styled = latest[cols].style.applymap(color_signal, subset=["signal"]).format(format_map)
+    
+    if "change_rate" in latest.columns:
+        styled = styled.applymap(color_change_rate, subset=["change_rate"])
+    
+    st.markdown(styled.hide(axis="index").to_html(escape=False), unsafe_allow_html=True)
+
+
+def render_table_with_finance(latest: pd.DataFrame, cols: list[str], finance_df: pd.DataFrame) -> None:
+    """재무정보를 포함하여 각 종목별로 개별 펼치기로 표시"""
+    
+    # 재무정보 컬럼 확인
+    finance_cols_available = [col for col in ['per', 'pbr', 'eps', 'bps', 'dvr', 'foreigner_ratio'] 
+                              if col in latest.columns]
+    has_finance = len(finance_cols_available) > 0
+    
+    for idx, row in latest.iterrows():
+        # HTML 태그 제거한 종목명
+        import re
+        clean_name = re.sub(r'<[^>]+>', '', str(row.get('name', '')))
+        code = row.get('code', '')
+        signal = row.get('signal', '')
+        
+        # 신호 색상
+        signal_color = "🔴" if signal == "BUY" else "🔵" if signal == "SELL" else "⚪"
+        
+        # 등락률 색상
+        change_rate = row.get('change_rate', None)
+        if pd.notna(change_rate):
+            if change_rate > 0:
+                change_emoji = "📈"
+                change_text = f"+{change_rate:.2f}%"
+                change_color = "red"
+            elif change_rate < 0:
+                change_emoji = "📉"
+                change_text = f"{change_rate:.2f}%"
+                change_color = "blue"
+            else:
+                change_emoji = "➖"
+                change_text = "0.00%"
+                change_color = "gray"
+        else:
+            change_emoji = ""
+            change_text = "-"
+            change_color = "gray"
+        
+        # 제목 구성
+        if pd.notna(change_rate):
+            title = f"{signal_color} **{clean_name}** ({code}) | {signal} | 다음날 :{change_color}[{change_text}] {change_emoji}"
+        else:
+            title = f"{signal_color} **{clean_name}** ({code}) | {signal}"
+        
+        with st.expander(title):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("##### 📊 가격 정보")
+                price_data = {
+                    "시가": f"{row.get('open', 0):,.0f}원",
+                    "종가": f"{row.get('close', 0):,.0f}원",
+                    "고가": f"{row.get('high', 0):,.0f}원",
+                    "저가": f"{row.get('low', 0):,.0f}원",
+                    "거래량": f"{row.get('volume', 0):,.0f}",
+                }
+                
+                if pd.notna(row.get('next_close')):
+                    price_data["다음날종가"] = f"{row.get('next_close', 0):,.0f}원"
+                
+                if 'spike_ratio' in row and pd.notna(row['spike_ratio']):
+                    price_data["거래량급증률"] = f"{row['spike_ratio']:.0%}"
+                
+                for key, value in price_data.items():
+                    st.text(f"{key}: {value}")
+            
+            with col2:
+                if has_finance:
+                    st.markdown("##### 💼 재무 정보")
+                    finance_data = {}
+                    
+                    if 'per' in row and pd.notna(row['per']):
+                        finance_data["PER"] = f"{row['per']:.2f}"
+                    if 'pbr' in row and pd.notna(row['pbr']):
+                        finance_data["PBR"] = f"{row['pbr']:.2f}"
+                    if 'eps' in row and pd.notna(row['eps']):
+                        finance_data["EPS"] = f"{row['eps']:,.0f}원"
+                    if 'bps' in row and pd.notna(row['bps']):
+                        finance_data["BPS"] = f"{row['bps']:,.0f}원"
+                    if 'dvr' in row and pd.notna(row['dvr']):
+                        finance_data["배당수익률"] = f"{row['dvr']:.2f}%"
+                    if 'foreigner_ratio' in row and pd.notna(row['foreigner_ratio']):
+                        finance_data["외국인보유율"] = f"{row['foreigner_ratio']:.2f}%"
+                    
+                    if finance_data:
+                        for key, value in finance_data.items():
+                            st.text(f"{key}: {value}")
+                    else:
+                        st.info("재무 정보가 없습니다.")
+                else:
+                    st.markdown("##### 📰 뉴스 링크")
+                    st.markdown(f"[네이버 금융 뉴스 보기](https://finance.naver.com/item/news.naver?code={code})")
+            
+            # 날짜 정보
+            if 'date' in row and pd.notna(row['date']):
+                st.caption(f"📅 시그널 발생일: {row['date']}")
+            
+            # 재무정보 추세 차트
+            if not finance_df.empty and code:
+                stock_finance = finance_df[finance_df['code'] == code].copy()
+                if not stock_finance.empty and len(stock_finance) > 1:
+                    stock_finance = stock_finance.sort_values('date')
+                    
+                    with st.expander("📈 재무 추세 보기"):
+                        # 기간 선택
+                        period_col1, period_col2 = st.columns([1, 3])
+                        with period_col1:
+                            period = st.selectbox(
+                                "기간",
+                                ["전체", "최근 1년", "최근 3년", "최근 5년"],
+                                key=f"period_{code}",
+                                label_visibility="collapsed"
+                            )
+                        
+                        # 기간 필터링
+                        if period == "최근 1년":
+                            cutoff_date = pd.Timestamp.now() - pd.DateOffset(years=1)
+                            stock_finance = stock_finance[stock_finance['date'] >= cutoff_date]
+                        elif period == "최근 3년":
+                            cutoff_date = pd.Timestamp.now() - pd.DateOffset(years=3)
+                            stock_finance = stock_finance[stock_finance['date'] >= cutoff_date]
+                        elif period == "최근 5년":
+                            cutoff_date = pd.Timestamp.now() - pd.DateOffset(years=5)
+                            stock_finance = stock_finance[stock_finance['date'] >= cutoff_date]
+                        
+                        if len(stock_finance) > 0:
+                            # 탭으로 구분
+                            tab1, tab2, tab3 = st.tabs(["📊 밸류에이션", "💰 수익성", "👥 투자자"])
+                            
+                            with tab1:
+                                # PER, PBR 차트
+                                chart_data = stock_finance.set_index('date')[['per', 'pbr']].dropna(how='all')
+                                if not chart_data.empty:
+                                    st.line_chart(chart_data, height=250)
+                                else:
+                                    st.info("밸류에이션 데이터가 없습니다.")
+                            
+                            with tab2:
+                                # EPS, BPS, 배당수익률 차트
+                                chart_cols = []
+                                if 'eps' in stock_finance.columns:
+                                    chart_cols.append('eps')
+                                if 'bps' in stock_finance.columns:
+                                    chart_cols.append('bps')
+                                if 'dvr' in stock_finance.columns:
+                                    chart_cols.append('dvr')
+                                
+                                if chart_cols:
+                                    chart_data = stock_finance.set_index('date')[chart_cols].dropna(how='all')
+                                    if not chart_data.empty:
+                                        st.line_chart(chart_data, height=250)
+                                    else:
+                                        st.info("수익성 데이터가 없습니다.")
+                                else:
+                                    st.info("수익성 데이터가 없습니다.")
+                            
+                            with tab3:
+                                # 외국인보유율 차트
+                                if 'foreigner_ratio' in stock_finance.columns:
+                                    chart_data = stock_finance.set_index('date')[['foreigner_ratio']].dropna()
+                                    if not chart_data.empty:
+                                        st.line_chart(chart_data, height=250)
+                                    else:
+                                        st.info("외국인보유율 데이터가 없습니다.")
+                                else:
+                                    st.info("외국인보유율 데이터가 없습니다.")
+                        else:
+                            st.info(f"{period} 데이터가 없습니다.")
+
+
+def build_forward_return_series_by_stock(
+    price_df: pd.DataFrame,
+    signal_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if signal_df.empty:
+        return pd.DataFrame()
+
+    data = price_df[["code", "date", "close"]].copy()
+    data = data.sort_values(["code", "date"])
+
+    base = signal_df.copy()
+    base = base.rename(columns={"date": "signal_date", "close": "base_close"})
+
+    merged = base.merge(data, on="code", how="left", suffixes=("", "_future"))
+    merged = merged[merged["date"] >= merged["signal_date"]]
+    merged["return_pct"] = (merged["close"] / merged["base_close"] - 1) * 100
+
+    merged.loc[merged["signal"] == "SELL", "return_pct"] = -merged.loc[merged["signal"] == "SELL", "return_pct"]
+    merged = merged.dropna(subset=["date", "return_pct"])
+
+    def _build_label(row: pd.Series) -> str:
+        name = row.get("name")
+        code = row.get("code")
+        base_label = f"{name} ({code})" if pd.notna(name) else str(code)
+        return base_label
+
+    merged["label"] = merged.apply(_build_label, axis=1)
+    merged = merged.rename(columns={"date": "target_date"})
+    return merged[["target_date", "return_pct", "label", "signal"]].rename(
+        columns={"target_date": "date"}
+    )
+
+
+def render_backtest_curve(
+    equity_df: pd.DataFrame,
+    kospi_index: pd.DataFrame,
+    selected_date: pd.Timestamp,
+) -> None:
+    if equity_df.empty:
+        st.info("수익률 곡선을 만들 데이터가 없습니다.")
+        return
+
+    st.subheader("추천 시점 이후 수익률 추이")
+
+    def _series_to_tv(data: pd.DataFrame, value_col: str) -> list[dict]:
+        if data.empty:
+            return []
+        temp = data.copy()
+        temp = temp.dropna(subset=["date", value_col]).sort_values("date")
+        temp["date"] = pd.to_datetime(temp["date"], errors="coerce")
+        temp = temp.dropna(subset=["date"])
+        return [
+            {"time": d.strftime("%Y-%m-%d"), "value": float(v)}
+            for d, v in zip(temp["date"], temp[value_col])
+        ]
+
+    eq = equity_df.copy()
+    eq = eq[eq["date"] >= selected_date].copy()
+    if eq.empty:
+        st.info("선택한 날짜 이후 데이터가 없습니다.")
+        return
+    base_equity = eq["equity"].iloc[0]
+    eq["return_pct"] = (eq["equity"] / base_equity - 1) * 100
+
+    tv_series = []
+    data_points = _series_to_tv(eq, "return_pct")
+    if data_points:
+        tv_series.append(
+            {
+                "name": "전략 수익률",
+                "color": "#E74C3C",
+                "lineWidth": 2,
+                "data": data_points,
+            }
+        )
+
+    if not kospi_index.empty:
+        kospi = kospi_index.copy()
+        kospi = kospi[kospi["date"] <= selected_date].sort_values("date")
+        if not kospi.empty:
+            base_index = kospi["index"].iloc[-1]
+            kospi_curve = kospi_index[kospi_index["date"].isin(eq["date"])].copy()
+            if not kospi_curve.empty:
+                kospi_curve["return_pct"] = (kospi_curve["index"] / base_index - 1) * 100
+                data_points = _series_to_tv(kospi_curve, "return_pct")
+                if data_points:
+                    tv_series.append(
+                        {
+                            "name": "KOSPI 수익률",
+                            "color": "#7F8C8D",
+                            "lineWidth": 2,
+                            "lineStyle": 2,
+                            "data": data_points,
+                        }
+                    )
+
+    if not tv_series:
+        st.info("표시할 차트 데이터가 없습니다.")
+        return
+
+    tv_data = json.dumps(tv_series, ensure_ascii=False)
+    chart_html = f"""
+    <div id="tv_chart" style="width:100%; height:420px;"></div>
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+    <script>
+      const chart = LightweightCharts.createChart(document.getElementById('tv_chart'), {{
+        layout: {{ textColor: '#333', background: {{ type: 'solid', color: '#ffffff' }} }},
+        rightPriceScale: {{ borderColor: '#ccc' }},
+        timeScale: {{ borderColor: '#ccc', timeVisible: false, secondsVisible: false }},
+        grid: {{ vertLines: {{ color: '#f0f0f0' }}, horzLines: {{ color: '#f0f0f0' }} }},
+      }});
+
+      const seriesList = {tv_data};
+      seriesList.forEach(s => {{
+        const line = chart.addLineSeries({{
+          color: s.color,
+          lineWidth: s.lineWidth || 2,
+          lineStyle: s.lineStyle || 0,
+        }});
+        line.setData(s.data);
+      }});
+
+      chart.timeScale().fitContent();
+    </script>
+    """
+    components.html(chart_html, height=440, scrolling=False)
+
+
+def run_turnover_strategy_backtest(
+    price_df: pd.DataFrame,
+    signal_df: pd.DataFrame,
+    kospi_index: pd.DataFrame,
+    start_date: pd.Timestamp,
+    top_n: int = 2,
+    initial_cash: float = 0.0,
+    max_daily_buys: int = 2,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    # 데이터 전처리 및 최적화
+    price_data = price_df[["date", "code", "open", "close"]].copy()
+    price_data["date"] = pd.to_datetime(price_data["date"], errors="coerce").dt.normalize()
+    price_data = price_data.dropna(subset=["date", "code", "open", "close"])
+    
+    # 중복 제거 (같은 날짜, 같은 종목의 경우 마지막 값 사용)
+    price_data = price_data.sort_values(["date", "code"]).drop_duplicates(subset=["date", "code"], keep="last")
+
+    # 빠른 조회를 위한 pivot 테이블 생성
+    open_pivot = price_data.pivot(index="date", columns="code", values="open")
+    close_pivot = price_data.pivot(index="date", columns="code", values="close")
+    
+    signal_df = signal_df.copy()
+    signal_df["date"] = pd.to_datetime(signal_df["date"], errors="coerce").dt.normalize()
+
+    # 매수 시그널 사전 정리
+    base_buy = signal_df[signal_df["signal"] == "BUY"]
+    if "spike_ratio" in base_buy.columns:
+        buy_candidates = base_buy.sort_values(["date", "spike_ratio"], ascending=[True, False])
+    elif "momentum" in base_buy.columns:
+        buy_candidates = base_buy.sort_values(["date", "momentum"], ascending=[True, False])
+    else:
+        buy_candidates = base_buy.sort_values(["date"], ascending=[True])
+    buy_by_date = buy_candidates.groupby("date")["code"].apply(lambda s: list(s.head(top_n))).to_dict()
+
+    # 매도 시그널 세트 생성
+    sell_signals = signal_df[signal_df["signal"] == "SELL"][["date", "code"]].copy()
+    sell_by_date = {}
+    for _, row in sell_signals.iterrows():
+        date = row["date"]
+        code = row["code"]
+        if date not in sell_by_date:
+            sell_by_date[date] = set()
+        sell_by_date[date].add(code)
+
+    start_date = pd.to_datetime(start_date, errors="coerce").normalize()
+    dates = [d for d in open_pivot.index if d >= start_date]
+    
+    positions: dict[str, dict] = {}
+    cash = float(initial_cash)
+    equity_records = []
+    trades = []
+    
+    # 대기 주문
+    pending_buys: dict[pd.Timestamp, list] = {}
+    pending_sells: dict[pd.Timestamp, set] = {}
+    pending_stop_loss: dict[pd.Timestamp, set] = {}  # 손절 대기
+
+    # 이름 매핑
+    name_map = {}
+    if "name" in signal_df.columns:
+        name_map = signal_df[["code", "name"]].dropna().drop_duplicates().set_index("code")["name"].to_dict()
+
+    def _buy(code: str, date: pd.Timestamp, price: float, max_amount: float, step: int) -> None:
+        nonlocal cash
+        if cash <= 0 or price <= 0:
+            return
+        spend = min(cash, max_amount)
+        shares = int(spend // price)
+        if shares == 0:
+            return
+        actual_amount = shares * price
+        if code in positions:
+            pos = positions[code]
+            total_cost = pos["avg_cost"] * pos["shares"] + actual_amount
+            total_shares = pos["shares"] + shares
+            pos.update({
+                "shares": total_shares,
+                "avg_cost": total_cost / total_shares if total_shares > 0 else 0,
+                "step": step,
+            })
+        else:
+            positions[code] = {"shares": shares, "avg_cost": price, "step": step}
+        cash -= actual_amount
+        trades.append({
+            "date": date,
+            "code": code,
+            "name": name_map.get(code, ""),
+            "action": "BUY",
+            "amount": actual_amount,
+            "price": price,
+            "shares": shares,
+            "step": step,
+            "return_pct": None,
+        })
+
+    def _sell(code: str, date: pd.Timestamp, price: float, reason: str) -> None:
+        nonlocal cash
+        if code not in positions:
+            return
+        pos = positions.pop(code)
+        proceeds = pos["shares"] * price
+        cash += proceeds
+        pnl = (price - pos["avg_cost"]) * pos["shares"]
+        trades.append({
+            "date": date,
+            "code": code,
+            "name": name_map.get(code, ""),
+            "action": "SELL",
+            "amount": proceeds,
+            "price": price,
+            "shares": pos["shares"],
+            "pnl": pnl,
+            "buy_price": pos["avg_cost"],
+            "return_pct": ((price / pos["avg_cost"]) - 1) * 100 if pos["avg_cost"] > 0 else 0,
+            "reason": reason,
+        })
+
+    for i, date in enumerate(dates):
+        # 대기 매수 실행
+        if date in pending_buys:
+            for code, max_amount, step in pending_buys[date]:
+                try:
+                    open_price = open_pivot.loc[date, code]
+                    if pd.notna(open_price):
+                        _buy(code, date, open_price, max_amount, step)
+                except (KeyError, IndexError):
+                    pass
+            del pending_buys[date]
+        
+        # 대기 손절 실행 (시그널 매도보다 우선)
+        if date in pending_stop_loss:
+            for code in pending_stop_loss[date]:
+                try:
+                    open_price = open_pivot.loc[date, code]
+                    if pd.notna(open_price):
+                        _sell(code, date, open_price, "STOP_LOSS")
+                except (KeyError, IndexError):
+                    pass
+            del pending_stop_loss[date]
+        
+        # 대기 매도 실행
+        if date in pending_sells:
+            for code in pending_sells[date]:
+                try:
+                    open_price = open_pivot.loc[date, code]
+                    if pd.notna(open_price):
+                        _sell(code, date, open_price, "SELL_SIGNAL")
+                except (KeyError, IndexError):
+                    pass
+            del pending_sells[date]
+
+        # 포지션 평가 및 손절/추가매수 체크
+        next_date = dates[i + 1] if i + 1 < len(dates) else None
+        
+        for code in list(positions.keys()):
+            try:
+                close_price = close_pivot.loc[date, code]
+                if pd.isna(close_price):
+                    continue
+            except (KeyError, IndexError):
+                continue
+            
+            pos = positions[code]
+            ret = (close_price - pos["avg_cost"]) / pos["avg_cost"] if pos["avg_cost"] > 0 else 0
+            
+            if ret <= -0.05:
+                if pos["step"] == 0:
+                    # step 0: 첫 번째 추가 매수 (다음날 시작가로)
+                    if next_date:
+                        if next_date not in pending_buys:
+                            pending_buys[next_date] = []
+                        pending_buys[next_date].append((code, 2_000_000, 1))
+                elif pos["step"] == 1:
+                    # step 1: 두 번째 추가 매수 (다음날 시작가로)
+                    if next_date:
+                        if next_date not in pending_buys:
+                            pending_buys[next_date] = []
+                        pending_buys[next_date].append((code, 4_000_000, 2))
+                else:
+                    # step 2 이상: 즉시 손절 (평균매수가의 -5% 가격)
+                    stop_price = pos["avg_cost"] * 0.95
+                    _sell(code, date, stop_price, "STOP_LOSS")
+
+        # 시그널 처리
+        if next_date:
+            # 매수 시그널
+            if date in buy_by_date:
+                daily_buy_count = 0
+                for code in buy_by_date[date]:
+                    if code not in positions and daily_buy_count < max_daily_buys:
+                        if next_date not in pending_buys:
+                            pending_buys[next_date] = []
+                        pending_buys[next_date].append((code, 2_000_000, 0))
+                        daily_buy_count += 1
+            
+            # 매도 시그널
+            if date in sell_by_date:
+                for code in sell_by_date[date]:
+                    if code in positions:
+                        # 손실 상태(-5% 이하)인 경우 SELL 시그널 무시 (손절 로직 우선)
+                        try:
+                            close_price = close_pivot.loc[date, code]
+                            if pd.notna(close_price):
+                                pos = positions[code]
+                                ret = (close_price - pos["avg_cost"]) / pos["avg_cost"] if pos["avg_cost"] > 0 else 0
+                                # -5% 이하면 손절 로직이 이미 처리했으므로 SELL 시그널 무시
+                                if ret <= -0.05:
+                                    continue
+                        except (KeyError, IndexError):
+                            pass
+                        
+                        if next_date not in pending_sells:
+                            pending_sells[next_date] = set()
+                        pending_sells[next_date].add(code)
+
+        # 자산 평가
+        market_value = 0
+        for code, pos in positions.items():
+            try:
+                close_price = close_pivot.loc[date, code]
+                if pd.notna(close_price):
+                    market_value += pos["shares"] * close_price
+            except (KeyError, IndexError):
+                pass
+        
+        equity_records.append({
+            "date": date,
+            "cash": cash,
+            "market_value": market_value,
+            "equity": cash + market_value,
+            "positions": len(positions),
+        })
+
+    return pd.DataFrame(equity_records), pd.DataFrame(trades)
+
+
+def render_news_page(signals: pd.DataFrame, selected_date: pd.Timestamp, selected_stock: str | None) -> None:
+    st.subheader("종목별 뉴스 모아보기")
+
+    available = (
+        signals[signals["date"] == selected_date][["code", "name"]]
+        .dropna()
+        .drop_duplicates()
+        .sort_values("name")
+    )
+    if available.empty:
+        st.info("선택한 날짜에 표시할 종목이 없습니다.")
+        return
+
+    options = available.apply(lambda r: f"{r['name']} ({r['code']})", axis=1).tolist()
+    code_map = dict(zip(options, available["code"]))
+
+    if selected_stock in code_map:
+        default_index = options.index(selected_stock)
+    else:
+        default_index = 0
+
+    selected = st.selectbox("종목 선택", options, index=default_index)
+    stock_code = code_map[selected]
+
+    with st.spinner("뉴스 불러오는 중..."):
+        crawler = NaverNewsCrawler()
+        news_df = crawler.get_recent_news(stock_code)
+
+    if news_df.empty:
+        st.info("해당 종목의 최근 뉴스가 없습니다.")
+        return
+
+    if "링크" in news_df.columns:
+        news_df = news_df.rename(columns={"링크": "news_url"})
+
+    news_rows = news_df.to_dict(orient="records")
+    urls = [row.get("news_url", "") for row in news_rows]
+    bodies: dict[str, str] = {}
+    if urls:
+        max_workers = min(8, len(urls))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for url, body in zip(urls, executor.map(crawler.get_news_body, urls)):
+                bodies[url] = body
+
+    for row in news_rows:
+        title = row.get("제목", "(제목 없음)")
+        source = row.get("출처", "")
+        date = row.get("날짜", "")
+        news_url = row.get("news_url", "")
+
+        label = f"{title}"
+        if source or date:
+            label = f"{label} · {source} {date}".strip()
+
+        with st.expander(label):
+            if news_url:
+                st.markdown(f"[원문 보기]({news_url})")
+            body = bodies.get(news_url, "") if news_url else ""
+            st.write(body if body else "본문을 가져올 수 없습니다.")
+
+
+def render_kakao_section(signals_df: pd.DataFrame, selected_date: pd.Timestamp) -> None:
+    """카카오톡 전송 섹션 렌더링"""
+    st.subheader("📱 카카오톡으로 전송")
+    
+    # 세션 상태 초기화
+    if "kakao_sender" not in st.session_state:
+        st.session_state.kakao_sender = KakaoMessageSender()
+    
+    kakao = st.session_state.kakao_sender
+    
+    # URL 쿼리 파라미터에서 code 자동 추출
+    query_params = st.query_params
+    if "code" in query_params and not kakao.is_authenticated():
+        auth_code = query_params["code"]
+        with st.spinner("카카오톡 인증 중..."):
+            success, message = kakao.get_token(auth_code)
+            if success:
+                st.success(message)
+                # URL 파라미터 제거
+                st.query_params.clear()
+                st.rerun()
+            else:
+                st.error(message)
+                st.query_params.clear()
+    
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        # 인증 상태 표시
+        if kakao.is_authenticated():
+            st.success("✅ 카카오톡 연동 완료")
+        else:
+            st.warning("⚠️ 카카오톡 연동 필요")
+    
+    with col2:
+        # 인증 버튼
+        if not kakao.is_authenticated():
+            if st.button("🔐 카카오톡 연동하기", use_container_width=True):
+                if not kakao.rest_api_key:
+                    st.error("⚠️ REST API 키가 설정되지 않았습니다. kakao_config.json 파일을 확인하세요.")
+                else:
+                    try:
+                        auth_url = kakao.get_auth_url()
+                        st.info("아래 버튼을 클릭하여 카카오 인증을 진행하세요. 인증 완료 후 자동으로 연동됩니다.")
+                        st.link_button("🔐 카카오 인증하기", auth_url, use_container_width=True)
+                        st.caption("💡 인증 후 자동으로 이 페이지로 돌아옵니다.")
+                    except ValueError as e:
+                        st.error(str(e))
+        else:
+            # 메시지 전송 버튼
+            if st.button("📤 카카오톡으로 전송", use_container_width=True):
+                with st.spinner("전송 중..."):
+                    success, message = kakao.send_message(signals_df, str(selected_date.date()))
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+
+
+def render_kospi_crawling_page() -> None:
+    st.subheader("KOSPI 데이터 크롤링")
+    st.write("KOSPI 200 종목 리스트와 가격/재무 데이터를 갱신합니다.")
+
+    if st.button("KOSPI 크롤링 실행"):
+        with st.spinner("크롤링 중... 잠시만 기다려 주세요."):
+            try:
+                crawler = CrawlingKospi()
+                crawler.crawling()
+                # 캐시 클리어하여 최신 데이터 로드
+                st.cache_data.clear()
+                st.success("크롤링이 완료되었습니다. 데이터가 갱신되었습니다.")
+                st.info("시그널 탭으로 이동하여 갱신된 데이터를 확인하세요.")
+            except Exception as exc:
+                st.error(f"크롤링 실패: {exc}")
+
+
+def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: dict) -> None:
+    """파라미터 최적화 페이지 렌더링"""
+    st.subheader("📊 백테스트 파라미터 최적화")
+    st.write("다양한 파라미터 조합을 테스트하여 최적의 전략을 찾습니다.")
+    
+    # 설정 영역을 컬럼으로 나누기
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 📅 투자 기간 설정")
+        period = st.selectbox(
+            "백테스트 기간",
+            options=["1Y", "3Y", "5Y"],
+            index=1,
+            format_func=lambda x: {"1Y": "1년", "3Y": "3년", "5Y": "5년"}[x]
+        )
+        
+        # 데이터의 최대 날짜 가져오기
+        max_date = pd.to_datetime(df['date'].max()).normalize()
+        start_date, end_date = get_period_dates(period, max_date)
+        
+        st.info(f"테스트 기간: {start_date.date()} ~ {end_date.date()}")
+        
+        initial_cash = st.number_input(
+            "초기 자산 (원)",
+            min_value=10_000_000,
+            max_value=1_000_000_000,
+            value=50_000_000,
+            step=10_000_000,
+            format="%d"
+        )
+    
+    with col2:
+        st.markdown("#### ⚙️ 파라미터 범위 설정")
+        
+        st.markdown("**일일 최대 매수 종목 수**")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            max_daily_buys_min = st.number_input("최소", min_value=1, max_value=5, value=1, key="mdb_min")
+        with col_b:
+            max_daily_buys_max = st.number_input("최대", min_value=1, max_value=5, value=3, key="mdb_max")
+        
+        st.markdown("**직전 거래일 평균**")
+        col_c, col_d = st.columns(2)
+        with col_c:
+            rolling_days_options = st.multiselect(
+                "테스트할 값 선택",
+                options=[10, 15, 20, 30, 40, 60],
+                default=[10, 20, 30],
+                key="rolling_options"
+            )
+        
+        st.markdown("**평균 대비 배수**")
+        col_e, col_f = st.columns(2)
+        with col_e:
+            volume_threshold_options = st.multiselect(
+                "테스트할 값 선택",
+                options=[1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
+                default=[1.5, 2.0, 2.5, 3.0],
+                key="vol_options"
+            )
+    
+    # 최적화 기준 선택
+    st.markdown("#### 🎯 최적화 기준")
+    optimization_metric = st.selectbox(
+        "어떤 지표를 기준으로 최적화할까요?",
+        options=["total_return", "sharpe_ratio", "excess_return"],
+        format_func=lambda x: {
+            "total_return": "총 수익률",
+            "sharpe_ratio": "샤프 비율 (위험 대비 수익)",
+            "excess_return": "초과 수익률 (KOSPI 대비)"
+        }[x]
+    )
+    
+    # 최적화 실행 버튼
+    st.divider()
+    
+    if st.button("🚀 최적화 실행", type="primary", use_container_width=True):
+        # 파라미터 범위 검증
+        if not rolling_days_options:
+            st.error("직전 거래일 평균 값을 최소 1개 이상 선택해주세요.")
+            return
+        
+        if not volume_threshold_options:
+            st.error("평균 대비 배수 값을 최소 1개 이상 선택해주세요.")
+            return
+        
+        if max_daily_buys_min > max_daily_buys_max:
+            st.error("일일 최대 매수 종목 수의 최소값이 최대값보다 클 수 없습니다.")
+            return
+        
+        # 파라미터 범위 구성
+        param_ranges = {
+            'max_daily_buys': list(range(max_daily_buys_min, max_daily_buys_max + 1)),
+            'rolling_days': sorted(rolling_days_options),
+            'volume_threshold': sorted(volume_threshold_options)
+        }
+        
+        # 총 조합 수 계산
+        total_combinations = (
+            len(param_ranges['max_daily_buys']) * 
+            len(param_ranges['rolling_days']) * 
+            len(param_ranges['volume_threshold'])
+        )
+        
+        st.info(f"총 {total_combinations}개의 파라미터 조합을 테스트합니다. 시간이 다소 걸릴 수 있습니다.")
+        
+        # 프로그레스 바 설정
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        def update_progress(current, total, params):
+            progress = current / total
+            progress_bar.progress(progress)
+            status_text.text(
+                f"진행중: {current}/{total} "
+                f"(매수종목: {params.get('max_daily_buys')}, "
+                f"평균일: {params.get('rolling_days')}, "
+                f"배수: {params.get('volume_threshold')})"
+            )
+        
+        # 최적화 실행
+        optimizer = BacktestOptimizer(df, kospi_index)
+        
+        try:
+            results_df = optimizer.optimize_parameters(
+                start_date=start_date,
+                end_date=end_date,
+                param_ranges=param_ranges,
+                initial_cash=initial_cash,
+                progress_callback=update_progress
+            )
+            
+            progress_bar.progress(1.0)
+            status_text.text(f"완료! {len(results_df)}개 결과 분석 중...")
+            
+            # 디버깅: 결과 확인
+            st.write(f"📊 디버깅 정보: 총 {total_combinations}개 조합 중 {len(results_df)}개 성공")
+            
+            if results_df.empty:
+                st.error("⚠️ 최적화 결과가 없습니다.")
+                st.info("""
+                가능한 원인:
+                1. 선택한 기간에 거래 데이터가 부족합니다
+                2. 모든 백테스트에서 오류가 발생했습니다
+                3. 시그널이 생성되지 않았습니다
+                
+                해결 방법:
+                - 더 긴 기간(3년 또는 5년)을 선택해보세요
+                - 파라미터 범위를 조정해보세요
+                - 터미널 출력을 확인하여 상세 오류를 확인하세요
+                """)
+                return
+            
+            # 최적 파라미터 찾기
+            optimal_params = optimizer.get_optimal_params(results_df, optimization_metric)
+            
+            # 결과 표시
+            st.success("✅ 최적화 완료!")
+            
+            # 최적 파라미터 표시
+            st.markdown("### 🏆 최적 파라미터")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("일일 최대 매수 종목", f"{optimal_params['max_daily_buys']}개")
+            with col2:
+                st.metric("직전 거래일 평균", f"{optimal_params['rolling_days']}일")
+            with col3:
+                st.metric("평균 대비 배수", f"{optimal_params['volume_threshold']}배")
+            with col4:
+                metric_name = {
+                    "total_return": "총 수익률",
+                    "sharpe_ratio": "샤프 비율",
+                    "excess_return": "초과 수익률"
+                }[optimization_metric]
+                metric_value = optimal_params[f'best_{optimization_metric}']
+                if optimization_metric in ["total_return", "excess_return"]:
+                    st.metric(metric_name, f"{metric_value:.2f}%")
+                else:
+                    st.metric(metric_name, f"{metric_value:.3f}")
+            
+            # 상위 결과 표시
+            st.markdown("### 📈 상위 10개 결과")
+            top_results = results_df.nlargest(10, optimization_metric).copy()
+            
+            # 컬럼명 한글화
+            display_df = top_results[[
+                'max_daily_buys', 'rolling_days', 'volume_threshold',
+                'total_return', 'kospi_return', 'excess_return',
+                'sharpe_ratio', 'mdd', 'win_rate', 'total_trades'
+            ]].copy()
+            
+            display_df.columns = [
+                '일일매수', '평균일', '배수',
+                '수익률(%)', 'KOSPI(%)', '초과수익(%)',
+                '샤프비율', 'MDD(%)', '승률(%)', '거래수'
+            ]
+            
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    '일일매수': st.column_config.NumberColumn(format="%d"),
+                    '평균일': st.column_config.NumberColumn(format="%d"),
+                    '배수': st.column_config.NumberColumn(format="%.1f"),
+                    '수익률(%)': st.column_config.NumberColumn(format="%.2f"),
+                    'KOSPI(%)': st.column_config.NumberColumn(format="%.2f"),
+                    '초과수익(%)': st.column_config.NumberColumn(format="%.2f"),
+                    '샤프비율': st.column_config.NumberColumn(format="%.3f"),
+                    'MDD(%)': st.column_config.NumberColumn(format="%.2f"),
+                    '승률(%)': st.column_config.NumberColumn(format="%.2f"),
+                    '거래수': st.column_config.NumberColumn(format="%d"),
+                }
+            )
+            
+            # 전체 결과 다운로드
+            st.markdown("### 💾 전체 결과 다운로드")
+            csv = results_df.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                label="📥 CSV 다운로드",
+                data=csv,
+                file_name=f"optimization_results_{period}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+            
+            # 시각화
+            st.markdown("### 📊 파라미터별 성과 분석")
+            
+            # 각 파라미터별 평균 수익률
+            tab1, tab2, tab3 = st.tabs(["일일 매수 종목수", "평균 거래일", "평균 대비 배수"])
+            
+            with tab1:
+                avg_by_buys = results_df.groupby('max_daily_buys')[optimization_metric].mean().reset_index()
+                st.bar_chart(avg_by_buys.set_index('max_daily_buys'))
+            
+            with tab2:
+                avg_by_days = results_df.groupby('rolling_days')[optimization_metric].mean().reset_index()
+                st.bar_chart(avg_by_days.set_index('rolling_days'))
+            
+            with tab3:
+                avg_by_threshold = results_df.groupby('volume_threshold')[optimization_metric].mean().reset_index()
+                st.bar_chart(avg_by_threshold.set_index('volume_threshold'))
+            
+        except Exception as e:
+            st.error(f"최적화 중 오류가 발생했습니다: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
+
+
+def run_app() -> None:
+    st.set_page_config(page_title="Volume Spike Signals", layout="wide")
+    st.title("거래량 급증 기반 매수/매도 시그널")
+
+    params = render_sidebar()
+
+    df = load_stock_data(params["data_dir"])
+    kospi = load_kospi_list(params["data_dir"])
+    kospi_index = load_kospi_index(params["data_dir"])
+    finance_df = load_finance_data(params["data_dir"])
+    
+    signals = build_signals(
+        df,
+        params["turnover_window"],
+        params["turnover_multiplier"],
+        20,
+        5.0,
+        20,
+        2.0,
+        20,
+        2.0,
+        ["Turnover Spike"],
+        "ANY",
+    )
+    signals = signals.merge(kospi, on="code", how="left")
+    
+    # 재무 필터 적용
+    if params["use_finance_filter"] and not finance_df.empty:
+        # 최신 재무 데이터 병합
+        finance_latest = finance_df.sort_values('date').groupby('code').tail(1)
+        signals = signals.merge(
+            finance_latest[['code', 'per', 'pbr', 'dvr']],
+            on='code',
+            how='left'
+        )
+        
+        # 필터 적용
+        if params["per_max"] is not None:
+            signals = signals[(signals['per'].isna()) | (signals['per'] <= params["per_max"])]
+        if params["pbr_max"] is not None:
+            signals = signals[(signals['pbr'].isna()) | (signals['pbr'] <= params["pbr_max"])]
+        if params["dvr_min"] is not None:
+            signals = signals[(signals['dvr'].isna()) | (signals['dvr'] >= params["dvr_min"])]
+        
+        st.info(f"재무 필터 적용: PER≤{params['per_max']}, PBR≤{params['pbr_max']}, 배당수익률≥{params['dvr_min']}%")
+    
+    if "spike_ratio" in signals.columns:
+        signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
+    else:
+        signals = signals.sort_values(["date"], ascending=[False])
+    signals = apply_signal_filters(signals, params["signal_filter"])
+
+    selected_date = select_date(signals)
+    if selected_date is None:
+        return
+
+    if "active_tab" not in st.session_state:
+        st.session_state.active_tab = "시그널"
+    if "selected_stock" not in st.session_state:
+        st.session_state.selected_stock = None
+
+    current_tab = st.radio(
+        "",
+        ["시그널", "시뮬레이션", "파라미터 최적화", "뉴스 모아보기", "KOSPI 크롤링"],
+        horizontal=True,
+        key="active_tab",
+        label_visibility="collapsed",
+    )
+
+    if current_tab == "시그널":
+        st.subheader(f"선택 날짜: {selected_date.date()}")
+        latest, cols = build_latest_table(signals, selected_date, params["top_n"], finance_df, df)
+        
+        # 표시 방식 선택
+        view_mode = st.radio(
+            "표시 방식",
+            ["테이블 뷰", "상세 뷰 (종목별 펼치기)"],
+            horizontal=True,
+            index=0
+        )
+        
+        if view_mode == "테이블 뷰":
+            render_table(latest, cols)
+        else:
+            # 종목별 상세 뷰
+            render_table_with_finance(latest, cols, finance_df)
+        
+        # 카카오톡 전송 기능
+        st.divider()
+        render_kakao_section(latest, selected_date)
+
+    elif current_tab == "시뮬레이션":
+        st.subheader("시스템 백테스트")
+        strategy_signals = build_signals(
+            df,
+            params["turnover_window"],
+            params["turnover_multiplier"],
+            20,
+            5.0,
+            20,
+            2.0,
+            20,
+            2.0,
+            ["Turnover Spike"],
+            "ANY",
+        )
+        strategy_signals = strategy_signals.merge(kospi, on="code", how="left")
+
+        equity_df, trades_df = run_turnover_strategy_backtest(
+            df,
+            strategy_signals,
+            kospi_index,
+            selected_date,
+            top_n=2,
+            initial_cash=params["initial_cash"],
+            max_daily_buys=params["max_daily_buys"],
+        )
+        render_backtest_curve(equity_df, kospi_index, selected_date)
+        if not equity_df.empty:
+            equity_df = equity_df.copy()
+            for col in ["cash", "market_value", "equity"]:
+                equity_df[col] = equity_df[col].fillna(0).astype(float).floordiv(1).astype(int)
+            st.line_chart(equity_df.set_index("date")["equity"])
+            st.dataframe(
+                equity_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "date": st.column_config.DateColumn("날짜"),
+                    "cash": st.column_config.NumberColumn("현금", format="%,.0f"),
+                    "market_value": st.column_config.NumberColumn("평가금액", format="%,.0f"),
+                    "equity": st.column_config.NumberColumn("총자산", format="%,.0f"),
+                    "positions": st.column_config.NumberColumn("보유 종목수"),
+                },
+            )
+        if not trades_df.empty:
+            st.subheader("거래 내역")
+            trades_df = trades_df.copy()
+            
+            # equity_df와 merge하여 총자산 정보 추가
+            if not equity_df.empty:
+                equity_summary = equity_df[["date", "equity"]].copy()
+                trades_df = trades_df.merge(equity_summary, on="date", how="left")
+            
+            trades_df["return_pct_display"] = trades_df["return_pct"].apply(
+                lambda v: f"{v:.2f}%" if pd.notna(v) else ""
+            )
+            st.dataframe(
+                trades_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "date": st.column_config.DateColumn("날짜"),
+                    "amount": st.column_config.NumberColumn("금액", format="%,.0f"),
+                    "price": st.column_config.NumberColumn("가격", format="%,.0f"),
+                    "buy_price": st.column_config.NumberColumn("매수가", format="%,.0f"),
+                    "shares": st.column_config.NumberColumn("수량", format="%,.0f"),
+                    "step": st.column_config.NumberColumn("매수단계"),
+                    "pnl": st.column_config.NumberColumn("손익", format="%,.0f"),
+                    "return_pct_display": st.column_config.TextColumn("수익률(%)"),
+                    "reason": st.column_config.TextColumn("매도사유"),
+                    "equity": st.column_config.NumberColumn("총자산", format="%,.0f"),
+                },
+            )
+
+    elif current_tab == "파라미터 최적화":
+        render_optimizer_page(df, kospi_index, params)
+    elif current_tab == "뉴스 모아보기":
+        render_news_page(signals, selected_date, st.session_state.selected_stock)
+    else:
+        render_kospi_crawling_page()

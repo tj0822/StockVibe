@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+.miniconda/
+
+# Data files
+data/
+*.pkl
+*.csv
+*.xlsx
+*.xls
+
+# Logs
+*.log
+
+# Environment variables
+.env
+kakao_token.json
+kakao_config.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Installers
+miniconda_installer.exe
+*.exe
+*.msi
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
