@@ -1,15 +1,15 @@
 from transformers import PreTrainedTokenizerFast, BartForConditionalGeneration
 from transformers import BertTokenizer, BertForSequenceClassification
-# import torch
+import torch
 from concurrent.futures import ThreadPoolExecutor
 import streamlit as st
-# import torch.nn.functional as F
+import torch.nn.functional as F
 
 class NewsAnalysis:
 
     def __init__(self):
-        # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        pass
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"NewsAnalysis 초기화 - Device: {self.device}")
         
 
     def summarize_text(self, text):
@@ -25,6 +25,7 @@ class NewsAnalysis:
         self.summary_tokenizer = PreTrainedTokenizerFast.from_pretrained(self.tokenizer_model_name)
         self.summary_model = BartForConditionalGeneration.from_pretrained(self.tokenizer_model_name)
         self.summary_model.to(self.device)
+        print(f"요약 모델 로드 완료 - Device: {self.device}")
         # 여러 문장을 배치로 토큰화 (padding 적용)
         inputs = self.summary_tokenizer(
             texts, 
@@ -112,6 +113,7 @@ class NewsAnalysis:
         self.sentiment_tokenizer = BertTokenizer.from_pretrained(self.sentiment_model_name)
         self.sentiment_model = BertForSequenceClassification.from_pretrained(self.sentiment_model_name, num_labels=2)
         self.sentiment_model.to(self.device)
+        print(f"감성 분석 모델 로드 완료 - Device: {self.device}")
 
         news_list = news_df["요약"].tolist()  # 뉴스 제목 리스트
         results = []

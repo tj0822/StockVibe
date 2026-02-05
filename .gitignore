@@ -11,6 +11,7 @@ venv/
 ENV/
 env/
 .miniconda/
+.venv_gpu/
 
 # Data files
 # CSV, Excel 파일은 제외하지만 pkl 파일은 포함

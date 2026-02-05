@@ -6,3 +6,8 @@ beautifulsoup4>=4.12.0
 lxml>=4.9.0
 selenium>=4.15.0
 webdriver-manager>=4.0.0
+plotly>=5.17.0
+
+# AI/ML 감성분석
+torch>=2.0.0
+transformers>=4.30.0

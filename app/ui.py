@@ -3,53 +3,74 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from concurrent.futures import ThreadPoolExecutor
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from crawling_kospi import CrawlingKospi
 from naver_news_crawler import NaverNewsCrawler
 from kakao_message import KakaoMessageSender
 from optimizer import BacktestOptimizer, get_period_dates
+from sentiment_analyzer import SentimentAnalyzer
+from stock_ontology import build_stock_ontology, StockOntology
 
 from .data import DATA_DIR_DEFAULT, load_kospi_index, load_kospi_list, load_stock_data, load_finance_data
 from .signals import build_signals
 
 
-def render_sidebar() -> dict:
+def render_sidebar(current_tab: str = "시그널") -> dict:
     with st.sidebar:
-        st.header("필터 설정")
-        st.subheader("Turnover Spike")
-        turnover_window = st.number_input("직전 n거래일 평균", min_value=5, max_value=120, value=10, step=1, key="turnover_window")
-        turnover_multiplier = st.number_input("평균 대비 n배", min_value=1.0, max_value=20.0, value=3.0, step=0.1, key="turnover_multiplier")
-
-        st.subheader("백테스트 설정")
-        initial_cash = st.number_input("초기 자산(원)", min_value=0, max_value=1_000_000_000, value=50_000_000, step=500_000)
-        max_daily_buys = st.number_input("일일 최대 매수 종목 수", min_value=1, max_value=10, value=2, step=1, help="하루에 매수할 수 있는 최대 종목 수")
-
-        st.subheader("재무 필터 (선택)")
-        use_finance_filter = st.checkbox("재무 필터 사용", value=False)
-        per_max = None
-        pbr_max = None
-        dvr_min = None
+        st.header("⚙️ 설정")
         
-        if use_finance_filter:
-            per_max = st.number_input("PER 최대값", min_value=0.0, max_value=100.0, value=20.0, step=1.0, help="낮을수록 저평가")
-            pbr_max = st.number_input("PBR 최대값", min_value=0.0, max_value=10.0, value=2.0, step=0.1, help="낮을수록 저평가")
-            dvr_min = st.number_input("배당수익률 최소(%)", min_value=0.0, max_value=10.0, value=1.0, step=0.1, help="배당주 필터")
+        with st.expander("📊 거래량 분석", expanded=True):
+            turnover_window = st.number_input(
+                "분석 기간", 
+                min_value=5, max_value=120, value=10, step=1, 
+                key="turnover_window",
+                help="직전 n거래일 평균 거래량 계산"
+            )
+            turnover_multiplier = st.number_input(
+                "급등 기준", 
+                min_value=1.0, max_value=20.0, value=3.0, step=0.1, 
+                key="turnover_multiplier",
+                help="평균 대비 몇 배 이상 급등"
+            )
+            top_n = st.number_input(
+                "표시 종목 수", 
+                min_value=1, max_value=200, value=10, step=1,
+                help="거래량 급등 상위 N개 종목"
+            )
 
-        signal_filter = st.multiselect("시그널", ["BUY", "SELL"], default=["BUY", "SELL"])
-        top_n = st.number_input("상위 N개(스파이크 순)", min_value=1, max_value=200, value=10, step=1)
+        # 백테스트 설정은 시뮬레이션 탭에서만 표시
+        initial_cash = 50_000_000
+        max_daily_buys = 2
+        
+        if current_tab == "🎯 시뮬레이션":
+            with st.expander("💰 백테스트 설정", expanded=True):
+                initial_cash = st.number_input(
+                    "초기 자산", 
+                    min_value=0, max_value=1_000_000_000, 
+                    value=50_000_000, step=5_000_000,
+                    format="%d",
+                    help="백테스트 시작 자산 (원)"
+                )
+                max_daily_buys = st.number_input(
+                    "일일 매수 한도", 
+                    min_value=1, max_value=10, value=2, step=1, 
+                    help="하루에 매수할 수 있는 최대 종목 수"
+                )
 
     return {
         "data_dir": DATA_DIR_DEFAULT,
         "turnover_window": int(turnover_window),
         "turnover_multiplier": float(turnover_multiplier),
-        "signal_filter": signal_filter,
+        "signal_filter": ["BUY", "SELL"],
         "top_n": int(top_n),
         "initial_cash": float(initial_cash),
         "max_daily_buys": int(max_daily_buys),
-        "use_finance_filter": use_finance_filter,
-        "per_max": per_max,
-        "pbr_max": pbr_max,
-        "dvr_min": dvr_min,
+        "use_finance_filter": False,
+        "per_max": None,
+        "pbr_max": None,
+        "dvr_min": None,
     }
 
 
@@ -66,13 +87,16 @@ def select_date(signals: pd.DataFrame) -> pd.Timestamp | None:
         return None
 
     latest_date = available_dates[-1]
-    st.subheader("백테스트 기준 날짜 선택")
-    selected_date = st.date_input(
-        "날짜",
-        value=latest_date.date(),
-        min_value=available_dates[0].date(),
-        max_value=latest_date.date(),
-    )
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        selected_date = st.date_input(
+            "📅 기준 날짜",
+            value=latest_date.date(),
+            min_value=available_dates[0].date(),
+            max_value=latest_date.date(),
+        )
+    with col2:
+        st.metric("최신 데이터", latest_date.strftime("%Y-%m-%d"))
     return pd.to_datetime(selected_date)
 
 
@@ -192,7 +216,7 @@ def render_table(latest: pd.DataFrame, cols: list[str]) -> None:
     st.markdown(styled.hide(axis="index").to_html(escape=False), unsafe_allow_html=True)
 
 
-def render_table_with_finance(latest: pd.DataFrame, cols: list[str], finance_df: pd.DataFrame) -> None:
+def render_table_with_finance(latest: pd.DataFrame, cols: list[str], finance_df: pd.DataFrame, price_df: pd.DataFrame = None) -> None:
     """재무정보를 포함하여 각 종목별로 개별 펼치기로 표시"""
     
     # 재무정보 컬럼 확인
@@ -289,77 +313,472 @@ def render_table_with_finance(latest: pd.DataFrame, cols: list[str], finance_df:
             if 'date' in row and pd.notna(row['date']):
                 st.caption(f"📅 시그널 발생일: {row['date']}")
             
-            # 재무정보 추세 차트
-            if not finance_df.empty and code:
-                stock_finance = finance_df[finance_df['code'] == code].copy()
-                if not stock_finance.empty and len(stock_finance) > 1:
-                    stock_finance = stock_finance.sort_values('date')
+            # AI 주가 예측 분석
+            st.divider()
+            st.markdown("### 🔮 AI 주가 예측 분석")
+            
+            with st.spinner("AI 분석 중..."):
+                try:
+                    # 최근 뉴스 데이터 준비
+                    crawler = NaverNewsCrawler()
+                    news_df = crawler.get_recent_news(code)
                     
-                    with st.expander("📈 재무 추세 보기"):
+                    news_data = []
+                    if not news_df.empty:
+                        if "링크" in news_df.columns:
+                            news_df = news_df.rename(columns={"링크": "news_url"})
+                        
+                        news_rows = news_df.to_dict(orient="records")
+                        
+                        for news_row in news_rows:
+                            news_data.append({
+                                'title': news_row.get('제목', ''),
+                                'body': '',
+                                'date': news_row.get('날짜', ''),
+                                'source': news_row.get('출처', '')
+                            })
+                    
+                    # 온톨로지 구축
+                    ontology = build_stock_ontology(
+                        code=code,
+                        price_df=price_df,
+                        news_data=news_data,
+                        finance_df=finance_df,
+                        sentiment_analyzer=None
+                    )
+                    
+                    # 예측 생성
+                    prediction = ontology.generate_prediction()
+                    
+                    # 메인 예측 - 3단 구성
+                    col_pred1, col_pred2, col_pred3 = st.columns(3)
+                    
+                    with col_pred1:
+                        direction_emoji = {
+                            'strong_buy': '🚀',
+                            'buy': '📈',
+                            'hold': '➖',
+                            'sell': '📉',
+                            'strong_sell': '⚠️'
+                        }.get(prediction['direction'], '❓')
+                        
+                        st.metric(
+                            "예측 방향",
+                            f"{direction_emoji} {prediction['direction_text']}",
+                        )
+                    
+                    with col_pred2:
+                        confidence_pct = prediction['confidence'] * 100
+                        st.metric(
+                            "신뢰도",
+                            f"{confidence_pct:.1f}%",
+                            help="모델의 예측 신뢰도"
+                        )
+                    
+                    with col_pred3:
+                        st.metric(
+                            "종합 점수",
+                            f"{prediction['score']:.1f}",
+                            help="양수: 긍정적, 음수: 부정적"
+                        )
+                    
+                    # 주요 요인 - 컴팩트하게 표시
+                    if prediction['factors']:
+                        st.markdown("**📊 주요 요인**")
+                        factors_text = " • ".join(prediction['factors'])
+                        st.info(factors_text)
+                    
+                    # 상세 근거 표시 (NEW!)
+                    if prediction.get('detailed_reasons'):
+                        st.markdown("---")
+                        st.markdown("#### 📋 예측 근거 상세")
+                        
+                        for reason in prediction['detailed_reasons']:
+                            category = reason.get('category', '')
+                            impact = reason.get('impact', '')
+                            score = reason.get('score', 0)
+                            description = reason.get('description', '')
+                            
+                            # 영향도에 따른 색상
+                            if impact == 'positive':
+                                badge_color = '#d4edda'
+                                text_color = '#155724'
+                                icon = '✅'
+                            else:
+                                badge_color = '#f8d7da'
+                                text_color = '#721c24'
+                                icon = '⚠️'
+                            
+                            # HTML 카드로 표시
+                            reason_html = f"""
+                            <div style="
+                                background-color: {badge_color};
+                                border-left: 4px solid {text_color};
+                                padding: 12px 16px;
+                                margin-bottom: 12px;
+                                border-radius: 4px;
+                            ">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <strong style="color: {text_color};">{icon} {category}</strong>
+                                    <span style="color: {text_color}; font-weight: bold;">점수: {score:+.1f}</span>
+                                </div>
+                                <div style="color: {text_color}; margin-top: 8px;">
+                                    {description}
+                                </div>
+                            </div>
+                            """
+                            st.markdown(reason_html, unsafe_allow_html=True)
+                            
+                            # 뉴스 관련 근거면 뉴스 제목 표시
+                            if 'news_list' in reason and reason['news_list']:
+                                st.markdown("**📰 관련 뉴스**")
+                                for news_item in reason['news_list']:
+                                    news_title = news_item.get('news_title', '')
+                                    sentiment = news_item.get('sentiment', 'neutral')
+                                    avg_return = news_item.get('avg_return_5d', 0)
+                                    
+                                    sentiment_emoji = {
+                                        'positive': '😊',
+                                        'negative': '😟',
+                                        'neutral': '😐'
+                                    }.get(sentiment, '❓')
+                                    
+                                    st.markdown(f"- {sentiment_emoji} {news_title} (5일 평균: {avg_return:+.2f}%)")
+                                st.markdown("")
+                    
+                    # 긍정/부정 뉴스 요약
+                    if prediction.get('positive_news') or prediction.get('negative_news'):
+                        st.markdown("---")
+                        st.markdown("#### 📰 뉴스 감성 분석")
+                        
+                        col_news1, col_news2 = st.columns(2)
+                        
+                        with col_news1:
+                            if prediction.get('positive_news'):
+                                st.markdown("**😊 긍정 뉴스**")
+                                for news in prediction['positive_news'][:3]:
+                                    title = news.get('news_title', '')[:50] + '...'
+                                    st.markdown(f"- {title}")
+                        
+                        with col_news2:
+                            if prediction.get('negative_news'):
+                                st.markdown("**😟 부정 뉴스**")
+                                for news in prediction['negative_news'][:3]:
+                                    title = news.get('news_title', '')[:50] + '...'
+                                    st.markdown(f"- {title}")
+                    
+                    # 상세 분석은 expander로 유지 (선택적)
+                    with st.expander("📊 통계 데이터 보기", expanded=False):
+                        # 주가 패턴
+                        if prediction.get('price_patterns'):
+                            st.markdown("**주가 패턴**")
+                            patterns = prediction['price_patterns']
+                            
+                            col_p1, col_p2 = st.columns(2)
+                            with col_p1:
+                                trend_emoji = '📈' if patterns.get('trend') == 'uptrend' else '📉'
+                                st.write(f"{trend_emoji} 추세: {patterns.get('trend', 'N/A')}")
+                                st.write(f"📊 변동성: {patterns.get('volatility', 0):.2f}%")
+                            
+                            with col_p2:
+                                volume_emoji = '🔥' if patterns.get('volume_trend') == 'increasing' else '❄️'
+                                st.write(f"{volume_emoji} 거래량: {patterns.get('volume_trend', 'N/A')}")
+                                if patterns.get('avg_volume'):
+                                    st.write(f"평균: {patterns['avg_volume']:,.0f}")
+                            
+                            st.divider()
+                        
+                        # 재무 추세
+                        if prediction.get('finance_trends'):
+                            st.markdown("**재무 지표 추세**")
+                            trends = prediction['finance_trends']
+                            
+                            for key, value in trends.items():
+                                if 'trend' in key:
+                                    indicator = key.replace('_trend', '').upper()
+                                    emoji = '✅' if value == 'improving' else '⚠️'
+                                    st.write(f"{emoji} {indicator}: {value}")
+                            
+                            st.divider()
+                        
+                        # 뉴스-주가 상관관계
+                        if prediction.get('correlations'):
+                            st.markdown("**뉴스-주가 상관관계**")
+                            correlations = prediction['correlations']
+                            
+                            if correlations:
+                                match_rate = sum(1 for c in correlations if c['sentiment_match']) / len(correlations) * 100
+                                st.info(f"📊 감성-주가 일치율: {match_rate:.1f}%")
+                                
+                                # 간단한 요약
+                                corr_df = pd.DataFrame(correlations)
+                                st.dataframe(
+                                    corr_df.head(3)[['news_title', 'sentiment', 'avg_return_5d']],
+                                    use_container_width=True,
+                                    hide_index=True
+                                )
+                    
+                    st.caption("⚠️ 본 예측은 참고용이며 투자 조언이 아닙니다.")
+                    
+                except Exception as e:
+                    st.warning(f"AI 예측을 생성할 수 없습니다. ({str(e)[:50]}...)")
+            
+            # 주가 차트
+            if price_df is not None and not price_df.empty and code:
+                stock_prices = price_df[price_df['code'] == code].copy()
+                if not stock_prices.empty:
+                    stock_prices = stock_prices.sort_values('date')
+                    
+                    with st.expander("📊 주가 & 재무 차트", expanded=True):
                         # 기간 선택
-                        period_col1, period_col2 = st.columns([1, 3])
-                        with period_col1:
-                            period = st.selectbox(
+                        price_period_col1, price_period_col2 = st.columns([1, 3])
+                        with price_period_col1:
+                            chart_period = st.selectbox(
                                 "기간",
-                                ["전체", "최근 1년", "최근 3년", "최근 5년"],
-                                key=f"period_{code}",
+                                ["최근 1개월", "최근 3개월", "최근 6개월", "최근 1년", "최근 3년", "전체"],
+                                index=2,  # 기본값: 6개월
+                                key=f"chart_period_{code}",
                                 label_visibility="collapsed"
                             )
                         
-                        # 기간 필터링
-                        if period == "최근 1년":
+                        # 주가 데이터 필터링
+                        filtered_prices = stock_prices.copy()
+                        if chart_period == "최근 1개월":
+                            cutoff_date = pd.Timestamp.now() - pd.DateOffset(months=1)
+                            filtered_prices = filtered_prices[filtered_prices['date'] >= cutoff_date]
+                        elif chart_period == "최근 3개월":
+                            cutoff_date = pd.Timestamp.now() - pd.DateOffset(months=3)
+                            filtered_prices = filtered_prices[filtered_prices['date'] >= cutoff_date]
+                        elif chart_period == "최근 6개월":
+                            cutoff_date = pd.Timestamp.now() - pd.DateOffset(months=6)
+                            filtered_prices = filtered_prices[filtered_prices['date'] >= cutoff_date]
+                        elif chart_period == "최근 1년":
                             cutoff_date = pd.Timestamp.now() - pd.DateOffset(years=1)
-                            stock_finance = stock_finance[stock_finance['date'] >= cutoff_date]
-                        elif period == "최근 3년":
+                            filtered_prices = filtered_prices[filtered_prices['date'] >= cutoff_date]
+                        elif chart_period == "최근 3년":
                             cutoff_date = pd.Timestamp.now() - pd.DateOffset(years=3)
-                            stock_finance = stock_finance[stock_finance['date'] >= cutoff_date]
-                        elif period == "최근 5년":
-                            cutoff_date = pd.Timestamp.now() - pd.DateOffset(years=5)
-                            stock_finance = stock_finance[stock_finance['date'] >= cutoff_date]
+                            filtered_prices = filtered_prices[filtered_prices['date'] >= cutoff_date]
                         
-                        if len(stock_finance) > 0:
+                        # 재무 데이터 필터링 (같은 기간)
+                        filtered_finance = None
+                        if not finance_df.empty and code:
+                            stock_finance = finance_df[finance_df['code'] == code].copy()
+                            if not stock_finance.empty:
+                                stock_finance = stock_finance.sort_values('date')
+                                if chart_period != "전체":
+                                    stock_finance = stock_finance[stock_finance['date'] >= cutoff_date]
+                                if len(stock_finance) > 0:
+                                    filtered_finance = stock_finance
+                        
+                        if len(filtered_prices) > 0:
                             # 탭으로 구분
-                            tab1, tab2, tab3 = st.tabs(["📊 밸류에이션", "💰 수익성", "👥 투자자"])
+                            tab1, tab2, tab3 = st.tabs(["💹 주가/거래량", "📊 밸류에이션", "💰 수익성"])
                             
                             with tab1:
-                                # PER, PBR 차트
-                                chart_data = stock_finance.set_index('date')[['per', 'pbr']].dropna(how='all')
-                                if not chart_data.empty:
-                                    st.line_chart(chart_data, height=250)
-                                else:
-                                    st.info("밸류에이션 데이터가 없습니다.")
+                                # Plotly를 사용한 캔들스틱 + 거래량 차트 (이중축)
+                                fig = make_subplots(
+                                    rows=2, cols=1,
+                                    shared_xaxes=True,
+                                    vertical_spacing=0.03,
+                                    row_heights=[0.7, 0.3],
+                                    subplot_titles=('주가', '거래량')
+                                )
+                                
+                                # 캔들스틱 차트
+                                fig.add_trace(
+                                    go.Candlestick(
+                                        x=filtered_prices['date'],
+                                        open=filtered_prices['open'],
+                                        high=filtered_prices['high'],
+                                        low=filtered_prices['low'],
+                                        close=filtered_prices['close'],
+                                        name='주가',
+                                        increasing_line_color='red',
+                                        decreasing_line_color='blue'
+                                    ),
+                                    row=1, col=1
+                                )
+                                
+                                # 거래량 바 차트
+                                colors = ['red' if close >= open else 'blue' 
+                                         for close, open in zip(filtered_prices['close'], filtered_prices['open'])]
+                                
+                                fig.add_trace(
+                                    go.Bar(
+                                        x=filtered_prices['date'],
+                                        y=filtered_prices['volume'],
+                                        name='거래량',
+                                        marker_color=colors,
+                                        showlegend=False
+                                    ),
+                                    row=2, col=1
+                                )
+                                
+                                # 레이아웃 설정
+                                fig.update_layout(
+                                    height=600,
+                                    xaxis_rangeslider_visible=False,
+                                    hovermode='x unified',
+                                    template='plotly_white',
+                                    margin=dict(l=0, r=0, t=40, b=0)
+                                )
+                                
+                                # y축 레이블
+                                fig.update_yaxes(title_text="가격 (원)", row=1, col=1)
+                                fig.update_yaxes(title_text="거래량", row=2, col=1)
+                                
+                                # x축 설정
+                                fig.update_xaxes(
+                                    rangebreaks=[
+                                        dict(bounds=["sat", "mon"])  # 주말 제거
+                                    ]
+                                )
+                                
+                                st.plotly_chart(fig, use_container_width=True)
+                                
+                                # 통계 정보
+                                st.divider()
+                                col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+                                with col_stat1:
+                                    st.metric("최고가", f"{filtered_prices['high'].max():,.0f}원")
+                                with col_stat2:
+                                    st.metric("최저가", f"{filtered_prices['low'].min():,.0f}원")
+                                with col_stat3:
+                                    price_change = ((filtered_prices['close'].iloc[-1] - filtered_prices['close'].iloc[0]) / filtered_prices['close'].iloc[0] * 100)
+                                    st.metric("기간 수익률", f"{price_change:+.2f}%")
+                                with col_stat4:
+                                    avg_volume = filtered_prices['volume'].mean()
+                                    st.metric("평균 거래량", f"{avg_volume:,.0f}")
                             
                             with tab2:
-                                # EPS, BPS, 배당수익률 차트
-                                chart_cols = []
-                                if 'eps' in stock_finance.columns:
-                                    chart_cols.append('eps')
-                                if 'bps' in stock_finance.columns:
-                                    chart_cols.append('bps')
-                                if 'dvr' in stock_finance.columns:
-                                    chart_cols.append('dvr')
-                                
-                                if chart_cols:
-                                    chart_data = stock_finance.set_index('date')[chart_cols].dropna(how='all')
+                                # 밸류에이션 지표 (PER, PBR)
+                                if filtered_finance is not None:
+                                    chart_data = filtered_finance.set_index('date')[['per', 'pbr']].dropna(how='all')
                                     if not chart_data.empty:
-                                        st.line_chart(chart_data, height=250)
+                                        st.line_chart(chart_data, height=300)
+                                        
+                                        # 재무 통계
+                                        col_f1, col_f2 = st.columns(2)
+                                        with col_f1:
+                                            if 'per' in chart_data.columns:
+                                                st.metric("평균 PER", f"{chart_data['per'].mean():.2f}")
+                                        with col_f2:
+                                            if 'pbr' in chart_data.columns:
+                                                st.metric("평균 PBR", f"{chart_data['pbr'].mean():.2f}")
+                                    else:
+                                        st.info("밸류에이션 데이터가 없습니다.")
+                                else:
+                                    st.info("재무 데이터가 없습니다.")
+                            
+                            with tab3:
+                                # 수익성 지표 (EPS, BPS, 배당수익률)
+                                if filtered_finance is not None:
+                                    chart_cols = []
+                                    if 'eps' in filtered_finance.columns:
+                                        chart_cols.append('eps')
+                                    if 'bps' in filtered_finance.columns:
+                                        chart_cols.append('bps')
+                                    if 'dvr' in filtered_finance.columns:
+                                        chart_cols.append('dvr')
+                                    
+                                    if chart_cols:
+                                        chart_data = filtered_finance.set_index('date')[chart_cols].dropna(how='all')
+                                        if not chart_data.empty:
+                                            st.line_chart(chart_data, height=300)
+                                            
+                                            # 수익성 통계
+                                            cols = st.columns(len(chart_cols))
+                                            for idx, col in enumerate(chart_cols):
+                                                with cols[idx]:
+                                                    if col == 'eps':
+                                                        st.metric("평균 EPS", f"{chart_data['eps'].mean():,.0f}원")
+                                                    elif col == 'bps':
+                                                        st.metric("평균 BPS", f"{chart_data['bps'].mean():,.0f}원")
+                                                    elif col == 'dvr':
+                                                        st.metric("평균 배당수익률", f"{chart_data['dvr'].mean():.2f}%")
+                                        else:
+                                            st.info("수익성 데이터가 없습니다.")
                                     else:
                                         st.info("수익성 데이터가 없습니다.")
                                 else:
-                                    st.info("수익성 데이터가 없습니다.")
-                            
-                            with tab3:
-                                # 외국인보유율 차트
-                                if 'foreigner_ratio' in stock_finance.columns:
-                                    chart_data = stock_finance.set_index('date')[['foreigner_ratio']].dropna()
-                                    if not chart_data.empty:
-                                        st.line_chart(chart_data, height=250)
-                                    else:
-                                        st.info("외국인보유율 데이터가 없습니다.")
-                                else:
-                                    st.info("외국인보유율 데이터가 없습니다.")
+                                    st.info("재무 데이터가 없습니다.")
                         else:
-                            st.info(f"{period} 데이터가 없습니다.")
+                            st.info(f"{chart_period} 데이터가 없습니다.")
+            
+            # 뉴스 섹션
+            with st.expander("📰 최근 뉴스 보기"):
+                with st.spinner("뉴스 불러오는 중..."):
+                    crawler = NaverNewsCrawler()
+                    news_df = crawler.get_recent_news(code)
+                
+                if news_df.empty:
+                    st.info("해당 종목의 최근 뉴스가 없습니다.")
+                else:
+                    if "링크" in news_df.columns:
+                        news_df = news_df.rename(columns={"링크": "news_url"})
+                    
+                    news_rows = news_df.to_dict(orient="records")
+                    urls = [row.get("news_url", "") for row in news_rows]
+                    bodies: dict[str, str] = {}
+                    
+                    if urls:
+                        max_workers = min(8, len(urls))
+                        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                            for url, body in zip(urls, executor.map(crawler.get_news_body, urls)):
+                                bodies[url] = body
+                    
+                    # HTML 카드 방식으로 뉴스 표시
+                    for idx, row in enumerate(news_rows):
+                        title = row.get("제목", "(제목 없음)")
+                        source = row.get("출처", "")
+                        date = row.get("날짜", "")
+                        news_url = row.get("news_url", "")
+                        body = bodies.get(news_url, "") if news_url else ""
+                        
+                        # HTML 카드 생성
+                        card_html = f"""
+                        <div style="
+                            border: 1px solid #e0e0e0;
+                            border-radius: 8px;
+                            padding: 16px;
+                            margin-bottom: 16px;
+                            background-color: #f9f9f9;
+                        ">
+                            <div style="
+                                display: flex;
+                                justify-content: space-between;
+                                align-items: flex-start;
+                                margin-bottom: 8px;
+                            ">
+                                <h4 style="margin: 0; color: #1f1f1f; flex: 1;">
+                                    {idx + 1}. {title}
+                                </h4>
+                            </div>
+                            <div style="
+                                display: flex;
+                                gap: 12px;
+                                margin-bottom: 12px;
+                                font-size: 0.9em;
+                                color: #666;
+                            ">
+                                <span>📰 {source}</span>
+                                <span>📅 {date}</span>
+                                <a href="{news_url}" target="_blank" style="color: #0066cc; text-decoration: none;">
+                                    🔗 원문보기
+                                </a>
+                            </div>
+                            <div style="
+                                color: #333;
+                                line-height: 1.6;
+                                white-space: pre-wrap;
+                                word-wrap: break-word;
+                            ">
+                                {body if body else "본문을 가져올 수 없습니다."}
+                            </div>
+                        </div>
+                        """
+                        
+                        st.markdown(card_html, unsafe_allow_html=True)
 
 
 def build_forward_return_series_by_stock(
@@ -727,7 +1146,8 @@ def run_turnover_strategy_backtest(
 
 
 def render_news_page(signals: pd.DataFrame, selected_date: pd.Timestamp, selected_stock: str | None) -> None:
-    st.subheader("종목별 뉴스 모아보기")
+    st.divider()
+    st.subheader("📰 종목별 뉴스")
 
     available = (
         signals[signals["date"] == selected_date][["code", "name"]]
@@ -789,7 +1209,8 @@ def render_news_page(signals: pd.DataFrame, selected_date: pd.Timestamp, selecte
 
 def render_kakao_section(signals_df: pd.DataFrame, selected_date: pd.Timestamp) -> None:
     """카카오톡 전송 섹션 렌더링"""
-    st.subheader("📱 카카오톡으로 전송")
+    with st.expander("📱 카카오톡으로 전송하기", expanded=False):
+        st.caption("선택한 종목 정보를 카카오톡으로 전송합니다")
     
     # 세션 상태 초기화
     if "kakao_sender" not in st.session_state:
@@ -847,7 +1268,8 @@ def render_kakao_section(signals_df: pd.DataFrame, selected_date: pd.Timestamp) 
 
 
 def render_kospi_crawling_page() -> None:
-    st.subheader("KOSPI 데이터 크롤링")
+    st.subheader("🔄 KOSPI 데이터 업데이트")
+    st.caption("최신 주가 데이터를 수집합니다")
     st.write("KOSPI 200 종목 리스트와 가격/재무 데이터를 갱신합니다.")
 
     if st.button("KOSPI 크롤링 실행"):
@@ -865,7 +1287,8 @@ def render_kospi_crawling_page() -> None:
 
 def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: dict) -> None:
     """파라미터 최적화 페이지 렌더링"""
-    st.subheader("📊 백테스트 파라미터 최적화")
+    st.subheader("🎯 파라미터 최적화")
+    st.caption("최적의 투자 전략 파라미터를 찾습니다")
     st.write("다양한 파라미터 조합을 테스트하여 최적의 전략을 찾습니다.")
     
     # 설정 영역을 컬럼으로 나누기
@@ -1115,98 +1538,90 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
 
 
 def run_app() -> None:
-    st.set_page_config(page_title="Volume Spike Signals", layout="wide")
-    st.title("거래량 급증 기반 매수/매도 시그널")
+    # 페이지 설정은 streamlit_app.py에서 수행
+    st.title("📈 StockVibe")
+    st.caption("거래량 급등 기반 스마트 투자 시그널")
 
-    params = render_sidebar()
-
-    df = load_stock_data(params["data_dir"])
-    kospi = load_kospi_list(params["data_dir"])
-    kospi_index = load_kospi_index(params["data_dir"])
-    finance_df = load_finance_data(params["data_dir"])
-    
-    signals = build_signals(
-        df,
-        params["turnover_window"],
-        params["turnover_multiplier"],
-        20,
-        5.0,
-        20,
-        2.0,
-        20,
-        2.0,
-        ["Turnover Spike"],
-        "ANY",
-    )
-    signals = signals.merge(kospi, on="code", how="left")
-    
-    # 재무 필터 적용
-    if params["use_finance_filter"] and not finance_df.empty:
-        # 최신 재무 데이터 병합
-        finance_latest = finance_df.sort_values('date').groupby('code').tail(1)
-        signals = signals.merge(
-            finance_latest[['code', 'per', 'pbr', 'dvr']],
-            on='code',
-            how='left'
-        )
-        
-        # 필터 적용
-        if params["per_max"] is not None:
-            signals = signals[(signals['per'].isna()) | (signals['per'] <= params["per_max"])]
-        if params["pbr_max"] is not None:
-            signals = signals[(signals['pbr'].isna()) | (signals['pbr'] <= params["pbr_max"])]
-        if params["dvr_min"] is not None:
-            signals = signals[(signals['dvr'].isna()) | (signals['dvr'] >= params["dvr_min"])]
-        
-        st.info(f"재무 필터 적용: PER≤{params['per_max']}, PBR≤{params['pbr_max']}, 배당수익률≥{params['dvr_min']}%")
-    
-    if "spike_ratio" in signals.columns:
-        signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
-    else:
-        signals = signals.sort_values(["date"], ascending=[False])
-    signals = apply_signal_filters(signals, params["signal_filter"])
-
-    selected_date = select_date(signals)
-    if selected_date is None:
-        return
-
+    # 탭 선택을 먼저 수행
     if "active_tab" not in st.session_state:
-        st.session_state.active_tab = "시그널"
+        st.session_state.active_tab = "📊 시그널"
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = None
 
     current_tab = st.radio(
         "",
-        ["시그널", "시뮬레이션", "파라미터 최적화", "뉴스 모아보기", "KOSPI 크롤링"],
+        ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", "🔄 데이터"],
         horizontal=True,
         key="active_tab",
         label_visibility="collapsed",
     )
 
-    if current_tab == "시그널":
-        st.subheader(f"선택 날짜: {selected_date.date()}")
+    # 현재 탭에 따라 사이드바 렌더링
+    params = render_sidebar(current_tab)
+
+    # 데이터 로딩 (캐시 활용)
+    with st.spinner("📊 데이터 로딩 중..."):
+        df = load_stock_data(params["data_dir"])
+        kospi = load_kospi_list(params["data_dir"])
+        kospi_index = load_kospi_index(params["data_dir"])
+        finance_df = load_finance_data(params["data_dir"])
+    
+    # 시그널 생성
+    with st.spinner("🔍 시그널 분석 중..."):
+        signals = build_signals(
+            df,
+            params["turnover_window"],
+            params["turnover_multiplier"],
+            20,
+            5.0,
+            20,
+            2.0,
+            20,
+            2.0,
+            ["Turnover Spike"],
+            "ANY",
+        )
+        signals = signals.merge(kospi, on="code", how="left")
+        
+        if "spike_ratio" in signals.columns:
+            signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
+        else:
+            signals = signals.sort_values(["date"], ascending=[False])
+        signals = apply_signal_filters(signals, params["signal_filter"])
+
+    selected_date = select_date(signals)
+    if selected_date is None:
+        st.warning("⚠️ 조건에 맞는 시그널이 없습니다.")
+        return
+
+    if current_tab == "📊 시그널":
+        st.divider()
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.subheader(f"🎯 {selected_date.date()} 투자 시그널")
+        with col2:
+            view_mode = st.radio(
+                "표시 방식",
+                ["📊 테이블", "📋 상세"],
+                horizontal=True,
+                label_visibility="collapsed"
+            )
+        
         latest, cols = build_latest_table(signals, selected_date, params["top_n"], finance_df, df)
         
-        # 표시 방식 선택
-        view_mode = st.radio(
-            "표시 방식",
-            ["테이블 뷰", "상세 뷰 (종목별 펼치기)"],
-            horizontal=True,
-            index=0
-        )
-        
-        if view_mode == "테이블 뷰":
+        if view_mode == "📊 테이블":
             render_table(latest, cols)
         else:
             # 종목별 상세 뷰
-            render_table_with_finance(latest, cols, finance_df)
+            render_table_with_finance(latest, cols, finance_df, df)
         
         # 카카오톡 전송 기능
         st.divider()
         render_kakao_section(latest, selected_date)
 
-    elif current_tab == "시뮬레이션":
-        st.subheader("시스템 백테스트")
+    elif current_tab == "🎯 시뮬레이션":
+        st.divider()
+        st.subheader("📊 백테스트 결과")
         strategy_signals = build_signals(
             df,
             params["turnover_window"],
@@ -1250,7 +1665,8 @@ def run_app() -> None:
                 },
             )
         if not trades_df.empty:
-            st.subheader("거래 내역")
+            st.divider()
+            st.subheader("💼 거래 내역")
             trades_df = trades_df.copy()
             
             # equity_df와 merge하여 총자산 정보 추가
@@ -1279,9 +1695,7 @@ def run_app() -> None:
                 },
             )
 
-    elif current_tab == "파라미터 최적화":
+    elif current_tab == "⚙️ 최적화":
         render_optimizer_page(df, kospi_index, params)
-    elif current_tab == "뉴스 모아보기":
-        render_news_page(signals, selected_date, st.session_state.selected_stock)
     else:
         render_kospi_crawling_page()

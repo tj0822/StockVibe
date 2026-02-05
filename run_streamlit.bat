@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-call "%~dp0.venv\Scripts\activate.bat"
+call "%~dp0.venv_gpu\Scripts\activate.bat"
 
 streamlit run "%~dp0streamlit_app.py"
 
