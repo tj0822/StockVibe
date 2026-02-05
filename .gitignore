@@ -13,8 +13,7 @@ env/
 .miniconda/
 
 # Data files
-data/
-*.pkl
+# CSV, Excel 파일은 제외하지만 pkl 파일은 포함
 *.csv
 *.xlsx
 *.xls
