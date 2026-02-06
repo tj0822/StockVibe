@@ -134,13 +134,13 @@ REST API 키 저장"""
         except Exception:
             return False
     
-    def send_message(self, signals_df: pd.DataFrame, selected_date: str) -> tuple[bool, str]:
+    def send_message(self, signals_df: pd.DataFrame, selected_date: str, portfolio: dict = None) -> tuple[bool, str]:
         """시그널 분석 결과를 카카오톡으로 전송"""
         if not self.access_token:
             return False, "카카오톡 인증이 필요합니다. 먼저 '카카오톡 연동' 버튼을 클릭하세요."
         
         # 메시지 내용 구성
-        message_text = self._format_signals(signals_df, selected_date)
+        message_text = self._format_signals(signals_df, selected_date, portfolio)
         
         url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
         headers = {
@@ -170,7 +170,7 @@ REST API 키 저장"""
             elif response.status_code == 401:
                 # 토큰 만료, 갱신 시도
                 if self.refresh_access_token():
-                    return self.send_message(signals_df, selected_date)
+                    return self.send_message(signals_df, selected_date, portfolio)
                 return False, "토큰이 만료되었습니다. 다시 인증해주세요."
             else:
                 error_msg = response.json().get("msg", "알 수 없는 오류")
@@ -179,12 +179,18 @@ REST API 키 저장"""
         except Exception as e:
             return False, f"전송 중 오류 발생: {str(e)}"
     
-    def _format_signals(self, df: pd.DataFrame, selected_date: str) -> str:
-        """시그널 데이터를 메시지 형식으로 포맷팅"""
+    def _format_signals(self, df: pd.DataFrame, selected_date: str, portfolio: dict = None) -> str:
+        """시그널 데이터를 메시지 형식으로 포맷팅 (포트폴리오 정보 포함)"""
         if df.empty:
             return f"감지일자: {selected_date}\n\n조건에 맞는 시그널이 없습니다."
         
         lines = [f"감지일자: {selected_date}", ""]
+        
+        # 포트폴리오 정보 추가
+        if portfolio:
+            portfolio_codes = set(portfolio.keys())
+        else:
+            portfolio_codes = set()
         
         for idx, row in df.iterrows():
             name = row.get("name", "")
@@ -194,7 +200,17 @@ REST API 키 저장"""
             if name and signal:
                 # HTML 태그 제거
                 clean_name = re.sub(r'<[^>]+>', '', str(name))
-                lines.append(f"{clean_name} : {signal}")
+                
+                # 포트폴리오 보유 여부 표시
+                portfolio_marker = " ⭐" if code in portfolio_codes else ""
+                lines.append(f"{clean_name}{portfolio_marker} : {signal}")
+                
+                # 포트폴리오 보유 정보 표시
+                if code in portfolio_codes:
+                    portfolio_info = portfolio[code]
+                    quantity = portfolio_info.get('quantity', 0)
+                    avg_price = portfolio_info.get('avg_price', 0)
+                    lines.append(f"  └ 보유수: {quantity}주, 매입가: {avg_price:,.0f}원")
                 
                 # 종목 뉴스 링크 추가
                 if code:

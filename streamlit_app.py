@@ -1,13 +1,20 @@
 import streamlit as st
-from app.ui import run_app
+from app.phase4_ui import run_phase4_app
 
 # 페이지 설정
 st.set_page_config(
-    page_title="StockVibe - 스마트 투자 시그널",
-    page_icon="📈",
+    page_title="StockVibe Pro - AI Stock Analysis",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# 세션 초기화
+if 'page' not in st.session_state:
+    st.session_state.page = '메인 대시보드'
+if 'data_refresh_time' not in st.session_state:
+    import datetime
+    st.session_state.data_refresh_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 # 커스텀 CSS - 다크 테마 최적화
 st.markdown("""
@@ -194,5 +201,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Phase 4 앱 실행
 if __name__ == "__main__":
-    run_app()
+    run_phase4_app()

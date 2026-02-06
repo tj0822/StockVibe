@@ -4,6 +4,7 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from technical_indicators import analyze_technical_indicators, get_technical_score
 
 
 def simple_sentiment_analysis(text: str) -> str:
@@ -177,11 +178,37 @@ class StockOntology:
         
         return trends
     
-    def generate_prediction(self) -> Dict:
+    def analyze_technical_indicators(self, price_df: pd.DataFrame, code: str) -> Dict:
+        """기술적 지표 분석"""
+        try:
+            # 해당 종목 데이터 추출
+            stock_data = price_df[price_df['code'] == code].copy()
+            if stock_data.empty:
+                return {}
+            
+            # 날짜순 정렬
+            stock_data = stock_data.sort_values('date')
+            
+            # 기술 지표 분석
+            tech_analysis = analyze_technical_indicators(stock_data)
+            
+            return tech_analysis
+        except Exception as e:
+            return {}
+    
+    def generate_prediction(self, price_df: pd.DataFrame = None, code: str = None) -> Dict:
         """종합 예측 생성"""
         correlations = self.find_correlations()
         price_patterns = self.analyze_price_patterns()
         finance_trends = self.analyze_finance_trends()
+        
+        # 기술적 지표 분석 추가
+        technical_analysis = {}
+        technical_score = 0
+        if price_df is not None and code:
+            technical_analysis = self.analyze_technical_indicators(price_df, code)
+            if technical_analysis:
+                technical_score = get_technical_score(technical_analysis)
         
         # 예측 점수 계산 (간단한 규칙 기반)
         prediction_score = 0
@@ -305,6 +332,30 @@ class StockOntology:
                     'description': f"{', '.join(worsening_items)} 악화" + (f" ({', '.join(change_info)})" if change_info else "")
                 })
         
+        # 4. 기술적 지표 (가중치: 20%) - NEW!
+        if technical_analysis and technical_score != 0:
+            prediction_score += technical_score * 0.2  # 20% 가중치
+            
+            tech_factors = []
+            if technical_analysis.get('golden_cross'):
+                tech_factors.append("골든크로스 발생")
+            if technical_analysis.get('dead_cross'):
+                tech_factors.append("데드크로스 발생")
+            if 'rsi_signal' in technical_analysis and technical_analysis['rsi_signal'] != '중립':
+                tech_factors.append(f"RSI {technical_analysis['rsi_signal']}")
+            if 'macd_trend' in technical_analysis:
+                tech_factors.append(f"MACD {technical_analysis['macd_trend']}")
+            
+            if tech_factors:
+                factors.append(f"기술적: {', '.join(tech_factors[:2])}")
+                
+                detailed_reasons.append({
+                    'category': '기술적 지표',
+                    'impact': 'positive' if technical_score > 0 else 'negative',
+                    'score': technical_score * 0.2,
+                    'description': ' | '.join(tech_factors)
+                })
+        
         # 예측 방향 결정
         if prediction_score > 20:
             direction = 'strong_buy'
@@ -335,8 +386,7 @@ class StockOntology:
             'factors': factors,
             'detailed_reasons': detailed_reasons,  # 상세 근거 추가
             'positive_news': positive_news_list,  # 긍정 뉴스 리스트
-            'negative_news': negative_news_list,  # 부정 뉴스 리스트
-            'correlations': correlations,
+            'negative_news': negative_news_list,  # 부정 뉴스 리스트            'technical_analysis': technical_analysis,  # 기술적 지표 (NEW!)            'correlations': correlations,
             'price_patterns': price_patterns,
             'finance_trends': finance_trends
         }

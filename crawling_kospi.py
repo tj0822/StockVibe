@@ -6,6 +6,8 @@ import os
 import datetime as dt
 import streamlit as st
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 class CrawlingKospi:
     def __init__(self):
@@ -339,17 +341,66 @@ class CrawlingKospi:
             # crawlingFinanceDf = pd.read_sql_table('stock_finance', con=self.engine)
 
         kospiList = []
-
-        # cralingPrice = []
-        for key in stockDict.keys():
-            # print(stockDict[key], key)
-            # st.write(stockDict[key], key)
-            if not bFlag:   
-                kospiList.append([dt.datetime.today().strftime("%Y-%m-%d"), key, stockDict[key]])
-            target = (key, stockDict[key])        
-            # cralingPrice.append(self.GetPriceData(target))      
-            crawlingPriceDf = pd.concat([crawlingPriceDf.dropna(axis=1, how='all'), self.GetPriceData(target)], axis=0)
-            crawlingFinanceDf = pd.concat([crawlingFinanceDf, self.getFinanceInfo(key)], axis=0)
+        
+        # 병렬 처리로 크롤링 속도 개선
+        total_stocks = len(stockDict)
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # 데이터 저장용 리스트
+        price_dfs = []
+        finance_dfs = []
+        
+        # 병렬 처리 함수
+        def fetch_stock_data(code_name_pair):
+            code, name = code_name_pair
+            try:
+                price_df = self.GetPriceData((code, name))
+                finance_df = self.getFinanceInfo(code)
+                return code, name, price_df, finance_df, None
+            except Exception as e:
+                return code, name, None, None, str(e)
+        
+        # ThreadPoolExecutor로 병렬 처리 (최대 10개 동시 실행)
+        max_workers = min(10, total_stocks)
+        completed = 0
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 모든 작업 제출
+            future_to_stock = {
+                executor.submit(fetch_stock_data, (code, stockDict[code])): code 
+                for code in stockDict.keys()
+            }
+            
+            # 완료된 작업 처리
+            for future in as_completed(future_to_stock):
+                code, name, price_df, finance_df, error = future.result()
+                
+                if error:
+                    st.warning(f"⚠️ {name}({code}) 데이터 수집 실패: {error[:50]}")
+                else:
+                    if not bFlag:
+                        kospiList.append([dt.datetime.today().strftime("%Y-%m-%d"), code, name])
+                    
+                    if price_df is not None and not price_df.empty:
+                        price_dfs.append(price_df)
+                    if finance_df is not None and not finance_df.empty:
+                        finance_dfs.append(finance_df)
+                
+                # 진행률 업데이트
+                completed += 1
+                progress = completed / total_stocks
+                progress_bar.progress(progress)
+                status_text.text(f"크롤링 진행 중... {completed}/{total_stocks} ({progress*100:.1f}%)")
+        
+        # 데이터 병합
+        if price_dfs:
+            crawlingPriceDf = pd.concat([crawlingPriceDf.dropna(axis=1, how='all')] + price_dfs, axis=0)
+        if finance_dfs:
+            crawlingFinanceDf = pd.concat([crawlingFinanceDf] + finance_dfs, axis=0)
+        
+        progress_bar.empty()
+        status_text.empty()
         
         # crawlingPriceDf = pd.concat([crawlingPriceDf.dropna(axis=1, how='all'), pd.DataFrame(cralingPrice, columns=crawlingPriceDf.columns)], axis=0)
 

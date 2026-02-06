@@ -11,3 +11,8 @@ plotly>=5.17.0
 # AI/ML 감성분석
 torch>=2.0.0
 transformers>=4.30.0
+
+# Phase 4 추가 패키지
+openpyxl>=3.1.0  # Excel 내보내기
+tabulate>=0.9.0  # Markdown 테이블
+kaleido>=0.2.1  # Plotly 이미지 내보내기 (선택사항)

@@ -1,0 +1,121 @@
+{
+  "009830": {
+    "name": "한화솔루션",
+    "quantity": 230,
+    "avg_price": 34827,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:10:21"
+  },
+  "018880": {
+    "name": "한온시스템",
+    "quantity": 595,
+    "avg_price": 3360,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:10:51"
+  },
+  "139480": {
+    "name": "이마트",
+    "quantity": 38,
+    "avg_price": 105679,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:12:19"
+  },
+  "323410": {
+    "name": "카카오뱅크",
+    "quantity": 76,
+    "avg_price": 26200,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:12:45"
+  },
+  "090430": {
+    "name": "아모레퍼시픽",
+    "quantity": 16,
+    "avg_price": 129044,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:13:14"
+  },
+  "138040": {
+    "name": "메리츠금융지주",
+    "quantity": 17,
+    "avg_price": 118600,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:13:36"
+  },
+  "280360": {
+    "name": "롯데웰푸드",
+    "quantity": 17,
+    "avg_price": 119100,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:14:00"
+  },
+  "023530": {
+    "name": "롯데쇼핑",
+    "quantity": 23,
+    "avg_price": 86604,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:14:19"
+  },
+  "034020": {
+    "name": "두산에너빌리티",
+    "quantity": 24,
+    "avg_price": 86200,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:14:38"
+  },
+  "003490": {
+    "name": "대한항공",
+    "quantity": 86,
+    "avg_price": 23394,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:14:55"
+  },
+  "001440": {
+    "name": "대한전선",
+    "quantity": 74,
+    "avg_price": 27050,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:15:12"
+  },
+  "047040": {
+    "name": "대우건설",
+    "quantity": 435,
+    "avg_price": 4590,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:15:32"
+  },
+  "006280": {
+    "name": "녹십자",
+    "quantity": 12,
+    "avg_price": 164204,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:15:51"
+  },
+  "069260": {
+    "name": "TKG휴켐스",
+    "quantity": 100,
+    "avg_price": 20100,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:16:08"
+  },
+  "017670": {
+    "name": "SK텔레콤",
+    "quantity": 29,
+    "avg_price": 69600,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:16:30"
+  },
+  "003550": {
+    "name": "LG",
+    "quantity": 25,
+    "avg_price": 82455,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:16:47"
+  },
+  "383220": {
+    "name": "F&F",
+    "quantity": 28,
+    "avg_price": 73700,
+    "purchase_date": "2026-02-06",
+    "last_updated": "2026-02-06 23:17:07"
+  }
+}
