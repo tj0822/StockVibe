@@ -40,6 +40,23 @@ class CrawlingKospi:
         st.write("KOSPI 리스트 수집완료!")
         return stockDic
 
+    def get_all_kospi_data(self):
+        """저장된 KOSPI 200 주가 데이터를 로드하여 반환"""
+        stock_file = "data/stock.pkl"
+        if os.path.exists(stock_file):
+            df = pd.read_pickle(stock_file)
+            # 데이터 타입 변환
+            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+            df['open'] = pd.to_numeric(df['open'], errors='coerce')
+            df['close'] = pd.to_numeric(df['close'], errors='coerce')
+            df['low'] = pd.to_numeric(df['low'], errors='coerce')
+            df['high'] = pd.to_numeric(df['high'], errors='coerce')
+            df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+            return df
+        else:
+            # 파일이 없으면 빈 DataFrame 반환
+            return pd.DataFrame(columns=['date', 'code', 'open', 'close', 'low', 'high', 'volume'])
+
     def getKospiIndex(self):
         outFileName = "data/kospi_index.pkl"
         i = 1

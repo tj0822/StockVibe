@@ -360,343 +360,334 @@ def render_table_with_finance(latest: pd.DataFrame, cols: list[str], finance_df:
         # 최상위 종목(idx=0)은 자동으로 펼치기
         auto_expand = (idx == 0)
         
-        # 포트폴리오로 이동 버튼 추가
-        col_title, col_btn = st.columns([5, 1])
-        with col_btn:
-            if st.button("📊 포트폴리오", key=f"goto_portfolio_{code}_{idx}"):
-                st.session_state.selected_menu = "💼 포트폴리오"
-                st.session_state.portfolio_highlight_stock = code
-                st.rerun()
-        
-        with col_title:
-            with st.expander(title, expanded=auto_expand):
-                # 탭으로 정보 구조화
-                tab1, tab2, tab3, tab4 = st.tabs(["📊 개요", "🔮 AI 예측", "📈 차트", "📰 뉴스"])
+        with st.expander(title, expanded=auto_expand):
+            # 탭으로 정보 구조화
+            tab1, tab2, tab3, tab4 = st.tabs(["📊 개요", "🔮 AI 예측", "📈 차트", "📰 뉴스"])
+            
+            # === 탭 1: 개요 ===
+            with tab1:
+                col1, col2 = st.columns(2)
                 
-                # === 탭 1: 개요 ===
-                with tab1:
-                    col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("##### 📊 가격 정보")
+                    price_data = {
+                        "시가": f"{row.get('open', 0):,.0f}원",
+                        "종가": f"{row.get('close', 0):,.0f}원",
+                        "고가": f"{row.get('high', 0):,.0f}원",
+                        "저가": f"{row.get('low', 0):,.0f}원",
+                        "거래량": f"{row.get('volume', 0):,.0f}",
+                    }
                     
-                    with col1:
-                        st.markdown("##### 📊 가격 정보")
-                        price_data = {
-                            "시가": f"{row.get('open', 0):,.0f}원",
-                            "종가": f"{row.get('close', 0):,.0f}원",
-                            "고가": f"{row.get('high', 0):,.0f}원",
-                            "저가": f"{row.get('low', 0):,.0f}원",
-                            "거래량": f"{row.get('volume', 0):,.0f}",
-                        }
-                        
-                        if pd.notna(row.get('next_close')):
-                            price_data["다음날종가"] = f"{row.get('next_close', 0):,.0f}원"
-                        
-                        if 'spike_ratio' in row and pd.notna(row['spike_ratio']):
-                            price_data["거래량급증률"] = f"{row['spike_ratio']:.0%}"
-                        
-                        for key, value in price_data.items():
-                            st.text(f"{key}: {value}")
+                    if pd.notna(row.get('next_close')):
+                        price_data["다음날종가"] = f"{row.get('next_close', 0):,.0f}원"
                     
-                    with col2:
-                        if has_finance:
-                            st.markdown("##### 💼 재무 정보")
-                            finance_data = {}
-                            
-                            if 'per' in row and pd.notna(row['per']):
-                                finance_data["PER"] = f"{row['per']:.2f}"
-                            if 'pbr' in row and pd.notna(row['pbr']):
-                                finance_data["PBR"] = f"{row['pbr']:.2f}"
-                            if 'eps' in row and pd.notna(row['eps']):
-                                finance_data["EPS"] = f"{row['eps']:,.0f}원"
-                            if 'bps' in row and pd.notna(row['bps']):
-                                finance_data["BPS"] = f"{row['bps']:,.0f}원"
-                            if 'dvr' in row and pd.notna(row['dvr']):
-                                finance_data["배당수익률"] = f"{row['dvr']:.2f}%"
-                            if 'foreigner_ratio' in row and pd.notna(row['foreigner_ratio']):
-                                finance_data["외국인보유율"] = f"{row['foreigner_ratio']:.2f}%"
-                            
-                            if finance_data:
-                                for key, value in finance_data.items():
-                                    st.text(f"{key}: {value}")
-                            else:
-                                st.info("재무 정보가 없습니다.")
+                    if 'spike_ratio' in row and pd.notna(row['spike_ratio']):
+                        price_data["거래량급증률"] = f"{row['spike_ratio']:.0%}"
+                    
+                    for key, value in price_data.items():
+                        st.text(f"{key}: {value}")
+                
+                with col2:
+                    if has_finance:
+                        st.markdown("##### 💼 재무 정보")
+                        finance_data = {}
+                        
+                        if 'per' in row and pd.notna(row['per']):
+                            finance_data["PER"] = f"{row['per']:.2f}"
+                        if 'pbr' in row and pd.notna(row['pbr']):
+                            finance_data["PBR"] = f"{row['pbr']:.2f}"
+                        if 'eps' in row and pd.notna(row['eps']):
+                            finance_data["EPS"] = f"{row['eps']:,.0f}원"
+                        if 'bps' in row and pd.notna(row['bps']):
+                            finance_data["BPS"] = f"{row['bps']:,.0f}원"
+                        if 'dvr' in row and pd.notna(row['dvr']):
+                            finance_data["배당수익률"] = f"{row['dvr']:.2f}%"
+                        if 'foreigner_ratio' in row and pd.notna(row['foreigner_ratio']):
+                            finance_data["외국인보유율"] = f"{row['foreigner_ratio']:.2f}%"
+                        
+                        if finance_data:
+                            for key, value in finance_data.items():
+                                st.text(f"{key}: {value}")
                         else:
-                            st.markdown("##### 💼 포트폴리오")
-                            if st.button(f"💼 {clean_name} 포트폴리오 추가하기", key=f"add_portfolio_{code}_{idx}"):
-                                st.session_state.selected_menu = "💼 포트폴리오"
-                                st.session_state.portfolio_add_stock = {'code': code, 'name': clean_name}
-                                st.rerun()
-                    
-                    # 날짜 정보
-                    if 'date' in row and pd.notna(row['date']):
-                        st.caption(f"📅 시그널 발생일: {row['date']}")
-                    
-                    # 빠른 액션 버튼
-                    st.divider()
-                    col_btn1, col_btn2, col_btn3 = st.columns(3)
-                    with col_btn1:
-                        st.markdown(f"[🔗 네이버금융](https://finance.naver.com/item/main.naver?code={code})")
-                    with col_btn2:
-                        st.markdown(f"[📊 증권정보](https://finance.naver.com/item/coinfo.naver?code={code})")
-                    with col_btn3:
-                        st.markdown(f"[📈 투자자별](https://finance.naver.com/item/frgn.naver?code={code})")
-                
-                # === 탭 2: AI 예측 ===
-                with tab2:
-                    # AI 주가 예측 분석 (기존 코드 이동)
-                    st.markdown("#### 🔮 AI 주가 예측 분석")
-                
-                    # 캐시 키로 사용할 데이터 갱신 시간
-                    data_refresh_time = st.session_state.get('data_refreshed_at', datetime.datetime(2000, 1, 1))
-                    cache_key = f"{code}_{data_refresh_time.isoformat()}"
-                
-                    # 예측 결과 캐싱 여부 확인
-                    prediction_cache_key = f"prediction_{cache_key}"
-                    
-                    if prediction_cache_key in st.session_state:
-                        # 캐시된 예측 사용
-                        prediction = st.session_state[prediction_cache_key]
+                            st.info("재무 정보가 없습니다.")
                     else:
-                        # 새로 예측 생성
-                        try:
-                            # 1단계: 뉴스 수집
-                            with st.spinner("🔍 AI 분석 중... (1/3) 뉴스 수집"):
-                                news_data = get_news_data_for_stock(code)
-                            
-                            # 2단계: 온톨로지 구축
-                            with st.spinner("🔍 AI 분석 중... (2/3) 데이터 분석"):
-                                ontology = build_stock_ontology(
-                                    code=code,
-                                    price_df=price_df,
-                                    news_data=news_data,
-                                    finance_df=finance_df,
-                                    sentiment_analyzer=None
-                                )
-                            
-                            # 3단계: 예측 생성 (기술적 지표 포함)
-                            with st.spinner("🔍 AI 분석 중... (3/3) 예측 생성"):
-                                prediction = ontology.generate_prediction(price_df=price_df, code=code)
-                            
-                            # 캐시에 저장
-                            st.session_state[prediction_cache_key] = prediction
-                            
-                        except Exception as e:
-                            st.warning(f"AI 예측을 생성할 수 없습니다. ({str(e)[:50]}...)")
-                            prediction = None
+                        st.markdown("##### 💼 포트폴리오")
+                        if st.button(f"💼 {clean_name} 포트폴리오 추가하기", key=f"add_portfolio_{code}_{idx}"):
+                            st.session_state.selected_menu = "💼 포트폴리오"
+                            st.session_state.portfolio_add_stock = {'code': code, 'name': clean_name}
+                            st.rerun()
+                
+                # 날짜 정보
+                if 'date' in row and pd.notna(row['date']):
+                    st.caption(f"📅 시그널 발생일: {row['date']}")
+                
+                # 빠른 액션 버튼
+                st.divider()
+                col_btn1, col_btn2, col_btn3 = st.columns(3)
+                with col_btn1:
+                    st.markdown(f"[🔗 네이버금융](https://finance.naver.com/item/main.naver?code={code})")
+                with col_btn2:
+                    st.markdown(f"[📊 증권정보](https://finance.naver.com/item/coinfo.naver?code={code})")
+                with col_btn3:
+                    st.markdown(f"[📈 투자자별](https://finance.naver.com/item/frgn.naver?code={code})")
+            
+            # === 탭 2: AI 예측 ===
+            with tab2:
+                # AI 주가 예측 분석 (기존 코드 이동)
+                st.markdown("#### 🔮 AI 주가 예측 분석")
+            
+                # 캐시 키로 사용할 데이터 갱신 시간
+                data_refresh_time = st.session_state.get('data_refreshed_at', datetime.datetime(2000, 1, 1))
+                cache_key = f"{code}_{data_refresh_time.isoformat()}"
+            
+                # 예측 결과 캐싱 여부 확인
+                prediction_cache_key = f"prediction_{cache_key}"
+                
+                if prediction_cache_key in st.session_state:
+                    # 캐시된 예측 사용
+                    prediction = st.session_state[prediction_cache_key]
+                else:
+                    # 새로 예측 생성
+                    try:
+                        # 1단계: 뉴스 수집
+                        with st.spinner("🔍 AI 분석 중... (1/3) 뉴스 수집"):
+                            news_data = get_news_data_for_stock(code)
+                        
+                        # 2단계: 온톨로지 구축
+                        with st.spinner("🔍 AI 분석 중... (2/3) 데이터 분석"):
+                            ontology = build_stock_ontology(
+                                code=code,
+                                price_df=price_df,
+                                news_data=news_data,
+                                finance_df=finance_df,
+                                sentiment_analyzer=None
+                            )
+                        
+                        # 3단계: 예측 생성 (기술적 지표 포함)
+                        with st.spinner("🔍 AI 분석 중... (3/3) 예측 생성"):
+                            prediction = ontology.generate_prediction(price_df=price_df, code=code)
+                        
+                        # 캐시에 저장
+                        st.session_state[prediction_cache_key] = prediction
+                        
+                    except Exception as e:
+                        st.warning(f"AI 예측을 생성할 수 없습니다. ({str(e)[:50]}...)")
+                        prediction = None
+                
+                if prediction:
                     
-                    if prediction:
+                    # 메인 예측 - 3단 구성
+                    col_pred1, col_pred2, col_pred3 = st.columns(3)
+                    
+                    with col_pred1:
+                        direction_emoji = {
+                            'strong_buy': '🚀',
+                            'buy': '📈',
+                            'hold': '➖',
+                            'sell': '📉',
+                            'strong_sell': '⚠️'
+                        }.get(prediction['direction'], '❓')
                         
-                        # 메인 예측 - 3단 구성
-                        col_pred1, col_pred2, col_pred3 = st.columns(3)
+                        st.metric(
+                            "예측 방향",
+                            f"{direction_emoji} {prediction['direction_text']}",
+                        )
+                    
+                    with col_pred2:
+                        confidence_pct = prediction['confidence'] * 100
+                        st.metric(
+                            "신뢰도",
+                            f"{confidence_pct:.1f}%",
+                            help="모델의 예측 신뢰도"
+                        )
+                    
+                    with col_pred3:
+                        st.metric(
+                            "종합 점수",
+                            f"{prediction['score']:.1f}",
+                            help="양수: 긍정적, 음수: 부정적"
+                        )
+                    
+                    # 주요 요인 - 컴팩트하게 표시
+                    if prediction['factors']:
+                        st.markdown("**📊 주요 요인**")
+                        factors_text = " • ".join(prediction['factors'])
+                        st.info(factors_text)
+                    
+                    # 상세 근거 표시 (NEW!)
+                    if prediction.get('detailed_reasons'):
+                        st.markdown("---")
+                        st.markdown("#### 📋 예측 근거 상세")
                         
-                        with col_pred1:
-                            direction_emoji = {
-                                'strong_buy': '🚀',
-                                'buy': '📈',
-                                'hold': '➖',
-                                'sell': '📉',
-                                'strong_sell': '⚠️'
-                            }.get(prediction['direction'], '❓')
+                        for reason in prediction['detailed_reasons']:
+                            category = reason.get('category', '')
+                            impact = reason.get('impact', '')
+                            score = reason.get('score', 0)
+                            description = reason.get('description', '')
                             
-                            st.metric(
-                                "예측 방향",
-                                f"{direction_emoji} {prediction['direction_text']}",
-                            )
-                        
-                        with col_pred2:
-                            confidence_pct = prediction['confidence'] * 100
-                            st.metric(
-                                "신뢰도",
-                                f"{confidence_pct:.1f}%",
-                                help="모델의 예측 신뢰도"
-                            )
-                        
-                        with col_pred3:
-                            st.metric(
-                                "종합 점수",
-                                f"{prediction['score']:.1f}",
-                                help="양수: 긍정적, 음수: 부정적"
-                            )
-                        
-                        # 주요 요인 - 컴팩트하게 표시
-                        if prediction['factors']:
-                            st.markdown("**📊 주요 요인**")
-                            factors_text = " • ".join(prediction['factors'])
-                            st.info(factors_text)
-                        
-                        # 상세 근거 표시 (NEW!)
-                        if prediction.get('detailed_reasons'):
-                            st.markdown("---")
-                            st.markdown("#### 📋 예측 근거 상세")
+                            # 영향도에 따른 색상
+                            if impact == 'positive':
+                                badge_color = '#d4edda'
+                                text_color = '#155724'
+                                icon = '✅'
+                            else:
+                                badge_color = '#f8d7da'
+                                text_color = '#721c24'
+                                icon = '⚠️'
                             
-                            for reason in prediction['detailed_reasons']:
-                                category = reason.get('category', '')
-                                impact = reason.get('impact', '')
-                                score = reason.get('score', 0)
-                                description = reason.get('description', '')
-                                
-                                # 영향도에 따른 색상
-                                if impact == 'positive':
-                                    badge_color = '#d4edda'
-                                    text_color = '#155724'
-                                    icon = '✅'
-                                else:
-                                    badge_color = '#f8d7da'
-                                    text_color = '#721c24'
-                                    icon = '⚠️'
-                                
-                                # HTML 카드로 표시
-                                reason_html = f"""
-                                <div style="
-                                    background-color: {badge_color};
-                                    border-left: 4px solid {text_color};
-                                    padding: 12px 16px;
-                                    margin-bottom: 12px;
-                                    border-radius: 4px;
-                                ">
-                                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                                        <strong style="color: {text_color};">{icon} {category}</strong>
-                                        <span style="color: {text_color}; font-weight: bold;">점수: {score:+.1f}</span>
-                                    </div>
+                            # HTML 카드로 표시
+                            reason_html = f"""
+                            <div style="
+                                background-color: {badge_color};
+                                border-left: 4px solid {text_color};
+                                padding: 12px 16px;
+                                margin-bottom: 12px;
+                                border-radius: 4px;
+                            ">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <strong style="color: {text_color};">{icon} {category}</strong>
+                                    <span style="color: {text_color}; font-weight: bold;">점수: {score:+.1f}</span>
+                                </div>
                                     <div style="color: {text_color}; margin-top: 8px;">
                                         {description}
                                     </div>
                                 </div>
                                 """
-                                st.markdown(reason_html, unsafe_allow_html=True)
-                                
-                                # 뉴스 관련 근거면 뉴스 제목 표시
-                                if 'news_list' in reason and reason['news_list']:
-                                    st.markdown("**📰 관련 뉴스**")
-                                    for news_item in reason['news_list']:
-                                        news_title = news_item.get('news_title', '')
-                                        sentiment = news_item.get('sentiment', 'neutral')
-                                        avg_return = news_item.get('avg_return_5d', 0)
-                                        
-                                        sentiment_emoji = {
-                                            'positive': '😊',
-                                            'negative': '😟',
-                                            'neutral': '😐'
-                                        }.get(sentiment, '❓')
-                                        
-                                        st.markdown(f"- {sentiment_emoji} {news_title} (5일 평균: {avg_return:+.2f}%)")
-                                    st.markdown("")
+                            st.markdown(reason_html, unsafe_allow_html=True)
+                            
+                            # 뉴스 관련 근거면 뉴스 제목 표시
+                            if 'news_list' in reason and reason['news_list']:
+                                st.markdown("**📰 관련 뉴스**")
+                                for news_item in reason['news_list']:
+                                    news_title = news_item.get('news_title', '')
+                                    sentiment = news_item.get('sentiment', 'neutral')
+                                    avg_return = news_item.get('avg_return_5d', 0)
+                                    
+                                    sentiment_emoji = {
+                                        'positive': '😊',
+                                        'negative': '😟',
+                                        'neutral': '😐'
+                                    }.get(sentiment, '❓')
+                                    
+                                    st.markdown(f"- {sentiment_emoji} {news_title} (5일 평균: {avg_return:+.2f}%)")
+                                st.markdown("")
+                    
+                    # 긍정/부정 뉴스 요약
+                    if prediction.get('positive_news') or prediction.get('negative_news'):
+                        st.markdown("---")
+                        st.markdown("#### 📰 뉴스 감성 분석")
                         
-                        # 긍정/부정 뉴스 요약
-                        if prediction.get('positive_news') or prediction.get('negative_news'):
-                            st.markdown("---")
-                            st.markdown("#### 📰 뉴스 감성 분석")
-                            
-                            col_news1, col_news2 = st.columns(2)
-                            
-                            with col_news1:
-                                if prediction.get('positive_news'):
-                                    st.markdown("**😊 긍정 뉴스**")
-                                    for news in prediction['positive_news'][:3]:
-                                        title = news.get('news_title', '')[:50] + '...'
-                                        st.markdown(f"- {title}")
-                            
-                            with col_news2:
-                                if prediction.get('negative_news'):
-                                    st.markdown("**😟 부정 뉴스**")
-                                    for news in prediction['negative_news'][:3]:
-                                        title = news.get('news_title', '')[:50] + '...'
-                                        st.markdown(f"- {title}")
+                        col_news1, col_news2 = st.columns(2)
                         
-                        # 상세 분석은 expander로 유지 (선택적)
-                        with st.expander("📊 통계 데이터 보기", expanded=False):
-                            # 기술적 지표 (NEW!)
-                            if prediction.get('technical_analysis'):
-                                st.markdown("**🔧 기술적 지표**")
-                                tech = prediction['technical_analysis']
-                                
-                                col_t1, col_t2 = st.columns(2)
-                                
-                                with col_t1:
-                                    # 골든크로스/데드크로스
-                                    if tech.get('golden_cross'):
-                                        st.success("✅ 골든크로스 발생!")
-                                    if tech.get('dead_cross'):
-                                        st.error("⚠️ 데드크로스 발생!")
-                                    
-                                    # RSI
-                                    if 'rsi' in tech:
-                                        rsi_val = tech['rsi']
-                                        rsi_sig = tech.get('rsi_signal', '')
-                                        st.write(f"📊 RSI: {rsi_val:.1f} ({rsi_sig})")
-                                    
-                                    # MACD
-                                    if 'macd_trend' in tech:
-                                        st.write(f"📈 MACD: {tech['macd_trend']}")
-                                
-                                with col_t2:
-                                    # 볼린저 밴드
-                                    if 'bb_signal' in tech:
-                                        st.write(f"📉 볼린저: {tech['bb_signal']}")
-                                    
-                                    # 스토캐스틱
-                                    if 'stoch_signal' in tech:
-                                        st.write(f"📊 스토캐스틱: {tech['stoch_signal']}")
-                                    
-                                    # 이동평균선
-                                    if 'ma_signals' in tech and tech['ma_signals']:
-                                        st.write(f"📍 이평선: {', '.join(tech['ma_signals'][:2])}")
-                                
-                                st.divider()
-                            
-                            # 주가 패턴
-                            if prediction.get('price_patterns'):
-                                st.markdown("**주가 패턴**")
-                                patterns = prediction['price_patterns']
-                                
-                                col_p1, col_p2 = st.columns(2)
-                                with col_p1:
-                                    trend_emoji = '📈' if patterns.get('trend') == 'uptrend' else '📉'
-                                    st.write(f"{trend_emoji} 추세: {patterns.get('trend', 'N/A')}")
-                                    st.write(f"📊 변동성: {patterns.get('volatility', 0):.2f}%")
-                                
-                                with col_p2:
-                                    volume_emoji = '🔥' if patterns.get('volume_trend') == 'increasing' else '❄️'
-                                    st.write(f"{volume_emoji} 거래량: {patterns.get('volume_trend', 'N/A')}")
-                                    if patterns.get('avg_volume'):
-                                        st.write(f"평균: {patterns['avg_volume']:,.0f}")
-                                
-                                st.divider()
-                            
-                            # 재무 추势
-                            if prediction.get('finance_trends'):
-                                st.markdown("**재무 지표 추세**")
-                                trends = prediction['finance_trends']
-                                
-                                for key, value in trends.items():
-                                    if 'trend' in key:
-                                        indicator = key.replace('_trend', '').upper()
-                                        emoji = '✅' if value == 'improving' else '⚠️'
-                                        st.write(f"{emoji} {indicator}: {value}")
-                                
-                                st.divider()
-                            
-                            # 뉴스-주가 상관관계
-                            if prediction.get('correlations'):
-                                st.markdown("**뉴스-주가 상관관계**")
-                                correlations = prediction['correlations']
-                                
-                                if correlations:
-                                    match_rate = sum(1 for c in correlations if c['sentiment_match']) / len(correlations) * 100
-                                    st.info(f"📊 감성-주가 일치율: {match_rate:.1f}%")
-                                    
-                                    # 간단한 요약
-                                    corr_df = pd.DataFrame(correlations)
-                                    st.dataframe(
-                                        corr_df.head(3)[['news_title', 'sentiment', 'avg_return_5d']],
-                                        use_container_width=True,
-                                        hide_index=True
-                                    )
+                        with col_news1:
+                            if prediction.get('positive_news'):
+                                st.markdown("**😊 긍정 뉴스**")
+                                for news in prediction['positive_news'][:3]:
+                                    title = news.get('news_title', '')[:50] + '...'
+                                    st.markdown(f"- {title}")
                         
-                        st.caption("⚠️ 본 예측은 참고용이며 투자 조언이 아닙니다.")
-                    else:
-                        st.info("AI 예측 데이터를 불러올 수 없습니다.")
+                        with col_news2:
+                            if prediction.get('negative_news'):
+                                st.markdown("**😟 부정 뉴스**")
+                                for news in prediction['negative_news'][:3]:
+                                    title = news.get('news_title', '')[:50] + '...'
+                                    st.markdown(f"- {title}")
+                    
+                    # 상세 분석은 expander로 유지 (선택적)
+                    with st.expander("📊 통계 데이터 보기", expanded=False):
+                        # 기술적 지표 (NEW!)
+                        if prediction.get('technical_analysis'):
+                            st.markdown("**🔧 기술적 지표**")
+                            tech = prediction['technical_analysis']
+                            
+                            col_t1, col_t2 = st.columns(2)
+                            
+                            with col_t1:
+                                # 골든크로스/데드크로스
+                                if tech.get('golden_cross'):
+                                    st.success("✅ 골든크로스 발생!")
+                                if tech.get('dead_cross'):
+                                    st.error("⚠️ 데드크로스 발생!")
+                                
+                                # RSI
+                                if 'rsi' in tech:
+                                    rsi_val = tech['rsi']
+                                    rsi_sig = tech.get('rsi_signal', '')
+                                    st.write(f"📊 RSI: {rsi_val:.1f} ({rsi_sig})")
+                                
+                                # MACD
+                                if 'macd_trend' in tech:
+                                    st.write(f"📈 MACD: {tech['macd_trend']}")
+                            
+                            with col_t2:
+                                # 볼린저 밴드
+                                if 'bb_signal' in tech:
+                                    st.write(f"📉 볼린저: {tech['bb_signal']}")
+                                
+                                # 스토캐스틱
+                                if 'stoch_signal' in tech:
+                                    st.write(f"📊 스토캐스틱: {tech['stoch_signal']}")
+                                
+                                # 이동평균선
+                                if 'ma_signals' in tech and tech['ma_signals']:
+                                    st.write(f"📍 이평선: {', '.join(tech['ma_signals'][:2])}")
+                            
+                            st.divider()
+                        
+                        # 주가 패턴
+                        if prediction.get('price_patterns'):
+                            st.markdown("**주가 패턴**")
+                            patterns = prediction['price_patterns']
+                            
+                            col_p1, col_p2 = st.columns(2)
+                            with col_p1:
+                                trend_emoji = '📈' if patterns.get('trend') == 'uptrend' else '📉'
+                                st.write(f"{trend_emoji} 추세: {patterns.get('trend', 'N/A')}")
+                                st.write(f"📊 변동성: {patterns.get('volatility', 0):.2f}%")
+                            
+                            with col_p2:
+                                volume_emoji = '🔥' if patterns.get('volume_trend') == 'increasing' else '❄️'
+                                st.write(f"{volume_emoji} 거래량: {patterns.get('volume_trend', 'N/A')}")
+                                if patterns.get('avg_volume'):
+                                    st.write(f"평균: {patterns['avg_volume']:,.0f}")
+                            
+                            st.divider()
+                        
+                        # 재무 추势
+                        if prediction.get('finance_trends'):
+                            st.markdown("**재무 지표 추세**")
+                            trends = prediction['finance_trends']
+                            
+                            for key, value in trends.items():
+                                if 'trend' in key:
+                                    indicator = key.replace('_trend', '').upper()
+                                    emoji = '✅' if value == 'improving' else '⚠️'
+                                    st.write(f"{emoji} {indicator}: {value}")
+                            
+                            st.divider()
+                        
+                        # 뉴스-주가 상관관계
+                        if prediction.get('correlations'):
+                            st.markdown("**뉴스-주가 상관관계**")
+                            correlations = prediction['correlations']
+                            
+                            if correlations:
+                                match_rate = sum(1 for c in correlations if c['sentiment_match']) / len(correlations) * 100
+                                st.info(f"📊 감성-주가 일치율: {match_rate:.1f}%")
+                                
+                                # 간단한 요약
+                                corr_df = pd.DataFrame(correlations)
+                                st.dataframe(
+                                    corr_df.head(3)[['news_title', 'sentiment', 'avg_return_5d']],
+                                    use_container_width=True,
+                                    hide_index=True
+                                )
+                    
+                    st.caption("⚠️ 본 예측은 참고용이며 투자 조언이 아닙니다.")
+                else:
+                    st.info("AI 예측 데이터를 불러올 수 없습니다.")
             
-                # === 탭 3: 차트 ===
+            # === 탭 3: 차트 ===
             with tab3:
                 # 주가 차트 (기존 코드 이동)
                 if price_df is not None and not price_df.empty and code:
@@ -1387,9 +1378,6 @@ def render_news_page(signals: pd.DataFrame, selected_date: pd.Timestamp, selecte
 
 def render_kakao_section(signals_df: pd.DataFrame, selected_date: pd.Timestamp) -> None:
     """카카오톡 전송 섹션 렌더링"""
-    with st.expander("📱 카카오톡으로 전송하기", expanded=False):
-        st.caption("선택한 종목 정보를 카카오톡으로 전송합니다")
-    
     # 세션 상태 초기화
     if "kakao_sender" not in st.session_state:
         st.session_state.kakao_sender = KakaoMessageSender()

@@ -8,7 +8,6 @@ import plotly.graph_objects as go
 
 # Phase 4 모듈 import
 from app.portfolio import PortfolioManager
-from app.backtesting import BacktestingEngine
 from app.comparison import ComparisonAnalyzer, SectorAnalyzer
 from app.export import DataExporter, ReportGenerator, ChartExporter
 from app.advanced_charts import CandlePatternRecognizer, CorrelationAnalyzer, VolumeAnalyzer
@@ -17,6 +16,71 @@ from app.settings import UserSettings, ThemeManager, DisplaySettings
 # 기존 모듈
 from crawling_kospi import CrawlingKospi
 from app.data import load_stock_data
+
+
+# ===== 캐싱 함수들 (성능 최적화) =====
+
+@st.cache_data(ttl=3600)  # 1시간 캐싱
+def load_kospi_data():
+    """저장된 KOSPI 200 주가 데이터 로드 (캐싱)"""
+    import os
+    try:
+        crawler = CrawlingKospi()
+        kospi_df = crawler.get_all_kospi_data()
+        return kospi_df
+    except Exception as e:
+        st.warning(f"KOSPI 데이터 로드 오류: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)  # 1시간 캐싱
+def load_kospi_name_map():
+    """종목명 매핑 로드 (캐싱)"""
+    import os
+    kospi_list_file = "data/kospi_list.pkl"
+    name_map = {}
+    
+    if os.path.exists(kospi_list_file):
+        try:
+            kospi_list_df = pd.read_pickle(kospi_list_file)
+            # 최신 종목명 사용
+            name_map = kospi_list_df.drop_duplicates(subset=['code'], keep='last')[['code', 'name']].set_index('code')['name'].to_dict()
+        except Exception as e:
+            pass
+    
+    return name_map
+
+
+@st.cache_data(ttl=3600)  # 1시간 캐싱
+def prepare_sector_analysis_data(kospi_df: pd.DataFrame, name_map: dict) -> pd.DataFrame:
+    """섹터 분석용 데이터 전처리 (캐싱)"""
+    if kospi_df.empty:
+        return pd.DataFrame()
+    
+    processed_df = kospi_df.copy()
+    
+    # 필요한 컬럼 추가/변환
+    if 'code' in processed_df.columns:
+        processed_df.rename(columns={'code': '종목코드'}, inplace=True)
+    
+    # 최신 날짜의 데이터만 사용
+    if 'date' in processed_df.columns:
+        latest_date = pd.to_datetime(processed_df['date']).max()
+        processed_df = processed_df[pd.to_datetime(processed_df['date']) == latest_date]
+    
+    # 수익률 계산
+    if '등락률' not in processed_df.columns:
+        processed_df['등락률'] = ((processed_df['close'] - processed_df['open']) / processed_df['open'] * 100).fillna(0)
+    
+    # 종목명 추가
+    processed_df['종목명'] = processed_df['종목코드'].apply(lambda x: name_map.get(x, x))
+    processed_df['현재가'] = processed_df['close']
+    processed_df['AI점수'] = 50  # 기본값
+    
+    return processed_df
+
+
+# =================================
 
 
 def render_sidebar_menu():
@@ -28,7 +92,6 @@ def render_sidebar_menu():
     pages = {
         "🏠 메인 대시보드": "main",
         "💼 포트폴리오": "portfolio",
-        "📈 백테스팅": "backtesting",
         "🌐 섹터 분석": "sector",
         "⚙️ 설정": "settings"
     }
@@ -233,6 +296,10 @@ def page_portfolio():
                 st.subheader("🔔 매도 타이밍 알림")
                 sell_signals = portfolio_mgr.get_all_sell_signals(current_prices, price_histories, stop_loss_rate)
                 
+                # 포트폴리오에 있는 종목만 필터링
+                portfolio_codes = set(portfolio_df['종목코드'].values) if not portfolio_df.empty else set()
+                sell_signals = [s for s in sell_signals if s['code'] in portfolio_codes]
+                
                 if sell_signals:
                     for signal in sell_signals:
                         if signal['recommendation'] == "즉시 손절":
@@ -264,6 +331,49 @@ def page_portfolio():
                                 st.write(sig)
                 else:
                     st.info("현재 매도 신호가 있는 종목이 없습니다. 👍")
+                
+                st.markdown("---")
+                
+                # 요약 테이블
+                st.subheader("📋 요약 테이블")
+                
+                # 수익률에 따른 색상 적용 함수
+                def color_negative_red(val):
+                    if isinstance(val, (int, float)):
+                        color = 'red' if val < 0 else 'green' if val > 0 else 'gray'
+                        return f'color: {color}'
+                    return ''
+                
+                # 세금 관련 컬럼 포함 여부 확인
+                format_dict = {
+                    '평균단가': '{:,.0f}',
+                    '현재가': '{:,.0f}',
+                    '매입금액': '{:,.0f}',
+                    '평가금액': '{:,.0f}',
+                    '평가손익': '{:,.0f}',
+                    '수익률': '{:.2f}'
+                }
+                
+                if '예상세금' in portfolio_df.columns:
+                    format_dict['예상세금'] = '{:,.0f}'
+                if '평가금액(세전)' in portfolio_df.columns:
+                    format_dict['평가금액(세전)'] = '{:,.0f}'
+                
+                st.dataframe(
+                    portfolio_df.style.format(format_dict).applymap(color_negative_red, subset=['수익률']),
+                    use_container_width=True
+                )
+                
+                # 원형 차트
+                fig = go.Figure(data=[go.Pie(
+                    labels=portfolio_df['종목명'],
+                    values=portfolio_df['평가금액'],
+                    hole=0.4,
+                    textinfo='label+percent',
+                    textposition='auto'
+                )])
+                fig.update_layout(title="포트폴리오 비중", height=500)
+                st.plotly_chart(fig, use_container_width=True)
                 
                 st.markdown("---")
                 
@@ -369,49 +479,6 @@ def page_portfolio():
                             
                             for sig in analysis['signals']:
                                 st.write(f"- {sig}")
-                
-                st.markdown("---")
-                
-                # 요약 테이블
-                st.subheader("📋 요약 테이블")
-                
-                # 수익률에 따른 색상 적용 함수
-                def color_negative_red(val):
-                    if isinstance(val, (int, float)):
-                        color = 'red' if val < 0 else 'green' if val > 0 else 'gray'
-                        return f'color: {color}'
-                    return ''
-                
-                # 세금 관련 컬럼 포함 여부 확인
-                format_dict = {
-                    '평균단가': '{:,.0f}',
-                    '현재가': '{:,.0f}',
-                    '매입금액': '{:,.0f}',
-                    '평가금액': '{:,.0f}',
-                    '평가손익': '{:,.0f}',
-                    '수익률': '{:.2f}'
-                }
-                
-                if '예상세금' in portfolio_df.columns:
-                    format_dict['예상세금'] = '{:,.0f}'
-                if '평가금액(세전)' in portfolio_df.columns:
-                    format_dict['평가금액(세전)'] = '{:,.0f}'
-                
-                st.dataframe(
-                    portfolio_df.style.format(format_dict).applymap(color_negative_red, subset=['수익률']),
-                    use_container_width=True
-                )
-                
-                # 원형 차트
-                fig = go.Figure(data=[go.Pie(
-                    labels=portfolio_df['종목명'],
-                    values=portfolio_df['평가금액'],
-                    hole=0.4,
-                    textinfo='label+percent',
-                    textposition='auto'
-                )])
-                fig.update_layout(title="포트폴리오 비중", height=500)
-                st.plotly_chart(fig, use_container_width=True)
     
     with tab2:
         st.subheader("보유 종목 추가")
@@ -594,105 +661,6 @@ def page_portfolio():
             - 계산: (10×70,000 + 5×80,000) ÷ 15 = 73,333원
             """)
 
-
-def page_backtesting():
-    """백테스팅 페이지"""
-    st.title("📈 백테스팅 & 정확도 검증")
-    
-    backtest_engine = BacktestingEngine()
-    
-    tab1, tab2, tab3 = st.tabs(["🎯 전략 백테스팅", "📊 AI 예측 정확도", "📈 성과 비교"])
-    
-    with tab1:
-        st.subheader("기술적 지표 전략 백테스팅")
-        
-        col1, col2 = st.columns([1, 3])
-        
-        with col1:
-            code = st.text_input("종목코드", value="005930")
-            period = st.selectbox("기간", ["1y", "2y", "3y", "5y"])
-            strategy = st.selectbox("전략", ["골든크로스", "RSI(30/70)", "RSI(20/80)"])
-        
-        if st.button("백테스트 실행"):
-            with st.spinner("백테스팅 중..."):
-                try:
-                    df = load_stock_data(code, period=period)
-                    
-                    if strategy == "골든크로스":
-                        result = backtest_engine.backtest_technical_strategy(df, 'golden_cross')
-                    elif strategy == "RSI(30/70)":
-                        result = backtest_engine.backtest_rsi_strategy(df, 30, 70)
-                    else:
-                        result = backtest_engine.backtest_rsi_strategy(df, 20, 80)
-                    
-                    # 결과 표시
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("총 수익률", f"{result['total_return']:.2f}%")
-                    with col2:
-                        st.metric("승률", f"{result['win_rate']:.1f}%")
-                    with col3:
-                        st.metric("거래 횟수", result['num_trades'])
-                    with col4:
-                        st.metric("평균 수익", f"{result.get('avg_profit', 0):.2f}%")
-                    
-                    # 거래 상세
-                    if result.get('signals'):
-                        st.markdown("#### 거래 내역")
-                        signals_df = pd.DataFrame(result['signals'])
-                        st.dataframe(signals_df, use_container_width=True)
-                    
-                except Exception as e:
-                    st.error(f"백테스팅 오류: {e}")
-    
-    with tab2:
-        st.subheader("AI 예측 정확도 추적")
-        
-        code = st.text_input("종목코드", value="005930", key="ai_accuracy_code")
-        
-        if st.button("정확도 확인"):
-            try:
-                df = load_stock_data(code, period="1mo")
-                if not df.empty:
-                    current_price = df['Close'].iloc[-1]
-                    result = backtest_engine.verify_predictions(code, current_price)
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("전체 예측", f"{result['total']}회")
-                    with col2:
-                        st.metric("검증 완료", f"{result['verified']}회")
-                    with col3:
-                        st.metric("정확한 예측", f"{result['correct']}회")
-                    with col4:
-                        st.metric("정확도", f"{result['accuracy']:.1f}%")
-                    
-                    # 추이 그래프
-                    trend_df = backtest_engine.get_prediction_accuracy_trend(code)
-                    if not trend_df.empty:
-                        st.markdown("#### 예측 이력")
-                        st.dataframe(trend_df, use_container_width=True)
-            
-            except Exception as e:
-                st.error(f"오류: {e}")
-    
-    with tab3:
-        st.subheader("전략 성과 비교")
-        
-        code = st.text_input("종목코드", value="005930", key="strategy_compare_code")
-        
-        if st.button("비교 분석"):
-            with st.spinner("분석 중..."):
-                try:
-                    df = load_stock_data(code, period="2y")
-                    comparison_df = backtest_engine.compare_strategies(df)
-                    
-                    st.dataframe(comparison_df, use_container_width=True)
-                    
-                except Exception as e:
-                    st.error(f"오류: {e}")
-
-
 def page_alerts():
     """알림 관리 페이지"""
     st.title("🔔 알림 관리")
@@ -808,35 +776,62 @@ def page_sector():
     """섹터 분석 페이지"""
     st.title("🌐 섹터 분석")
     
-    if st.button("섹터 분석 실행"):
-        with st.spinner("KOSPI 200 데이터 수집 중..."):
+    st.markdown("""
+    KOSPI 200 섹터별 성과 분석 및 트렌드 파악
+    """)
+    
+    refresh_data = st.button("📊 섹터 분석 실행", use_container_width=True)
+    
+    if refresh_data:
+        with st.spinner("섹터 분석 데이터 처리 중..."):
             try:
-                crawler = CrawlingKospi()
-                kospi_df = crawler.get_all_kospi_data()
+                import os
+                stock_file = "data/stock.pkl"
                 
-                if not kospi_df.empty:
-                    analyzer = SectorAnalyzer()
+                if not os.path.exists(stock_file):
+                    st.warning("⚠️ 주가 데이터가 없습니다. 메인 대시보드에서 시그널을 먼저 수집해주세요.")
+                else:
+                    # 캐싱된 데이터 로드
+                    kospi_df = load_kospi_data()
                     
-                    # 섹터별 수익률
-                    sector_perf = analyzer.get_sector_performance(kospi_df)
-                    
-                    st.markdown("### 섹터별 등락률")
-                    st.dataframe(sector_perf, use_container_width=True)
-                    
-                    # 히트맵
-                    fig = analyzer.create_sector_heatmap(sector_perf)
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # 섹터별 상위 종목
-                    st.markdown("### 섹터별 상위 종목")
-                    top_stocks = analyzer.get_top_stocks_by_sector(kospi_df, top_n=3)
-                    
-                    for sector, df in top_stocks.items():
-                        with st.expander(f"📊 {sector}"):
-                            st.dataframe(df, use_container_width=True)
+                    if kospi_df.empty:
+                        st.error("❌ 데이터를 불러올 수 없습니다.")
+                    else:
+                        # 캐싱된 종목명 매핑 로드
+                        name_map = load_kospi_name_map()
+                        
+                        # 캐싱된 데이터 전처리
+                        kospi_df = prepare_sector_analysis_data(kospi_df, name_map)
+                        
+                        if not kospi_df.empty:
+                            # 섹터별 수익률
+                            sector_perf = SectorAnalyzer.get_sector_performance(kospi_df)
+                            
+                            st.markdown("### 📈 섹터별 등락률")
+                            st.dataframe(sector_perf, use_container_width=True)
+                            
+                            # 히트맵
+                            if not sector_perf.empty:
+                                fig = SectorAnalyzer.create_sector_heatmap(sector_perf)
+                                st.plotly_chart(fig, use_container_width=True)
+                            
+                            # 섹터별 상위 종목
+                            st.markdown("### 📊 섹터별 상위 종목")
+                            top_stocks = SectorAnalyzer.get_top_stocks_by_sector(kospi_df, top_n=5)
+                            
+                            if top_stocks:
+                                for sector, df_sector in top_stocks.items():
+                                    with st.expander(f"{sector} ({len(df_sector)}개)"):
+                                        st.dataframe(df_sector, use_container_width=True)
+                            else:
+                                st.info("이용 가능한 섹터 데이터가 없습니다.")
+                        else:
+                            st.warning("분석할 데이터가 없습니다.")
             
             except Exception as e:
-                st.error(f"오류: {e}")
+                st.error(f"오류: {str(e)}")
+                import traceback
+                st.error(traceback.format_exc())
 
 
 def page_advanced_charts():
@@ -1042,8 +1037,6 @@ def run_phase4_app():
         menu_to_page = {
             "🏠 메인 대시보드": "main",
             "💼 포트폴리오": "portfolio",
-            "📈 백테스팅": "backtesting",
-            "🔔 알림 관리": "alerts",
             "🌐 섹터 분석": "sector",
             "⚙️ 설정": "settings"
         }
@@ -1056,8 +1049,6 @@ def run_phase4_app():
     # 페이지 라우팅
     if page == "portfolio":
         page_portfolio()
-    elif page == "backtesting":
-        page_backtesting()
     elif page == "sector":
         page_sector()
     elif page == "settings":
