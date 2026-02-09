@@ -10,6 +10,7 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional
 import streamlit as st
+import numpy as np
 
 class PortfolioManager:
     """포트폴리오 관리 클래스"""
@@ -18,6 +19,8 @@ class PortfolioManager:
         self.data_dir = data_dir
         self.portfolio_file = os.path.join(data_dir, "portfolio.json")
         self.watchlist_file = os.path.join(data_dir, "watchlist.json")
+        self.asset_history_file = os.path.join(data_dir, "asset_history.json")
+        self.cash_file = os.path.join(data_dir, "cash.json")
         
         # 데이터 디렉토리 생성
         os.makedirs(data_dir, exist_ok=True)
@@ -111,15 +114,30 @@ class PortfolioManager:
             self.save_watchlist(watchlist)
         return True
     
+    def load_cash(self) -> float:
+        """현금 예수금 조회"""
+        if os.path.exists(self.cash_file):
+            with open(self.cash_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('amount', 0.0)
+        return 0.0
+    
+    def save_cash(self, amount: float) -> bool:
+        """현금 예수금 저장"""
+        cash_data = {
+            'amount': amount,
+            'last_updated': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        with open(self.cash_file, 'w', encoding='utf-8') as f:
+            json.dump(cash_data, f, ensure_ascii=False, indent=2)
+        return True
+    
     def calculate_portfolio_value(self, current_prices: Dict[str, float]) -> pd.DataFrame:
-        """포트폴리오 현재 가치 계산 (세금 포함)"""
+        """포트폴리오 현재 가치 계산"""
         portfolio = self.load_portfolio()
         
         if not portfolio:
             return pd.DataFrame()
-        
-        # 증권거래세율 (매도 시)
-        TAX_RATE = 0.0023  # 0.23%
         
         data = []
         for code, info in portfolio.items():
@@ -127,14 +145,12 @@ class PortfolioManager:
             quantity = info['quantity']
             avg_price = info['avg_price']
             
-            purchase_value = quantity * avg_price
-            current_value = quantity * current_price
+            # 금액 계산
+            purchase_value = quantity * avg_price  # 매입금액
+            current_value = quantity * current_price  # 평가금액
             
-            # 매도 시 세금 계산
-            tax = current_value * TAX_RATE
-            current_value_after_tax = current_value - tax
-            
-            profit = current_value_after_tax - purchase_value
+            # 손익 계산
+            profit = current_value - purchase_value
             profit_rate = (profit / purchase_value * 100) if purchase_value > 0 else 0
             
             data.append({
@@ -144,9 +160,7 @@ class PortfolioManager:
                 '평균단가': avg_price,
                 '현재가': current_price,
                 '매입금액': purchase_value,
-                '평가금액(세전)': current_value,
-                '예상세금': tax,
-                '평가금액': current_value_after_tax,
+                '평가금액': current_value,
                 '평가손익': profit,
                 '수익률': profit_rate,
                 '매수일': info['purchase_date']
@@ -156,26 +170,32 @@ class PortfolioManager:
         return df.sort_values('평가손익', ascending=False)
     
     def get_portfolio_summary(self, current_prices: Dict[str, float]) -> Dict:
-        """포트폴리오 요약 통계"""
+        """포트폴리오 요약 통계 (현금 포함)"""
         df = self.calculate_portfolio_value(current_prices)
+        cash = self.load_cash()
         
         if df.empty:
             return {
-                'total_value': 0,
+                'stock_value': 0,
+                'total_value': cash,  # 현금만
                 'total_profit': 0,
                 'total_profit_rate': 0,
                 'total_purchase': 0,
-                'total_tax': 0,
-                'num_stocks': 0
+                'num_stocks': 0,
+                'cash': cash
             }
         
+        stock_value = df['평가금액'].sum()
+        total_value = stock_value + cash
+        
         return {
-            'total_value': df['평가금액'].sum(),
+            'stock_value': stock_value,
+            'total_value': total_value,
             'total_profit': df['평가손익'].sum(),
             'total_profit_rate': (df['평가손익'].sum() / df['매입금액'].sum() * 100) if df['매입금액'].sum() > 0 else 0,
             'total_purchase': df['매입금액'].sum(),
-            'total_tax': df['예상세금'].sum(),
-            'num_stocks': len(df)
+            'num_stocks': len(df),
+            'cash': cash
         }
     
     def get_sector_allocation(self, sector_info: Dict[str, str]) -> pd.DataFrame:
@@ -341,3 +361,261 @@ class PortfolioManager:
                     sell_signals.append(analysis)
         
         return sell_signals
+    
+    def load_asset_history(self) -> Dict:
+        """일자별 자산현황 히스토리 불러오기"""
+        if os.path.exists(self.asset_history_file):
+            try:
+                with open(self.asset_history_file, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    if not content:
+                        return {}
+                    return json.loads(content)
+            except (json.JSONDecodeError, ValueError):
+                # 손상된 JSON 파일은 무시하고 빈 딕셔너리 반환
+                return {}
+        return {}
+    
+    def save_asset_history(self, history: Dict):
+        """일자별 자산현황 히스토리 저장"""
+        with open(self.asset_history_file, 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    
+    def record_daily_asset(self, stock_value: float, total_value: float, total_profit: float, 
+                          purchase_value: float, num_stocks: int, cash: float) -> bool:
+        """현재 자산 정보를 일자별로 기록 (현금 포함)"""
+        history = self.load_asset_history()
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        # pandas int64/float64를 Python 기본 타입으로 변환 (JSON 직렬화 가능)
+        history[today] = {
+            'stock_value': float(stock_value),       # 주식 평가금액
+            'cash': float(cash),                     # 현금
+            'total_value': float(total_value),       # 총 자산 (주식+현금)
+            'total_profit': float(total_profit),
+            'purchase_value': float(purchase_value),
+            'num_stocks': int(num_stocks),
+            'recorded_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        self.save_asset_history(history)
+        return True
+    
+    def get_asset_history_dataframe(self, days: int = 30) -> pd.DataFrame:
+        """일자별 자산현황을 DataFrame으로 반환 (현금 포함)
+        
+        Args:
+            days: 조회할 일수 (기본값: 30일)
+        
+        Returns:
+            일자, 주식평가금액, 현금, 총자산, 평가손익, 매입금액, 보유종목수로 구성된 DataFrame
+        """
+        history = self.load_asset_history()
+        
+        if not history:
+            return pd.DataFrame()
+        
+        # 날짜순으로 정렬하고 최근 N일만 조회
+        sorted_dates = sorted(history.keys(), reverse=True)[:days]
+        sorted_dates = sorted(sorted_dates)  # 오름차순으로 정렬
+        
+        data = []
+        for date in sorted_dates:
+            record = history[date]
+            # 이전 형식과의 호환성을 위해 stock_value가 없으면 total_value 사용
+            stock_value = record.get('stock_value', record.get('total_value', 0))
+            cash = record.get('cash', 0)
+            total_value = record.get('total_value', stock_value + cash)
+            
+            data.append({
+                '날짜': date,
+                '주식평가금액': stock_value,
+                '현금': cash,
+                '총자산': total_value,
+                '평가손익': record.get('total_profit', 0),
+                '매입금액': record.get('purchase_value', 0),
+                '보유종목수': record.get('num_stocks', 0)
+            })
+        
+        df = pd.DataFrame(data)
+        
+        # 날짜를 datetime으로 변환
+        df['날짜'] = pd.to_datetime(df['날짜'])
+        
+        return df
+    
+    def simulate_take_profit(self, 
+                            price_history: pd.DataFrame,
+                            current_price: float,
+                            avg_price: float,
+                            target_profit_pct: float = 0.05,
+                            holding_days: int = 60,
+                            num_simulations: int = 1000) -> Dict:
+        """
+        익절 시뮬레이션: 목표 수익률에 도달할 확률 계산
+        
+        Args:
+            price_history: 'close' 컬럼을 가진 가격 히스토리 DataFrame
+            current_price: 현재 가격
+            avg_price: 매입 평균가
+            target_profit_pct: 목표 수익률 (기본값: 5%)
+            holding_days: 보유 기간 (기본값: 60일)
+            num_simulations: 시뮬레이션 횟수 (기본값: 1000회)
+        
+        Returns:
+            {
+                'win_rate': 승률 (0~1),
+                'avg_days_to_profit': 평균 도달 일수,
+                'target_profit_price': 목표 익절가,
+                'max_drawdown': 최대 낙폭 확률,
+                'simulations_hit_target': 목표 달성 시뮬레이션 수
+            }
+        """
+        
+        # 가격 히스토리가 부족한 경우
+        if price_history.empty or len(price_history) < 30:
+            return {
+                'win_rate': 0.5,
+                'avg_days_to_profit': holding_days,
+                'target_profit_price': avg_price * (1 + target_profit_pct),
+                'max_drawdown': 0.1,
+                'simulations_hit_target': 0,
+                'note': '데이터 부족'
+            }
+        
+        # 수익률 계산
+        closes = price_history['close'].values
+        returns = np.diff(closes) / closes[:-1]
+        
+        # 일일 수익률의 평균과 표준편차
+        mean_return = np.mean(returns)
+        std_return = np.std(returns)
+        
+        if std_return == 0:
+            std_return = 0.01  # 변동성이 없는 경우 기본값
+        
+        # 목표가
+        target_price = avg_price * (1 + target_profit_pct)
+        
+        # 몬테카를로 시뮬레이션
+        hit_target = 0
+        days_to_target = []
+        max_drawdowns = []
+        
+        np.random.seed(42)
+        
+        for _ in range(num_simulations):
+            # 임의의 수익률로 가격 경로 생성
+            price_path = [current_price]
+            max_price = current_price
+            
+            for day in range(holding_days):
+                # 정규분포에서 일일 수익률 샘플링
+                daily_return = np.random.normal(mean_return, std_return)
+                new_price = price_path[-1] * (1 + daily_return)
+                price_path.append(new_price)
+                
+                # 최대가 추적
+                if new_price > max_price:
+                    max_price = new_price
+                
+                # 목표가 달성했는지 확인
+                if new_price >= target_price and len(days_to_target) < (hit_target + 1):
+                    hit_target += 1
+                    days_to_target.append(day + 1)
+                    break
+            
+            # 최대 낙폭 계산 (현재가 기준)
+            min_price = min(price_path)
+            drawdown = (min_price - current_price) / current_price
+            max_drawdowns.append(abs(drawdown))
+        
+        # 결과 집계
+        win_rate = hit_target / num_simulations
+        avg_days = np.mean(days_to_target) if days_to_target else holding_days
+        
+        return {
+            'win_rate': round(win_rate, 4),
+            'avg_days_to_profit': int(avg_days) if days_to_target else 0,
+            'target_profit_price': round(target_price, 0),
+            'max_drawdown': round(np.mean(max_drawdowns), 4),
+            'simulations_hit_target': hit_target,
+            'num_simulations': num_simulations
+        }
+    
+    def simulate_portfolio_take_profit(self, 
+                                      portfolio_df: pd.DataFrame,
+                                      price_histories: Dict[str, pd.DataFrame],
+                                      target_profit_pct: float = 0.05,
+                                      holding_days: int = 60) -> pd.DataFrame:
+        """
+        포트폴리오 전체에 대한 익절 시뮬레이션
+        
+        Args:
+            portfolio_df: calculate_portfolio_value()에서 반환된 DataFrame
+            price_histories: {종목코드: 가격히스토리 DataFrame} 딕셔너리
+            target_profit_pct: 목표 수익률
+            holding_days: 보유 기간
+        
+        Returns:
+            시뮬레이션 결과 DataFrame
+        """
+        if portfolio_df.empty:
+            return pd.DataFrame()
+        
+        # 필요한 컬럼 확인
+        required_cols = ['종목코드', '종목명', '현재가', '평균단가', '보유수량']
+        for col in required_cols:
+            if col not in portfolio_df.columns:
+                return pd.DataFrame()
+        
+        results = []
+        
+        for idx, row in portfolio_df.iterrows():
+            try:
+                code = row['종목코드']
+                name = row['종목명']
+                current_price = row['현재가']
+                avg_price = row['평균단가']
+                qty = row['보유수량']
+                
+                # 해당 종목의 가격 히스토리가 있는지 확인
+                if code not in price_histories or price_histories[code].empty:
+                    results.append({
+                        '종목코드': code,
+                        '종목명': name,
+                        '승률': '0.0%',
+                        '목표가': int(avg_price * (1 + target_profit_pct)),
+                        '평균도달일': 0,
+                        '최대낙폭': '0.0%',
+                        '현재가': int(current_price),
+                        '보유수량': int(qty),
+                        '비고': '데이터 부족'
+                    })
+                    continue
+                
+                # 시뮬레이션 실행
+                sim_result = self.simulate_take_profit(
+                    price_history=price_histories[code],
+                    current_price=current_price,
+                    avg_price=avg_price,
+                    target_profit_pct=target_profit_pct,
+                    holding_days=holding_days,
+                    num_simulations=1000
+                )
+                
+                results.append({
+                    '종목코드': code,
+                    '종목명': name,
+                    '승률': f"{sim_result['win_rate']*100:.1f}%",
+                    '목표가': int(sim_result['target_profit_price']),
+                    '평균도달일': sim_result['avg_days_to_profit'],
+                    '최대낙폭': f"{sim_result['max_drawdown']*100:.2f}%",
+                    '현재가': int(current_price),
+                    '보유수량': int(qty)
+                })
+            except Exception as e:
+                # 개별 종목에서 오류 발생 시 스킵
+                continue
+        
+        return pd.DataFrame(results)

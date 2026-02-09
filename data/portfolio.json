@@ -117,5 +117,19 @@
     "avg_price": 73700,
     "purchase_date": "2026-02-06",
     "last_updated": "2026-02-06 23:17:07"
+  },
+  "105560": {
+    "name": "KB금융",
+    "quantity": 13,
+    "avg_price": 150100,
+    "purchase_date": "2026-02-09",
+    "last_updated": "2026-02-09 21:41:06"
+  },
+  "251270": {
+    "name": "넷마블",
+    "quantity": 36,
+    "avg_price": 56000,
+    "purchase_date": "2026-02-09",
+    "last_updated": "2026-02-09 21:46:01"
   }
 }

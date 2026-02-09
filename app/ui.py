@@ -362,7 +362,7 @@ def render_table_with_finance(latest: pd.DataFrame, cols: list[str], finance_df:
         
         with st.expander(title, expanded=auto_expand):
             # 탭으로 정보 구조화
-            tab1, tab2, tab3, tab4 = st.tabs(["📊 개요", "🔮 AI 예측", "📈 차트", "📰 뉴스"])
+            tab1, tab2, tab3 = st.tabs(["📊 개요", "📈 차트", "📰 뉴스"])
             
             # === 탭 1: 개요 ===
             with tab1:
@@ -431,264 +431,8 @@ def render_table_with_finance(latest: pd.DataFrame, cols: list[str], finance_df:
                 with col_btn3:
                     st.markdown(f"[📈 투자자별](https://finance.naver.com/item/frgn.naver?code={code})")
             
-            # === 탭 2: AI 예측 ===
+            # === 탭 2: 차트 ===
             with tab2:
-                # AI 주가 예측 분석 (기존 코드 이동)
-                st.markdown("#### 🔮 AI 주가 예측 분석")
-            
-                # 캐시 키로 사용할 데이터 갱신 시간
-                data_refresh_time = st.session_state.get('data_refreshed_at', datetime.datetime(2000, 1, 1))
-                cache_key = f"{code}_{data_refresh_time.isoformat()}"
-            
-                # 예측 결과 캐싱 여부 확인
-                prediction_cache_key = f"prediction_{cache_key}"
-                
-                if prediction_cache_key in st.session_state:
-                    # 캐시된 예측 사용
-                    prediction = st.session_state[prediction_cache_key]
-                else:
-                    # 새로 예측 생성
-                    try:
-                        # 1단계: 뉴스 수집
-                        with st.spinner("🔍 AI 분석 중... (1/3) 뉴스 수집"):
-                            news_data = get_news_data_for_stock(code)
-                        
-                        # 2단계: 온톨로지 구축
-                        with st.spinner("🔍 AI 분석 중... (2/3) 데이터 분석"):
-                            ontology = build_stock_ontology(
-                                code=code,
-                                price_df=price_df,
-                                news_data=news_data,
-                                finance_df=finance_df,
-                                sentiment_analyzer=None
-                            )
-                        
-                        # 3단계: 예측 생성 (기술적 지표 포함)
-                        with st.spinner("🔍 AI 분석 중... (3/3) 예측 생성"):
-                            prediction = ontology.generate_prediction(price_df=price_df, code=code)
-                        
-                        # 캐시에 저장
-                        st.session_state[prediction_cache_key] = prediction
-                        
-                    except Exception as e:
-                        st.warning(f"AI 예측을 생성할 수 없습니다. ({str(e)[:50]}...)")
-                        prediction = None
-                
-                if prediction:
-                    
-                    # 메인 예측 - 3단 구성
-                    col_pred1, col_pred2, col_pred3 = st.columns(3)
-                    
-                    with col_pred1:
-                        direction_emoji = {
-                            'strong_buy': '🚀',
-                            'buy': '📈',
-                            'hold': '➖',
-                            'sell': '📉',
-                            'strong_sell': '⚠️'
-                        }.get(prediction['direction'], '❓')
-                        
-                        st.metric(
-                            "예측 방향",
-                            f"{direction_emoji} {prediction['direction_text']}",
-                        )
-                    
-                    with col_pred2:
-                        confidence_pct = prediction['confidence'] * 100
-                        st.metric(
-                            "신뢰도",
-                            f"{confidence_pct:.1f}%",
-                            help="모델의 예측 신뢰도"
-                        )
-                    
-                    with col_pred3:
-                        st.metric(
-                            "종합 점수",
-                            f"{prediction['score']:.1f}",
-                            help="양수: 긍정적, 음수: 부정적"
-                        )
-                    
-                    # 주요 요인 - 컴팩트하게 표시
-                    if prediction['factors']:
-                        st.markdown("**📊 주요 요인**")
-                        factors_text = " • ".join(prediction['factors'])
-                        st.info(factors_text)
-                    
-                    # 상세 근거 표시 (NEW!)
-                    if prediction.get('detailed_reasons'):
-                        st.markdown("---")
-                        st.markdown("#### 📋 예측 근거 상세")
-                        
-                        for reason in prediction['detailed_reasons']:
-                            category = reason.get('category', '')
-                            impact = reason.get('impact', '')
-                            score = reason.get('score', 0)
-                            description = reason.get('description', '')
-                            
-                            # 영향도에 따른 색상
-                            if impact == 'positive':
-                                badge_color = '#d4edda'
-                                text_color = '#155724'
-                                icon = '✅'
-                            else:
-                                badge_color = '#f8d7da'
-                                text_color = '#721c24'
-                                icon = '⚠️'
-                            
-                            # HTML 카드로 표시
-                            reason_html = f"""
-                            <div style="
-                                background-color: {badge_color};
-                                border-left: 4px solid {text_color};
-                                padding: 12px 16px;
-                                margin-bottom: 12px;
-                                border-radius: 4px;
-                            ">
-                                <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <strong style="color: {text_color};">{icon} {category}</strong>
-                                    <span style="color: {text_color}; font-weight: bold;">점수: {score:+.1f}</span>
-                                </div>
-                                    <div style="color: {text_color}; margin-top: 8px;">
-                                        {description}
-                                    </div>
-                                </div>
-                                """
-                            st.markdown(reason_html, unsafe_allow_html=True)
-                            
-                            # 뉴스 관련 근거면 뉴스 제목 표시
-                            if 'news_list' in reason and reason['news_list']:
-                                st.markdown("**📰 관련 뉴스**")
-                                for news_item in reason['news_list']:
-                                    news_title = news_item.get('news_title', '')
-                                    sentiment = news_item.get('sentiment', 'neutral')
-                                    avg_return = news_item.get('avg_return_5d', 0)
-                                    
-                                    sentiment_emoji = {
-                                        'positive': '😊',
-                                        'negative': '😟',
-                                        'neutral': '😐'
-                                    }.get(sentiment, '❓')
-                                    
-                                    st.markdown(f"- {sentiment_emoji} {news_title} (5일 평균: {avg_return:+.2f}%)")
-                                st.markdown("")
-                    
-                    # 긍정/부정 뉴스 요약
-                    if prediction.get('positive_news') or prediction.get('negative_news'):
-                        st.markdown("---")
-                        st.markdown("#### 📰 뉴스 감성 분석")
-                        
-                        col_news1, col_news2 = st.columns(2)
-                        
-                        with col_news1:
-                            if prediction.get('positive_news'):
-                                st.markdown("**😊 긍정 뉴스**")
-                                for news in prediction['positive_news'][:3]:
-                                    title = news.get('news_title', '')[:50] + '...'
-                                    st.markdown(f"- {title}")
-                        
-                        with col_news2:
-                            if prediction.get('negative_news'):
-                                st.markdown("**😟 부정 뉴스**")
-                                for news in prediction['negative_news'][:3]:
-                                    title = news.get('news_title', '')[:50] + '...'
-                                    st.markdown(f"- {title}")
-                    
-                    # 상세 분석은 expander로 유지 (선택적)
-                    with st.expander("📊 통계 데이터 보기", expanded=False):
-                        # 기술적 지표 (NEW!)
-                        if prediction.get('technical_analysis'):
-                            st.markdown("**🔧 기술적 지표**")
-                            tech = prediction['technical_analysis']
-                            
-                            col_t1, col_t2 = st.columns(2)
-                            
-                            with col_t1:
-                                # 골든크로스/데드크로스
-                                if tech.get('golden_cross'):
-                                    st.success("✅ 골든크로스 발생!")
-                                if tech.get('dead_cross'):
-                                    st.error("⚠️ 데드크로스 발생!")
-                                
-                                # RSI
-                                if 'rsi' in tech:
-                                    rsi_val = tech['rsi']
-                                    rsi_sig = tech.get('rsi_signal', '')
-                                    st.write(f"📊 RSI: {rsi_val:.1f} ({rsi_sig})")
-                                
-                                # MACD
-                                if 'macd_trend' in tech:
-                                    st.write(f"📈 MACD: {tech['macd_trend']}")
-                            
-                            with col_t2:
-                                # 볼린저 밴드
-                                if 'bb_signal' in tech:
-                                    st.write(f"📉 볼린저: {tech['bb_signal']}")
-                                
-                                # 스토캐스틱
-                                if 'stoch_signal' in tech:
-                                    st.write(f"📊 스토캐스틱: {tech['stoch_signal']}")
-                                
-                                # 이동평균선
-                                if 'ma_signals' in tech and tech['ma_signals']:
-                                    st.write(f"📍 이평선: {', '.join(tech['ma_signals'][:2])}")
-                            
-                            st.divider()
-                        
-                        # 주가 패턴
-                        if prediction.get('price_patterns'):
-                            st.markdown("**주가 패턴**")
-                            patterns = prediction['price_patterns']
-                            
-                            col_p1, col_p2 = st.columns(2)
-                            with col_p1:
-                                trend_emoji = '📈' if patterns.get('trend') == 'uptrend' else '📉'
-                                st.write(f"{trend_emoji} 추세: {patterns.get('trend', 'N/A')}")
-                                st.write(f"📊 변동성: {patterns.get('volatility', 0):.2f}%")
-                            
-                            with col_p2:
-                                volume_emoji = '🔥' if patterns.get('volume_trend') == 'increasing' else '❄️'
-                                st.write(f"{volume_emoji} 거래량: {patterns.get('volume_trend', 'N/A')}")
-                                if patterns.get('avg_volume'):
-                                    st.write(f"평균: {patterns['avg_volume']:,.0f}")
-                            
-                            st.divider()
-                        
-                        # 재무 추势
-                        if prediction.get('finance_trends'):
-                            st.markdown("**재무 지표 추세**")
-                            trends = prediction['finance_trends']
-                            
-                            for key, value in trends.items():
-                                if 'trend' in key:
-                                    indicator = key.replace('_trend', '').upper()
-                                    emoji = '✅' if value == 'improving' else '⚠️'
-                                    st.write(f"{emoji} {indicator}: {value}")
-                            
-                            st.divider()
-                        
-                        # 뉴스-주가 상관관계
-                        if prediction.get('correlations'):
-                            st.markdown("**뉴스-주가 상관관계**")
-                            correlations = prediction['correlations']
-                            
-                            if correlations:
-                                match_rate = sum(1 for c in correlations if c['sentiment_match']) / len(correlations) * 100
-                                st.info(f"📊 감성-주가 일치율: {match_rate:.1f}%")
-                                
-                                # 간단한 요약
-                                corr_df = pd.DataFrame(correlations)
-                                st.dataframe(
-                                    corr_df.head(3)[['news_title', 'sentiment', 'avg_return_5d']],
-                                    use_container_width=True,
-                                    hide_index=True
-                                )
-                    
-                    st.caption("⚠️ 본 예측은 참고용이며 투자 조언이 아닙니다.")
-                else:
-                    st.info("AI 예측 데이터를 불러올 수 없습니다.")
-            
-            # === 탭 3: 차트 ===
-            with tab3:
                 # 주가 차트 (기존 코드 이동)
                 if price_df is not None and not price_df.empty and code:
                     stock_prices = price_df[price_df['code'] == code].copy()
@@ -872,8 +616,8 @@ def render_table_with_finance(latest: pd.DataFrame, cols: list[str], finance_df:
                 else:
                     st.info("주가 데이터가 없습니다.")
             
-                # === 탭 4: 뉴스 ===
-            with tab4:
+                # === 탭 3: 뉴스 ===
+            with tab3:
                 # 뉴스 섹션 (기존 코드 이동)
                 with st.spinner("뉴스 불러오는 중..."):
                     from naver_news_crawler import NaverNewsCrawler
@@ -1842,6 +1586,50 @@ def run_app() -> None:
             st.divider()
             st.subheader("💼 거래 내역")
             trades_df = trades_df.copy()
+            
+            # 승률 계산 (매도 거래만 대상)
+            sell_trades = trades_df[trades_df["action"] == "SELL"].copy()
+            if not sell_trades.empty and "return_pct" in sell_trades.columns:
+                sell_trades_valid = sell_trades.dropna(subset=["return_pct"])
+                if not sell_trades_valid.empty:
+                    total_trades = len(sell_trades_valid)
+                    winning_trades = len(sell_trades_valid[sell_trades_valid["return_pct"] > 0])
+                    losing_trades = len(sell_trades_valid[sell_trades_valid["return_pct"] < 0])
+                    breakeven_trades = len(sell_trades_valid[sell_trades_valid["return_pct"] == 0])
+                    
+                    win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+                    avg_return = sell_trades_valid["return_pct"].mean()
+                    avg_win = sell_trades_valid[sell_trades_valid["return_pct"] > 0]["return_pct"].mean() if winning_trades > 0 else 0
+                    avg_loss = sell_trades_valid[sell_trades_valid["return_pct"] < 0]["return_pct"].mean() if losing_trades > 0 else 0
+                    
+                    # 손익비 (평균 수익 / 평균 손실 절대값)
+                    profit_loss_ratio = (avg_win / abs(avg_loss)) if avg_loss != 0 else 0
+                    
+                    st.markdown("#### 📊 백테스트 승률 통계")
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("총 거래 수", f"{total_trades}건")
+                    with col2:
+                        win_delta = f"+{winning_trades}승 / -{losing_trades}패"
+                        st.metric("승률", f"{win_rate:.1f}%", delta=win_delta)
+                    with col3:
+                        st.metric("평균 수익률", f"{avg_return:.2f}%")
+                    with col4:
+                        st.metric("손익비", f"{profit_loss_ratio:.2f}")
+                    
+                    col5, col6, col7 = st.columns(3)
+                    with col5:
+                        st.metric("평균 수익", f"+{avg_win:.2f}%" if avg_win > 0 else "N/A")
+                    with col6:
+                        st.metric("평균 손실", f"{avg_loss:.2f}%" if avg_loss < 0 else "N/A")
+                    with col7:
+                        # 총 손익
+                        if "pnl" in sell_trades_valid.columns:
+                            total_pnl = sell_trades_valid["pnl"].sum()
+                            st.metric("총 실현손익", f"{total_pnl:,.0f}원")
+                    
+                    st.markdown("---")
             
             # equity_df와 merge하여 총자산 정보 추가
             if not equity_df.empty:
