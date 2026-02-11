@@ -104,7 +104,7 @@ def render_sidebar_menu():
 
 
 def page_portfolio():
-    """포트폴리오 관리 페이지"""
+    """포트폴리오 관리 페이지 (간소화 버전)"""
     st.title("💼 포트폴리오 관리")
     
     portfolio_mgr = PortfolioManager()
@@ -119,712 +119,71 @@ def page_portfolio():
         except:
             return {}
     
-    @st.cache_data(ttl=3600)
-    def get_kospi_df():
-        try:
-            crawler = CrawlingKospi()
-            df = crawler.get_all_kospi_data()
-            if not df.empty:
-                # 종목명(종목코드) 형식으로 변환
-                df['display_name'] = df['종목명'] + ' (' + df['종목코드'] + ')'
-            return df
-        except:
-            return pd.DataFrame()
+    # KOSPI 200 종목 데이터 로드
+    kospi_dict = load_kospi_stocks()  # {종목코드: 종목명}
     
-    # 탭 구성
-    tab1, tab2, tab3 = st.tabs(["📊 보유 종목", "📈 자산현황", "➕ 종목 추가"])
+    # 2열 레이아웃: 왼쪽(보유종목), 오른쪽(종목추가)
+    col_left, col_right = st.columns([2, 1])
     
-    with tab1:
-        st.subheader("보유 종목 현황")
-        
-        # 메인 대시보드에서 종목 하이라이트 요청이 있는 경우
-        highlight_stock = st.session_state.get('portfolio_highlight_stock', None)
-        if highlight_stock:
-            st.info(f"💡 선택한 종목: **{highlight_stock}** - 아래 목록에서 확인하세요")
-            # 한번 표시 후 제거
-            st.session_state.portfolio_highlight_stock = None
-        
-        # 손절 기준 설정
-        col_setting1, col_setting2 = st.columns([3, 1])
-        with col_setting1:
-            st.write("")
-        with col_setting2:
-            stop_loss_rate = st.number_input(
-                "손절 기준 (%)", 
-                min_value=-50.0, 
-                max_value=0.0, 
-                value=-5.0, 
-                step=0.5,
-                help="손실이 이 비율에 도달하면 손절 알림을 표시합니다",
-                key="stop_loss_rate"
-            )
+    with col_left:
+        st.subheader("📊 보유 종목")
         
         portfolio = portfolio_mgr.load_portfolio()
         
         if not portfolio:
-            st.info("보유 종목이 없습니다. '종목 추가' 탭에서 추가해주세요.")
+            st.info("보유 종목이 없습니다. 오른쪽에서 종목을 추가해주세요.")
         else:
-            # 현재가 가져오기
-            current_prices = {}
-            price_histories = {}
-            crawler = CrawlingKospi()
-            
-            # KOSPI 200 종목 목록 로드 (종목명->종목코드 매핑용)
-            kospi_stocks = load_kospi_stocks()
-            name_to_code = {name: code for code, name in kospi_stocks.items()}
-            
-            progress_text = st.empty()
-            progress_bar = st.progress(0)
-            
-            for idx, code in enumerate(portfolio.keys()):
-                progress_text.text(f"데이터 수집 중... ({idx+1}/{len(portfolio)})")
-                progress_bar.progress((idx + 1) / len(portfolio))
-                
-                # 종목코드 확인 (종목명인 경우 종목코드로 변환)
-                actual_code = code
-                if code in name_to_code:
-                    actual_code = name_to_code[code]
-                elif not code.isdigit() or len(code) != 6:
-                    # 종목코드가 아닌 경우 (직접 입력한 종목명)
-                    # 매입단가를 현재가로 사용
-                    current_prices[code] = portfolio[code]['avg_price']
-                    continue
-                
-                try:
-                    # GetCurrentPrice로 현재가 빠르게 가져오기
-                    price_data = crawler.GetCurrentPrice(actual_code)
-                    
-                    if price_data and len(price_data) > 0:
-                        current_prices[code] = price_data[0][3]  # pClose (종가)
-                        # 가격 히스토리는 기존 방식 유지 (매도 타이밍 분석용)
-                        try:
-                            df = load_stock_data(actual_code, period="1mo")
-                            if not df.empty:
-                                price_histories[code] = df
-                        except:
-                            pass  # 히스토리 데이터 실패해도 현재가는 유지
-                    else:
-                        # GetCurrentPrice 실패 시 yfinance로 현재가 조회 시도
-                        try:
-                            df = load_stock_data(actual_code, period="1d")
-                            if not df.empty:
-                                current_prices[code] = df['Close'].iloc[-1]
-                                # 한달 데이터도 가져오기
-                                df_month = load_stock_data(actual_code, period="1mo")
-                                if not df_month.empty:
-                                    price_histories[code] = df_month
-                            else:
-                                current_prices[code] = 0
-                                st.warning(f"⚠️ {portfolio[code]['name']} ({actual_code}) 현재가 조회 실패")
-                        except:
-                            current_prices[code] = 0
-                            st.warning(f"⚠️ {portfolio[code]['name']} ({actual_code}) 현재가 조회 실패")
-                except Exception as e:
-                    # 오류 발생 시 yfinance로 재시도
-                    try:
-                        df = load_stock_data(actual_code, period="1d")
-                        if not df.empty:
-                            current_prices[code] = df['Close'].iloc[-1]
-                        else:
-                            current_prices[code] = 0
-                            st.warning(f"⚠️ {portfolio[code]['name']} ({actual_code}) 현재가 조회 실패: {str(e)}")
-                    except:
-                        current_prices[code] = 0
-                        st.warning(f"⚠️ {portfolio[code]['name']} ({actual_code}) 현재가 조회 실패: {str(e)}")
-            
-            progress_text.empty()
-            progress_bar.empty()
-            
-            # 포트폴리오 테이블
-            portfolio_df = portfolio_mgr.calculate_portfolio_value(current_prices)
-            
-            if not portfolio_df.empty:
-                # 실시간 새로고침 버튼과 마지막 업데이트 시간
-                col_refresh1, col_refresh2, col_refresh3 = st.columns([2, 1, 1])
-                with col_refresh1:
-                    if 'last_refresh' not in st.session_state:
-                        st.session_state.last_refresh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    st.info(f"📅 마지막 업데이트: {st.session_state.last_refresh}")
-                
-                with col_refresh2:
-                    if st.button("🔄 실시간 새로고침", use_container_width=True):
-                        st.session_state.last_refresh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # 종목 목록 표시
+            for code, info in portfolio.items():
+                col_name, col_btn = st.columns([4, 1])
+                with col_name:
+                    st.markdown(f"**{info['name']}** ({code})")
+                with col_btn:
+                    if st.button("🗑️", key=f"del_{code}", help="삭제"):
+                        portfolio_mgr.remove_from_portfolio(code)
                         st.rerun()
-                
-                with col_refresh3:
-                    # 자동 새로고침 설정
-                    auto_refresh = st.checkbox("자동 새로고침 (30초)", value=False)
-                
-                if auto_refresh:
-                    import time
-                    time.sleep(30)
-                    st.session_state.last_refresh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    st.rerun()
-                
-                st.markdown("---")
-                
-                # 현금 예수금 설정
-                st.markdown("#### 💰 현금 관리")
-                col_cash1, col_cash2 = st.columns([3, 1])
-                with col_cash1:
-                    current_cash = portfolio_mgr.load_cash()
-                    new_cash = st.number_input(
-                        "현금 예수금 (원)",
-                        min_value=0,
-                        value=int(current_cash),
-                        step=10000,
-                        help="보유하고 있는 현금 예수금을 입력하세요"
-                    )
-                with col_cash2:
-                    if st.button("저장", key="save_cash"):
-                        portfolio_mgr.save_cash(float(new_cash))
-                        st.success("💾 현금 정보가 저장되었습니다!")
-                        st.rerun()
-                
-                st.markdown("---")
-                
-                # 요약 통계
-                summary = portfolio_mgr.get_portfolio_summary(current_prices)
-                
-                col1, col2, col3, col4, col5 = st.columns(5)
-                with col1:
-                    st.metric("총 자산", f"{summary['total_value']:,.0f}원")
-                with col2:
-                    st.metric("주식 평가금액", f"{summary['stock_value']:,.0f}원")
-                with col3:
-                    st.metric("현금", f"{summary['cash']:,.0f}원")
-                with col4:
-                    profit_color = "normal" if summary['total_profit'] >= 0 else "inverse"
-                    st.metric("총 평가손익", f"{summary['total_profit']:,.0f}원",
-                             delta=f"{summary['total_profit_rate']:.2f}%")
-                with col5:
-                    st.metric("보유 종목 수", f"{summary['num_stocks']}개")
-                
-                # 일자별 자산현황 기록 (현금 포함)
-                portfolio_mgr.record_daily_asset(
-                    stock_value=summary['stock_value'],
-                    total_value=summary['total_value'],
-                    total_profit=summary['total_profit'],
-                    purchase_value=summary['total_purchase'],
-                    num_stocks=summary['num_stocks'],
-                    cash=summary['cash']
-                )
-                
-                st.markdown("---")
-                
-                # 매도 타이밍 알림
-                st.subheader("🔔 매도 타이밍 알림")
-                sell_signals = portfolio_mgr.get_all_sell_signals(current_prices, price_histories, stop_loss_rate)
-                
-                # 포트폴리오에 있는 종목만 필터링
-                portfolio_codes = set(portfolio_df['종목코드'].values) if not portfolio_df.empty else set()
-                sell_signals = [s for s in sell_signals if s['code'] in portfolio_codes]
-                
-                if sell_signals:
-                    for signal in sell_signals:
-                        if signal['recommendation'] == "즉시 손절":
-                            alert_type = "error"
-                        elif signal['recommendation'] == "수익 실현":
-                            alert_type = "success"
-                        else:
-                            alert_type = "warning"
-                        
-                        with st.container():
-                            if alert_type == "error":
-                                st.error(f"**{signal['name']} ({signal['code']})**")
-                            elif alert_type == "success":
-                                st.success(f"**{signal['name']} ({signal['code']})**")
-                            else:
-                                st.warning(f"**{signal['name']} ({signal['code']})**")
-                            
-                            col1, col2, col3, col4 = st.columns(4)
-                            with col1:
-                                st.metric("수익률", f"{signal['profit_rate']:.2f}%")
-                            with col2:
-                                st.metric("수익금액", f"{signal['profit_amount']:,.0f}원")
-                            with col3:
-                                st.metric("보유일", f"{signal['hold_days']}일")
-                            with col4:
-                                st.metric("권장", signal['recommendation'])
-                            
-                            for sig in signal['signals']:
-                                st.write(sig)
-                else:
-                    st.info("현재 매도 신호가 있는 종목이 없습니다. 👍")
-                
-                st.markdown("---")
-                
-                # 요약 테이블
-                st.subheader("📋 요약 테이블")
-                
-                # 수익률에 따른 색상 적용 함수
-                def color_negative_red(val):
-                    if isinstance(val, (int, float)):
-                        color = 'red' if val < 0 else 'green' if val > 0 else 'gray'
-                        return f'color: {color}'
-                    return ''
-                
-                # 테이블 포맷팅
-                format_dict = {
-                    '평균단가': '{:,.0f}',
-                    '현재가': '{:,.0f}',
-                    '매입금액': '{:,.0f}',
-                    '평가금액': '{:,.0f}',
-                    '평가손익': '{:,.0f}',
-                    '수익률': '{:.2f}'
-                }
-                
-                st.dataframe(
-                    portfolio_df.style.format(format_dict).applymap(color_negative_red, subset=['수익률']),
-                    use_container_width=True
-                )
-                
-                # 원형 차트
-                fig = go.Figure(data=[go.Pie(
-                    labels=portfolio_df['종목명'],
-                    values=portfolio_df['평가금액'],
-                    hole=0.4,
-                    textinfo='label+percent',
-                    textposition='auto'
-                )])
-                fig.update_layout(title="포트폴리오 비중", height=500)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                st.markdown("---")
-                
-                # 종목별 상세
-                st.subheader("📊 종목별 상세 현황")
-                
-                for _, row in portfolio_df.iterrows():
-                    with st.expander(f"{row['종목명']} ({row['종목코드']}) - 수익률: {row['수익률']:.2f}%"):
-                        code = row['종목코드']
-                        
-                        col1, col2, col3, col4, col5 = st.columns(5)
-                        with col1:
-                            st.metric("보유수량", f"{row['보유수량']:,}주")
-                        with col2:
-                            st.metric("평균단가", f"{row['평균단가']:,.0f}원")
-                        with col3:
-                            st.metric("현재가", f"{row['현재가']:,.0f}원")
-                        with col4:
-                            st.metric("평가금액", f"{row['평가금액']:,.0f}원")
-                        with col5:
-                            st.metric("평가손익", f"{row['평가손익']:,.0f}원",
-                                    delta=f"{row['수익률']:.2f}%")
-                        
-                        st.markdown("---")
-                        
-                        # 수정 및 삭제 버튼 (항상 표시)
-                        st.markdown("**종목 관리**")
-                        col_a, col_b = st.columns(2)
-                        
-                        with col_a:
-                            if st.button("✏️ 수정", key=f"edit_{code}", use_container_width=True):
-                                st.session_state[f'editing_{code}'] = True
-                                st.rerun()
-                        
-                        with col_b:
-                            if st.button("🗑️ 삭제", key=f"delete_{code}", type="secondary", use_container_width=True):
-                                result = portfolio_mgr.remove_from_portfolio(code)
-                                if result:
-                                    st.success(f"{row['종목명']} 삭제 완료!")
-                                    st.rerun()
-                                else:
-                                    st.error(f"삭제 실패: {code}를 찾을 수 없습니다.")
-                        
-                        # 수정 모드
-                        if st.session_state.get(f'editing_{code}', False):
-                            st.markdown("---")
-                            st.markdown("**📝 종목 정보 수정**")
-                            
-                            edit_col1, edit_col2 = st.columns(2)
-                            with edit_col1:
-                                new_quantity = st.number_input(
-                                    "보유 수량 (주)", 
-                                    min_value=1, 
-                                    value=int(row['보유수량']),
-                                    key=f"edit_qty_{code}"
-                                )
-                            with edit_col2:
-                                new_avg_price = st.number_input(
-                                    "평균 매입단가 (원)", 
-                                    min_value=0, 
-                                    value=int(row['평균단가']),
-                                    step=1000,
-                                    key=f"edit_price_{code}"
-                                )
-                            
-                            save_col1, save_col2 = st.columns(2)
-                            with save_col1:
-                                if st.button("💾 저장", key=f"save_{code}", type="primary", use_container_width=True):
-                                    # 현재 포트폴리오 정보 다시 로드
-                                    current_portfolio = portfolio_mgr.load_portfolio()
-                                    purchase_date = current_portfolio[code].get('purchase_date', datetime.now().strftime("%Y-%m-%d"))
-                                    
-                                    # 기존 종목 제거
-                                    portfolio_mgr.remove_from_portfolio(code)
-                                    # 새로운 정보로 추가
-                                    portfolio_mgr.add_to_portfolio(
-                                        code, 
-                                        row['종목명'], 
-                                        new_quantity, 
-                                        new_avg_price,
-                                        purchase_date
-                                    )
-                                    st.session_state[f'editing_{code}'] = False
-                                    st.success("수정 완료!")
-                                    st.rerun()
-                            
-                            with save_col2:
-                                if st.button("❌ 취소", key=f"cancel_{code}", use_container_width=True):
-                                    st.session_state[f'editing_{code}'] = False
-                                    st.rerun()
-                        
-                        # 매도 타이밍 분석 (데이터가 있는 경우만)
-                        if code in current_prices and code in price_histories:
-                            st.markdown("---")
-                            st.markdown("**매도 타이밍 분석**")
-                            
-                            analysis = portfolio_mgr.analyze_sell_timing(
-                                code, current_prices[code], price_histories[code], stop_loss_rate
-                            )
-                            
-                            st.write(f"보유 기간: {analysis['hold_days']}일")
-                            st.write(f"권장 행동: **{analysis['recommendation']}**")
-                            
-                            for sig in analysis['signals']:
-                                st.write(f"- {sig}")
-    
-    with tab2:
-        st.subheader("📈 일자별 자산현황")
-        
-        portfolio = portfolio_mgr.load_portfolio()
-        
-        if not portfolio:
-            st.info("포트폴리오에 종목이 없어서 자산현황을 조회할 수 없습니다.")
-        else:
-            # 조회 기간 선택
-            col_period1, col_period2 = st.columns(2)
-            with col_period1:
-                days = st.slider("조회 기간 (최근 N일)", min_value=7, max_value=365, value=30, step=7)
             
-            # 자산현황 데이터 조회
-            asset_df = portfolio_mgr.get_asset_history_dataframe(days=days)
-            
-            if asset_df.empty:
-                st.info("기록된 자산현황이 없습니다. 며칠 후에 다시 확인해주세요.")
-            else:
-                # 자산현황 그래프 (현금 포함)
-                st.markdown("#### 📊 총 자산 추이 (주식 + 현금)")
-                
-                fig = go.Figure()
-                
-                # 주식 평가금액 라인
-                fig.add_trace(go.Scatter(
-                    x=asset_df['날짜'],
-                    y=asset_df['주식평가금액'],
-                    name='주식평가금액',
-                    mode='lines+markers',
-                    line=dict(color='#58a6ff', width=2),
-                    marker=dict(size=6),
-                    hovertemplate='<b>%{x|%Y-%m-%d}</b><br>주식평가금액: %{y:,.0f}원<extra></extra>'
-                ))
-                
-                # 현금 라인
-                fig.add_trace(go.Scatter(
-                    x=asset_df['날짜'],
-                    y=asset_df['현금'],
-                    name='현금',
-                    mode='lines+markers',
-                    line=dict(color='#238636', width=2),
-                    marker=dict(size=6),
-                    hovertemplate='<b>%{x|%Y-%m-%d}</b><br>현금: %{y:,.0f}원<extra></extra>'
-                ))
-                
-                # 총 자산 라인
-                fig.add_trace(go.Scatter(
-                    x=asset_df['날짜'],
-                    y=asset_df['총자산'],
-                    name='총자산',
-                    mode='lines+markers',
-                    line=dict(color='#f0883e', width=3),
-                    marker=dict(size=8),
-                    hovertemplate='<b>%{x|%Y-%m-%d}</b><br>총자산: %{y:,.0f}원<extra></extra>'
-                ))
-                
-                # 매입금액 라인
-                fig.add_trace(go.Scatter(
-                    x=asset_df['날짜'],
-                    y=asset_df['매입금액'],
-                    name='매입금액',
-                    mode='lines',
-                    line=dict(color='#8b949e', width=1, dash='dash'),
-                    hovertemplate='<b>%{x|%Y-%m-%d}</b><br>매입금액: %{y:,.0f}원<extra></extra>'
-                ))
-                
-                fig.update_layout(
-                    title='포트폴리오 자산 추이 (주식 + 현금)',
-                    xaxis_title='날짜',
-                    yaxis_title='금액 (원)',
-                    hovermode='x unified',
-                    template='plotly_dark',
-                    height=500,
-                    plot_bgcolor='rgba(22, 27, 34, 0.5)',
-                    paper_bgcolor='rgba(13, 17, 23, 1)',
-                    font=dict(color='#c9d1d9'),
-                    margin=dict(l=50, r=50, t=80, b=50)
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # 평가손익 추이
-                st.markdown("#### 💰 평가손익 추이")
-                
-                fig2 = go.Figure()
-                
-                # 평가손익을 색상으로 구분
-                colors = ['#da3633' if profit < 0 else '#238636' for profit in asset_df['평가손익']]
-                
-                fig2.add_trace(go.Bar(
-                    x=asset_df['날짜'],
-                    y=asset_df['평가손익'],
-                    name='평가손익',
-                    marker=dict(color=colors),
-                    hovertemplate='<b>%{x|%Y-%m-%d}</b><br>평가손익: %{y:,.0f}원<extra></extra>'
-                ))
-                
-                fig2.update_layout(
-                    title='포트폴리오 평가손익 추이',
-                    xaxis_title='날짜',
-                    yaxis_title='손익 (원)',
-                    hovermode='x',
-                    template='plotly_dark',
-                    height=400,
-                    plot_bgcolor='rgba(22, 27, 34, 0.5)',
-                    paper_bgcolor='rgba(13, 17, 23, 1)',
-                    font=dict(color='#c9d1d9'),
-                    margin=dict(l=50, r=50, t=80, b=50),
-                    showlegend=False
-                )
-                
-                st.plotly_chart(fig2, use_container_width=True)
-                
-                # 통계 정보
-                st.markdown("#### 📊 자산 통계")
-                
-                col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
-                
-                with col_stat1:
-                    current_total = asset_df['총자산'].iloc[-1]
-                    st.metric("현재 총자산", f"{current_total:,.0f}원")
-                
-                with col_stat2:
-                    start_total = asset_df['총자산'].iloc[0]
-                    growth = current_total - start_total
-                    growth_rate = (growth / start_total * 100) if start_total > 0 else 0
-                    st.metric("기간 성장액", f"{growth:,.0f}원", delta=f"{growth_rate:.2f}%")
-                
-                with col_stat3:
-                    max_total = asset_df['총자산'].max()
-                    max_date = asset_df[asset_df['총자산'] == max_total]['날짜'].iloc[0]
-                    st.metric("최고 총자산", f"{max_total:,.0f}원", f"  {max_date.strftime('%m-%d')}")
-                
-                with col_stat4:
-                    min_total = asset_df['총자산'].min()
-                    min_date = asset_df[asset_df['총자산'] == min_total]['날짜'].iloc[0]
-                    st.metric("최저 총자산", f"{min_total:,.0f}원", f"  {min_date.strftime('%m-%d')}")
-                
-                st.markdown("---")
-                
-                # 일자별 상세 데이터
-                st.markdown("#### 📋 일자별 상세 데이터")
-                
-                display_df = asset_df.copy()
-                display_df['날짜'] = display_df['날짜'].dt.strftime('%Y-%m-%d')
-                
-                format_dict = {
-                    '주식평가금액': '{:,.0f}',
-                    '현금': '{:,.0f}',
-                    '총자산': '{:,.0f}',
-                    '평가손익': '{:,.0f}',
-                    '매입금액': '{:,.0f}'
-                }
-                
-                st.dataframe(
-                    display_df.style.format(format_dict),
-                    use_container_width=True,
-                    hide_index=True
-                )
+            st.markdown("---")
+            st.caption(f"총 {len(portfolio)}개 종목")
     
-    with tab3:
-        st.subheader("보유 종목 추가")
-        
-        # 현재 포트폴리오 로드 (중복 체크용)
-        current_portfolio = portfolio_mgr.load_portfolio()
-        
-        # 메인 대시보드에서 종목 추가 요청이 있는 경우
-        add_stock = st.session_state.get('portfolio_add_stock', None)
-        if add_stock:
-            st.info(f"💡 선택한 종목: **{add_stock['name']}** ({add_stock['code']}) - 아래에서 수량과 매입단가를 입력하세요")
-        
-        # KOSPI 200 종목 데이터 로드
-        kospi_dict = load_kospi_stocks()  # {종목코드: 종목명}
-        
-        st.markdown("#### 📝 종목 선택 및 보유 정보 입력")
-        
-        # 초기화 - 선택된 종목 정보를 session_state에 저장
-        if 'selected_stock_info' not in st.session_state:
-            st.session_state.selected_stock_info = {
-                'code': None,
-                'name': None,
-                'price': 0
-            }
+    with col_right:
+        st.subheader("➕ 종목 추가")
         
         if kospi_dict:
-            # ===== Streamlit Form을 사용하여 새로고침 최소화 =====
-            with st.form("portfolio_add_form", border=True):
-                st.markdown("**종목 선택**")
-                
-                # 메인 대시보드에서 전달받은 종목이 있으면 자동 선택할 종목명 찾기
-                auto_select_code = None
-                if add_stock and add_stock.get('code'):
-                    auto_select_code = add_stock['code']
-                
-                # 종목명 목록 생성 (종목코드: 종목명)
-                code_to_name = kospi_dict  # {code: name}
-                name_to_code = {v: k for k, v in kospi_dict.items()}  # {name: code}
-                
+            # 현재 포트폴리오의 종목코드 목록
+            current_codes = set(portfolio_mgr.load_portfolio().keys())
+            
+            # 이미 보유한 종목 제외
+            available_stocks = {code: name for code, name in kospi_dict.items() 
+                               if code not in current_codes}
+            
+            if not available_stocks:
+                st.success("모든 KOSPI 200 종목을 보유 중입니다!")
+            else:
                 # 드롭다운 옵션: 종목명 (종목코드) 형식
-                stock_display_options = [""] + [f"{name} ({code})" for code, name in sorted(kospi_dict.items(), key=lambda x: x[1])]
+                stock_options = ["선택하세요..."] + [f"{name} ({code})" 
+                                for code, name in sorted(available_stocks.items(), key=lambda x: x[1])]
                 
-                # 자동 선택 인덱스 찾기
-                default_index = 0
-                if auto_select_code and auto_select_code in kospi_dict:
-                    display_name = f"{kospi_dict[auto_select_code]} ({auto_select_code})"
-                    if display_name in stock_display_options:
-                        default_index = stock_display_options.index(display_name)
-                
-                selected_display = st.selectbox(
-                    "KOSPI 200 종목 선택",
-                    options=stock_display_options,
-                    index=default_index,
-                    help="종목을 선택하면 자동으로 정보가 입력됩니다"
+                selected = st.selectbox(
+                    "종목 선택",
+                    options=stock_options,
+                    label_visibility="collapsed"
                 )
                 
-                # 선택된 종목의 코드와 이름 추출
-                selected_code = None
-                selected_name = None
-                is_duplicate = False
-                
-                if selected_display and selected_display != "":
+                if selected and selected != "선택하세요...":
                     # 종목코드와 종목명 추출
-                    parts = selected_display.split(" (")
-                    selected_name = parts[0]
-                    selected_code = parts[1].rstrip(")")
+                    parts = selected.split(" (")
+                    stock_name = parts[0]
+                    stock_code = parts[1].rstrip(")")
                     
-                    # 중복 체크
-                    is_duplicate = (selected_code in current_portfolio or 
-                                   selected_name in current_portfolio)
-                
-                st.markdown("---")
-                st.markdown("**보유 정보 입력**")
-                
-                # 선택된 종목 정보 표시
-                if selected_code and selected_name:
-                    if is_duplicate:
-                        st.error(f"⚠️ **{selected_name} ({selected_code})**은(는) 이미 포트폴리오에 있습니다!")
-                        st.info("기존 종목의 수량을 변경하려면 '보유 종목' 탭에서 수정 버튼을 사용하세요.")
-                    else:
-                        st.success(f"✅ **{selected_name} ({selected_code})** 선택됨")
-                
-                # 항상 input 필드를 표시 (활성화 상태)
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    quantity = st.number_input(
-                        "보유 수량 (주)", 
-                        min_value=1, 
-                        value=1, 
-                        step=1
-                    )
-                
-                with col2:
-                    avg_price = st.number_input(
-                        "평균 매입단가 (원)", 
-                        min_value=0, 
-                        value=0, 
-                        step=1000,
-                        help="예: 70000"
-                    )
-                
-                st.markdown("")
-                
-                # 폼 제출 버튼 (버튼 클릭 시에만 새로고침)
-                submit_button = st.form_submit_button(
-                    "➕ 포트폴리오에 추가", 
-                    type="primary", 
-                    use_container_width=True
-                )
-                
-                if submit_button:
-                    if selected_code and selected_name and quantity > 0 and avg_price > 0:
-                        # 최종 중복 체크
-                        if selected_code in current_portfolio or selected_name in current_portfolio:
-                            st.error(f"⚠️ **{selected_name} ({selected_code})**은(는) 이미 포트폴리오에 있습니다!")
-                            st.info("💡 기존 종목의 수량을 변경하려면 '보유 종목' 탭에서 수정 버튼을 사용하세요.")
-                        else:
-                            # 매수일은 자동으로 오늘 날짜로 설정
-                            purchase_date = datetime.now().strftime("%Y-%m-%d")
-                            
-                            portfolio_mgr.add_to_portfolio(
-                                selected_code, selected_name, quantity, avg_price, 
-                                purchase_date
-                            )
-                            st.success(f"✅ {selected_name} ({selected_code}) {quantity}주를 포트폴리오에 추가했습니다!")
-                            
-                            # 메인 대시보드에서 전달받은 종목 정보 제거
-                            if 'portfolio_add_stock' in st.session_state:
-                                del st.session_state.portfolio_add_stock
-                            
-                            # 선택 정보 초기화
-                            st.session_state.selected_stock_info = {
-                                'code': None,
-                                'name': None,
-                                'price': 0
-                            }
-                            
-                            st.balloons()
-                            import time
-                            time.sleep(1)
-                            st.rerun()
-                    else:
-                        st.error("⚠️ 모든 항목을 올바르게 입력해주세요.")
+                    if st.button("추가", type="primary", use_container_width=True):
+                        # 기본값으로 저장 (수량=1, 가격=0)
+                        portfolio_mgr.add_to_portfolio(stock_code, stock_name, 1, 0)
+                        st.success(f"✅ {stock_name} 추가됨")
+                        st.rerun()
         else:
-            st.error("⚠️ KOSPI 200 종목 데이터를 불러올 수 없습니다.")
-        
-        # 도움말
-        with st.expander("💡 사용 팁"):
-            st.markdown("""
-            **종목 선택:**
-            - KOSPI 200 종목 목록에서 선택하세요
-            - 종목명순으로 정렬되어 있어 찾기 쉽습니다
-            - 선택 시 종목코드와 현재가가 자동으로 입력됩니다
-            
-            **중복 방지:**
-            - 이미 보유 중인 종목은 추가할 수 없습니다
-            - 기존 종목의 수량을 변경하려면 '보유 종목' 탭에서 수정 버튼을 사용하세요
-            
-            **필수 입력 항목:**
-            - 종목: 콤보박스에서 선택
-            - 보유 수량: 보유 중인 주식 수
-            - 평균 매입단가: 실제 매수한 평균 가격 (현재가가 자동 입력됨)
-            - 매수일은 자동으로 오늘 날짜로 설정됩니다
-            
-            **평균 매입단가 계산 예시:**
-            - 여러 번 매수한 경우 가중평균을 계산하세요
-            - 예: 10주@70,000원 + 5주@80,000원 = 평균 73,333원
-            - 계산: (10×70,000 + 5×80,000) ÷ 15 = 73,333원
-            """)
+            st.error("종목 데이터를 불러올 수 없습니다.")
+
 
 def page_alerts():
     """알림 관리 페이지"""

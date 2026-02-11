@@ -1,11 +1,4 @@
 {
-  "009830": {
-    "name": "한화솔루션",
-    "quantity": 230,
-    "avg_price": 34827,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:10:21"
-  },
   "018880": {
     "name": "한온시스템",
     "quantity": 595,
@@ -111,13 +104,6 @@
     "purchase_date": "2026-02-06",
     "last_updated": "2026-02-06 23:16:47"
   },
-  "383220": {
-    "name": "F&F",
-    "quantity": 28,
-    "avg_price": 73700,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:17:07"
-  },
   "105560": {
     "name": "KB금융",
     "quantity": 13,
@@ -131,5 +117,33 @@
     "avg_price": 56000,
     "purchase_date": "2026-02-09",
     "last_updated": "2026-02-09 21:46:01"
+  },
+  "000120": {
+    "name": "CJ대한통운",
+    "quantity": 14,
+    "avg_price": 141479,
+    "purchase_date": "2026-02-11",
+    "last_updated": "2026-02-11 22:11:40"
+  },
+  "073240": {
+    "name": "금호타이어",
+    "quantity": 286,
+    "avg_price": 7000,
+    "purchase_date": "2026-02-11",
+    "last_updated": "2026-02-11 22:12:16"
+  },
+  "002790": {
+    "name": "아모레퍼시픽홀딩스",
+    "quantity": 58,
+    "avg_price": 34950,
+    "purchase_date": "2026-02-11",
+    "last_updated": "2026-02-11 22:14:16"
+  },
+  "088350": {
+    "name": "한화생명",
+    "quantity": 968,
+    "avg_price": 4172,
+    "purchase_date": "2026-02-11",
+    "last_updated": "2026-02-11 22:15:52"
   }
 }
