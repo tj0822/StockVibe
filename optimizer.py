@@ -22,6 +22,9 @@ class BacktestOptimizer:
         end_date: pd.Timestamp,
         param_ranges: Dict[str, List],
         initial_cash: float = 50_000_000,
+        fee_rate: float = 0.00015,
+        slippage_rate: float = 0.0005,
+        sell_tax_rate: float = 0.0018,
         progress_callback=None
     ) -> pd.DataFrame:
         """
@@ -86,7 +89,10 @@ class BacktestOptimizer:
                     top_n=10,
                     initial_cash=initial_cash,
                     max_daily_buys=params.get('max_daily_buys', 2),
-                    kospi_bullish_only=params.get('kospi_bullish_only', False)
+                    kospi_bullish_only=params.get('kospi_bullish_only', False),
+                    fee_rate=fee_rate,
+                    slippage_rate=slippage_rate,
+                    sell_tax_rate=sell_tax_rate,
                 )
                 
                 if not equity_df.empty:
@@ -99,6 +105,7 @@ class BacktestOptimizer:
                         # 성과 지표 계산
                         final_equity = period_equity['equity'].iloc[-1]
                         total_return = (final_equity / initial_cash - 1) * 100
+                        net_return = total_return
                         
                         # KOSPI 수익률 계산
                         kospi_index_copy = self.kospi_index.copy()
@@ -137,8 +144,10 @@ class BacktestOptimizer:
                             'volume_threshold': params.get('volume_threshold', 2.0),
                             'kospi_bullish_only': params.get('kospi_bullish_only', False),
                             'total_return': total_return,
+                            'net_return': net_return,
                             'kospi_return': kospi_return,
                             'excess_return': total_return - kospi_return,
+                            'net_excess_return': net_return - kospi_return,
                             'sharpe_ratio': sharpe_ratio,
                             'mdd': mdd,
                             'win_rate': win_rate,

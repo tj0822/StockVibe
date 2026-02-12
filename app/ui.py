@@ -1545,66 +1545,62 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             st.code(traceback.format_exc())
 
 
-def run_app() -> None:
+def run_app(current_tab: str = "📊 시그널") -> None:
     # 페이지 설정은 streamlit_app.py에서 수행
     st.title("📈 StockVibe")
     st.caption("거래량 급등 기반 스마트 투자 시그널")
 
-    # 탭 선택을 먼저 수행
-    if "active_tab" not in st.session_state:
-        st.session_state.active_tab = "📊 시그널"
+    # 상위 사이드바에서 선택한 탭 사용
+    available_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", " 데이터"]
+    if current_tab not in available_tabs:
+        current_tab = "📊 시그널"
+
+    st.session_state.active_tab = current_tab
+
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = None
-
-    current_tab = st.radio(
-        "",
-        ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", "🔄 데이터"],
-        horizontal=True,
-        key="active_tab",
-        label_visibility="collapsed",
-    )
 
     # 현재 탭에 따라 사이드바 렌더링
     params = render_sidebar(current_tab)
 
-    # 데이터 로딩 (캐시 활용)
-    with st.spinner("📊 데이터 로딩 중..."):
-        df = load_stock_data(params["data_dir"])
-        kospi = load_kospi_list(params["data_dir"])
-        kospi_index = load_kospi_index(params["data_dir"])
-        finance_df = load_finance_data(params["data_dir"])
-    
-    # 시그널 생성
-    with st.spinner("🔍 시그널 분석 중..."):
-        signals = build_signals(
-            df,
-            params["turnover_window"],
-            params["turnover_multiplier"],
-            20,
-            5.0,
-            20,
-            2.0,
-            20,
-            2.0,
-            ["Turnover Spike"],
-            "ANY",
-        )
-        signals = signals.merge(kospi, on="code", how="left")
-        
-        if "spike_ratio" in signals.columns:
-            signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
-        else:
-            signals = signals.sort_values(["date"], ascending=[False])
-        signals = apply_signal_filters(signals, params["signal_filter"])
-
-    selected_date = select_date(signals)
-    if selected_date is None:
-        st.warning("⚠️ 조건에 맞는 시그널이 없습니다.")
-        return
-
     if current_tab == "📊 시그널":
+        # 데이터 로딩 (시그널 탭 전용)
+        with st.spinner("📊 데이터 로딩 중..."):
+            df = load_stock_data(params["data_dir"])
+            kospi = load_kospi_list(params["data_dir"])
+            kospi_index = load_kospi_index(params["data_dir"])
+            finance_df = load_finance_data(params["data_dir"])
+
+        # 시그널 생성 (시그널 탭 전용)
+        with st.spinner("🔍 시그널 분석 중..."):
+            signals = build_signals(
+                df,
+                params["turnover_window"],
+                params["turnover_multiplier"],
+                20,
+                5.0,
+                20,
+                2.0,
+                20,
+                2.0,
+                ["Turnover Spike"],
+                "ANY",
+            )
+            signals = signals.merge(kospi, on="code", how="left")
+
+            if "spike_ratio" in signals.columns:
+                signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
+            else:
+                signals = signals.sort_values(["date"], ascending=[False])
+            signals = apply_signal_filters(signals, params["signal_filter"])
+
+        selected_date = select_date(signals)
+        if selected_date is None:
+            st.warning("⚠️ 조건에 맞는 시그널이 없습니다.")
+            return
+
         st.divider()
-        
+
         # 코스피 양봉 여부 확인
         is_kospi_bullish = False
         kospi_change_pct = 0.0
@@ -1625,44 +1621,92 @@ def run_app() -> None:
                     is_kospi_bullish = today_val > prev_val
                     kospi_change_pct = ((today_val - prev_val) / prev_val * 100) if prev_val > 0 else 0
         
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.subheader(f"🎯 {selected_date.date()} 투자 시그널")
-        with col2:
-            # 코스피 상태 표시
+        st.subheader("🧭 필터")
+        filter_col1, filter_col2, filter_col3 = st.columns([2, 1.5, 1.2])
+        with filter_col1:
+            st.caption(f"기준일: {selected_date.date()}")
+            st.caption(f"표시 종목 수: 상위 {params['top_n']}개")
+            st.caption(f"코스피 양봉 조건: {'ON' if params['kospi_bullish_only'] else 'OFF'}")
+        with filter_col2:
+            st.caption("결과 표시 방식")
+            view_mode = st.radio(
+                "표시 방식",
+                ["📊 테이블", "📋 상세"],
+                horizontal=True,
+                label_visibility="collapsed",
+                key="signal_view_mode",
+            )
+        with filter_col3:
             if is_kospi_bullish:
-                st.success(f"📈 코스피 양봉 ({kospi_change_pct:+.2f}%)")
+                st.success(f"📈 양봉 ({kospi_change_pct:+.2f}%)")
             else:
-                st.error(f"📉 코스피 음봉 ({kospi_change_pct:+.2f}%)")
+                st.error(f"📉 음봉 ({kospi_change_pct:+.2f}%)")
         
         # 코스피 양봉 조건이 켜져 있고 음봉일 때 경고
         if params["kospi_bullish_only"] and not is_kospi_bullish:
             st.warning("⚠️ 코스피가 음봉이므로 BUY 시그널이 필터링됩니다. (양봉 조건 ON)")
             # BUY 시그널 필터링
             signals = signals[signals["signal"] != "BUY"]
-        
-        col_view1, col_view2 = st.columns([2, 1])
-        with col_view2:
-            view_mode = st.radio(
-                "표시 방식",
-                ["📊 테이블", "📋 상세"],
-                horizontal=True,
-                label_visibility="collapsed"
-            )
+
+        st.divider()
+        st.subheader(f"📊 결과 · {selected_date.date()} 투자 시그널")
+        st.caption(f"현재 보기: {view_mode} · 조건에 맞는 종목만 표시됩니다.")
         
         latest, cols = build_latest_table(signals, selected_date, params["top_n"], finance_df, df)
-        
-        if view_mode == "📊 테이블":
+
+        if latest.empty:
+            st.info("표시할 시그널 결과가 없습니다.")
+            st.caption("분석 기간, 급등 기준, 표시 종목 수를 조정하면 결과가 나타날 수 있습니다.")
+        elif view_mode == "📊 테이블":
+            st.caption(f"조회 결과: 총 {len(latest)}개 종목")
             render_table(latest, cols)
         else:
-            # 종목별 상세 뷰
+            st.caption(f"조회 결과: 총 {len(latest)}개 종목")
             render_table_with_finance(latest, cols, finance_df, df)
-        
-        # 카카오톡 전송 기능
+
         st.divider()
-        render_kakao_section(latest, selected_date)
+        st.subheader("📤 액션")
+        st.caption(f"공유 기준일: {selected_date.date()}")
+        if latest.empty:
+            st.caption("전송 가능한 시그널이 없어 공유 액션이 비활성 상태입니다.")
+        else:
+            render_kakao_section(latest, selected_date)
 
     elif current_tab == "🎯 시뮬레이션":
+        # 데이터 로딩 (시뮬레이션 탭 전용)
+        with st.spinner("📊 데이터 로딩 중..."):
+            df = load_stock_data(params["data_dir"])
+            kospi = load_kospi_list(params["data_dir"])
+            kospi_index = load_kospi_index(params["data_dir"])
+
+        # 시그널 생성 (시뮬레이션 탭 전용)
+        with st.spinner("🔍 시그널 분석 중..."):
+            signals = build_signals(
+                df,
+                params["turnover_window"],
+                params["turnover_multiplier"],
+                20,
+                5.0,
+                20,
+                2.0,
+                20,
+                2.0,
+                ["Turnover Spike"],
+                "ANY",
+            )
+            signals = signals.merge(kospi, on="code", how="left")
+
+            if "spike_ratio" in signals.columns:
+                signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
+            else:
+                signals = signals.sort_values(["date"], ascending=[False])
+            signals = apply_signal_filters(signals, params["signal_filter"])
+
+        selected_date = select_date(signals)
+        if selected_date is None:
+            st.warning("⚠️ 조건에 맞는 시그널이 없습니다.")
+            return
+
         st.divider()
         st.subheader("📊 백테스트 결과")
         strategy_signals = build_signals(
@@ -1793,6 +1837,11 @@ def run_app() -> None:
             )
 
     elif current_tab == "⚙️ 최적화":
+        # 데이터 로딩 (최적화 탭 전용)
+        with st.spinner("📊 데이터 로딩 중..."):
+            df = load_stock_data(params["data_dir"])
+            kospi_index = load_kospi_index(params["data_dir"])
+
         render_optimizer_page(df, kospi_index, params)
     else:
         render_kospi_crawling_page()

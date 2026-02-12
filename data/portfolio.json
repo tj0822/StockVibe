@@ -1,18 +1,4 @@
 {
-  "018880": {
-    "name": "한온시스템",
-    "quantity": 595,
-    "avg_price": 3360,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:10:51"
-  },
-  "139480": {
-    "name": "이마트",
-    "quantity": 38,
-    "avg_price": 105679,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:12:19"
-  },
   "323410": {
     "name": "카카오뱅크",
     "quantity": 76,
@@ -118,13 +104,6 @@
     "purchase_date": "2026-02-09",
     "last_updated": "2026-02-09 21:46:01"
   },
-  "000120": {
-    "name": "CJ대한통운",
-    "quantity": 14,
-    "avg_price": 141479,
-    "purchase_date": "2026-02-11",
-    "last_updated": "2026-02-11 22:11:40"
-  },
   "073240": {
     "name": "금호타이어",
     "quantity": 286,
@@ -145,5 +124,19 @@
     "avg_price": 4172,
     "purchase_date": "2026-02-11",
     "last_updated": "2026-02-11 22:15:52"
+  },
+  "066570": {
+    "name": "LG전자",
+    "quantity": 1,
+    "avg_price": 0,
+    "purchase_date": "2026-02-12",
+    "last_updated": "2026-02-12 21:22:31"
+  },
+  "282330": {
+    "name": "BGF리테일",
+    "quantity": 1,
+    "avg_price": 0,
+    "purchase_date": "2026-02-12",
+    "last_updated": "2026-02-12 21:22:35"
   }
 }

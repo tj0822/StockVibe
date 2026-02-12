@@ -83,7 +83,7 @@ def prepare_sector_analysis_data(kospi_df: pd.DataFrame, name_map: dict) -> pd.D
 # =================================
 
 
-def render_sidebar_menu():
+def render_sidebar_menu() -> tuple[str, str]:
     """사이드바 메뉴"""
     st.sidebar.title("📊 StockVibe Pro")
     st.sidebar.markdown("---")
@@ -92,15 +92,29 @@ def render_sidebar_menu():
     pages = {
         "🏠 메인 대시보드": "main",
         "💼 포트폴리오": "portfolio",
-        "🌐 섹터 분석": "sector",
         "⚙️ 설정": "settings"
     }
     
     selected = st.sidebar.radio("메뉴", list(pages.keys()))
+    selected_page = pages[selected]
+
+    main_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", "🔄 데이터"]
+    selected_main_tab = st.session_state.get("active_tab", "📊 시그널")
+
+    if selected_page == "main":
+        st.sidebar.caption("메인 대시보드 탭")
+        selected_main_tab = st.sidebar.radio(
+            "",
+            main_tabs,
+            index=main_tabs.index(selected_main_tab) if selected_main_tab in main_tabs else 0,
+            key="main_dashboard_tab",
+            label_visibility="collapsed",
+        )
+        st.session_state.active_tab = selected_main_tab
     
     st.sidebar.markdown("---")
     
-    return pages[selected]
+    return selected_page, selected_main_tab
 
 
 def page_portfolio():
@@ -553,7 +567,7 @@ def run_phase4_app():
     """Phase 4 앱 실행"""
     
     # 사이드바 메뉴
-    page = render_sidebar_menu()
+    page, selected_main_tab = render_sidebar_menu()
     
     # 메인 대시보드에서 포트폴리오 페이지로 이동 요청이 있는 경우
     if 'selected_menu' in st.session_state:
@@ -561,7 +575,6 @@ def run_phase4_app():
         menu_to_page = {
             "🏠 메인 대시보드": "main",
             "💼 포트폴리오": "portfolio",
-            "🌐 섹터 분석": "sector",
             "⚙️ 설정": "settings"
         }
         selected_menu = st.session_state.selected_menu
@@ -569,15 +582,16 @@ def run_phase4_app():
             page = menu_to_page[selected_menu]
             # 세션 상태 제거
             del st.session_state.selected_menu
+
+    if page != "main":
+        selected_main_tab = st.session_state.get("active_tab", "📊 시그널")
     
     # 페이지 라우팅
     if page == "portfolio":
         page_portfolio()
-    elif page == "sector":
-        page_sector()
     elif page == "settings":
         page_settings()
     else:
         # 기존 메인 대시보드
         from app.ui import run_app
-        run_app()
+        run_app(selected_main_tab)
