@@ -88,6 +88,15 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
                 key="turnover_multiplier",
                 help="평균 대비 몇 배 이상 급등"
             )
+            add_buy_threshold_pct = st.number_input(
+                "추가매수 손실 임계값 (%)",
+                min_value=-30.0,
+                max_value=-1.0,
+                value=-5.0,
+                step=0.5,
+                key="add_buy_threshold_pct",
+                help="해당 종목 수익률이 이 값 이하일 때 추가매수 조건을 확인"
+            )
             top_n = st.number_input(
                 "표시 종목 수", 
                 min_value=1, max_value=200, value=10, step=1,
@@ -132,6 +141,7 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
         "initial_cash": float(initial_cash),
         "max_daily_buys": int(max_daily_buys),
         "buy_unit": float(buy_unit),
+        "add_buy_threshold_pct": float(add_buy_threshold_pct),
         "use_finance_filter": False,
         "per_max": None,
         "pbr_max": None,
@@ -858,6 +868,10 @@ def run_turnover_strategy_backtest(
     max_daily_buys: int = 2,
     buy_unit: float = 2_000_000,
     kospi_bullish_only: bool = False,
+    add_buy_threshold_pct: float = -5.0,
+    fee_rate: float = 0.0,
+    slippage_rate: float = 0.0,
+    sell_tax_rate: float = 0.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     # 데이터 전처리 및 최적화
     price_data = price_df[["date", "code", "open", "close"]].copy()
@@ -927,10 +941,14 @@ def run_turnover_strategy_backtest(
         if cash <= 0 or price <= 0:
             return
         spend = min(cash, max_amount)
-        shares = int(spend // price)
+        effective_price = price * (1 + slippage_rate)
+        max_cash_per_share = effective_price * (1 + fee_rate)
+        shares = int(spend // max_cash_per_share) if max_cash_per_share > 0 else 0
         if shares == 0:
             return
-        actual_amount = shares * price
+        gross_amount = shares * effective_price
+        fee_amount = gross_amount * fee_rate
+        actual_amount = gross_amount + fee_amount
         if code in positions:
             pos = positions[code]
             total_cost = pos["avg_cost"] * pos["shares"] + actual_amount
@@ -941,7 +959,7 @@ def run_turnover_strategy_backtest(
                 "step": step,
             })
         else:
-            positions[code] = {"shares": shares, "avg_cost": price, "step": step}
+            positions[code] = {"shares": shares, "avg_cost": actual_amount / shares, "step": step}
         cash -= actual_amount
         trades.append({
             "date": date,
@@ -949,7 +967,7 @@ def run_turnover_strategy_backtest(
             "name": name_map.get(code, ""),
             "action": "BUY",
             "amount": actual_amount,
-            "price": price,
+            "price": effective_price,
             "shares": shares,
             "step": step,
             "return_pct": None,
@@ -960,20 +978,24 @@ def run_turnover_strategy_backtest(
         if code not in positions:
             return
         pos = positions.pop(code)
-        proceeds = pos["shares"] * price
-        cash += proceeds
-        pnl = (price - pos["avg_cost"]) * pos["shares"]
+        effective_price = price * (1 - slippage_rate)
+        proceeds = pos["shares"] * effective_price
+        fee_amount = proceeds * fee_rate
+        tax_amount = proceeds * sell_tax_rate
+        net_proceeds = proceeds - fee_amount - tax_amount
+        cash += net_proceeds
+        pnl = net_proceeds - (pos["avg_cost"] * pos["shares"])
         trades.append({
             "date": date,
             "code": code,
             "name": name_map.get(code, ""),
             "action": "SELL",
-            "amount": proceeds,
-            "price": price,
+            "amount": net_proceeds,
+            "price": effective_price,
             "shares": pos["shares"],
             "pnl": pnl,
             "buy_price": pos["avg_cost"],
-            "return_pct": ((price / pos["avg_cost"]) - 1) * 100 if pos["avg_cost"] > 0 else 0,
+            "return_pct": ((net_proceeds / (pos["avg_cost"] * pos["shares"])) - 1) * 100 if pos["avg_cost"] > 0 else 0,
             "reason": reason,
         })
 
@@ -1025,7 +1047,7 @@ def run_turnover_strategy_backtest(
             pos = positions[code]
             ret = (close_price - pos["avg_cost"]) / pos["avg_cost"] if pos["avg_cost"] > 0 else 0
             
-            if ret <= -0.05:
+            if ret <= (add_buy_threshold_pct / 100.0):
                 is_kospi_bullish = (date in kospi_bullish_dates) if kospi_bullish_dates else True
                 if pos["step"] == 0:
                     # step 0: 첫 번째 추가 매수 (다음날 시작가로)
@@ -1304,6 +1326,14 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
                 default=[1.5, 2.0, 2.5, 3.0],
                 key="vol_options"
             )
+
+        st.markdown("**추가매수 손실 임계값(%)**")
+        add_buy_threshold_options = st.multiselect(
+            "테스트할 값 선택",
+            options=[-10.0, -7.5, -5.0, -3.0, -2.0],
+            default=[-7.5, -5.0, -3.0],
+            key="add_buy_threshold_options"
+        )
         
     
     # 최적화 기준 선택
@@ -1330,6 +1360,10 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
         if not volume_threshold_options:
             st.error("평균 대비 배수 값을 최소 1개 이상 선택해주세요.")
             return
+
+        if not add_buy_threshold_options:
+            st.error("추가매수 손실 임계값을 최소 1개 이상 선택해주세요.")
+            return
         
         if max_daily_buys_min > max_daily_buys_max:
             st.error("일일 최대 매수 종목 수의 최소값이 최대값보다 클 수 없습니다.")
@@ -1339,14 +1373,16 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
         param_ranges = {
             'max_daily_buys': list(range(max_daily_buys_min, max_daily_buys_max + 1)),
             'rolling_days': sorted(rolling_days_options),
-            'volume_threshold': sorted(volume_threshold_options)
+            'volume_threshold': sorted(volume_threshold_options),
+            'add_buy_threshold_pct': sorted(add_buy_threshold_options)
         }
         
         # 총 조합 수 계산
         total_combinations = (
             len(param_ranges['max_daily_buys']) * 
             len(param_ranges['rolling_days']) * 
-            len(param_ranges['volume_threshold'])
+            len(param_ranges['volume_threshold']) *
+            len(param_ranges['add_buy_threshold_pct'])
         )
         
         st.info(f"총 {total_combinations}개의 파라미터 조합을 테스트합니다. 시간이 다소 걸릴 수 있습니다.")
@@ -1406,7 +1442,7 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             
             # 최적 파라미터 표시
             st.markdown("### 🏆 최적 파라미터")
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             
             with col1:
                 st.metric("일일 최대 매수 종목", f"{optimal_params['max_daily_buys']}개")
@@ -1415,6 +1451,8 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             with col3:
                 st.metric("평균 대비 배수", f"{optimal_params['volume_threshold']}배")
             with col4:
+                st.metric("추가매수 임계값", f"{optimal_params['add_buy_threshold_pct']:.1f}%")
+            with col5:
                 metric_name = {
                     "total_return": "총 수익률",
                     "sharpe_ratio": "샤프 비율",
@@ -1442,13 +1480,13 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             
             # 컬럼명 한글화
             display_df = top_results[[
-                'max_daily_buys', 'rolling_days', 'volume_threshold',
+                'max_daily_buys', 'rolling_days', 'volume_threshold', 'add_buy_threshold_pct',
                 'total_return', 'kospi_return', 'excess_return',
                 'sharpe_ratio', 'mdd', 'win_rate', 'total_trades'
             ]].copy()
             
             display_df.columns = [
-                '일일매수', '평균일', '배수',
+                '일일매수', '평균일', '배수', '추가매수임계(%)',
                 '수익률(%)', 'KOSPI(%)', '초과수익(%)',
                 '샤프비율', 'MDD(%)', '승률(%)', '거래수'
             ]
@@ -1461,6 +1499,7 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
                     '일일매수': st.column_config.NumberColumn(format="%d"),
                     '평균일': st.column_config.NumberColumn(format="%d"),
                     '배수': st.column_config.NumberColumn(format="%.1f"),
+                    '추가매수임계(%)': st.column_config.NumberColumn(format="%.1f"),
                     '수익률(%)': st.column_config.NumberColumn(format="%.2f"),
                     'KOSPI(%)': st.column_config.NumberColumn(format="%.2f"),
                     '초과수익(%)': st.column_config.NumberColumn(format="%.2f"),
@@ -1688,6 +1727,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             initial_cash=params["initial_cash"],
             max_daily_buys=params["max_daily_buys"],
             buy_unit=params["buy_unit"],
+            add_buy_threshold_pct=params["add_buy_threshold_pct"],
         )
         render_backtest_curve(equity_df, kospi_index, selected_date)
         if not equity_df.empty:

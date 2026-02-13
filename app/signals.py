@@ -1,12 +1,22 @@
 import pandas as pd
 import numpy as np
 
-try:
-    import cudf  # type: ignore
-    _GPU_AVAILABLE = True
-except Exception:
-    cudf = None
-    _GPU_AVAILABLE = False
+_GPU_AVAILABLE: bool | None = None
+
+
+def _load_cudf():
+    try:
+        import cudf  # type: ignore
+        return cudf
+    except Exception:
+        return None
+
+
+def is_gpu_available() -> bool:
+    global _GPU_AVAILABLE
+    if _GPU_AVAILABLE is None:
+        _GPU_AVAILABLE = _load_cudf() is not None
+    return _GPU_AVAILABLE
 
 
 def prepare_base_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -20,9 +30,17 @@ def prepare_base_features(df: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
-def add_turnover_spike_signals(data: pd.DataFrame, window: int, multiplier: float) -> pd.DataFrame:
-    if _GPU_AVAILABLE:
+def add_turnover_spike_signals(
+    data: pd.DataFrame,
+    window: int,
+    multiplier: float,
+    use_gpu: bool | None = None,
+) -> pd.DataFrame:
+    if (use_gpu is not False) and is_gpu_available():
         try:
+            cudf = _load_cudf()
+            if cudf is None:
+                raise RuntimeError("cudf unavailable")
             gdf = cudf.from_pandas(data[["code", "date", "turnover"]])
             gdf = gdf.sort_values(["code", "date"])
             rolling = (
@@ -120,10 +138,11 @@ def build_signals(
     mr_z: float,
     enabled_algos: list[str],
     combine_mode: str,
+    use_gpu: bool | None = None,
 ) -> pd.DataFrame:
     data = prepare_base_features(df)
     if "Turnover Spike" in enabled_algos:
-        data = add_turnover_spike_signals(data, turnover_window, turnover_multiplier)
+        data = add_turnover_spike_signals(data, turnover_window, turnover_multiplier, use_gpu=use_gpu)
     if "Momentum" in enabled_algos:
         data = add_momentum_signals(data, momentum_window, momentum_threshold_pct)
     if "Volatility Breakout" in enabled_algos:
