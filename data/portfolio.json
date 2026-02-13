@@ -69,13 +69,6 @@
     "purchase_date": "2026-02-06",
     "last_updated": "2026-02-06 23:15:51"
   },
-  "069260": {
-    "name": "TKG휴켐스",
-    "quantity": 100,
-    "avg_price": 20100,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:16:08"
-  },
   "017670": {
     "name": "SK텔레콤",
     "quantity": 29,
@@ -138,5 +131,19 @@
     "avg_price": 0,
     "purchase_date": "2026-02-12",
     "last_updated": "2026-02-12 21:22:35"
+  },
+  "003240": {
+    "name": "태광산업",
+    "quantity": 1,
+    "avg_price": 0,
+    "purchase_date": "2026-02-13",
+    "last_updated": "2026-02-13 22:57:20"
+  },
+  "007340": {
+    "name": "DN오토모티브",
+    "quantity": 1,
+    "avg_price": 0,
+    "purchase_date": "2026-02-13",
+    "last_updated": "2026-02-13 22:57:23"
   }
 }

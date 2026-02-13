@@ -69,14 +69,11 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
                     del st.session_state.applied_turnover_window
                 if 'applied_turnover_multiplier' in st.session_state:
                     del st.session_state.applied_turnover_multiplier
-                if 'applied_kospi_bullish' in st.session_state:
-                    del st.session_state.applied_kospi_bullish
                 st.rerun()
         
         # 적용된 파라미터 값 사용 (있으면)
         default_window = st.session_state.get('applied_turnover_window', 30)
         default_multiplier = st.session_state.get('applied_turnover_multiplier', 2.0)
-        default_kospi_bullish = st.session_state.get('applied_kospi_bullish', True)
         
         with st.expander("📊 거래량 분석", expanded=True):
             turnover_window = st.number_input(
@@ -98,12 +95,6 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
             )
             
             st.markdown("---")
-            kospi_bullish_only = st.toggle(
-                "📈 코스피 양봉일 때만 매수",
-                value=default_kospi_bullish,
-                help="켜면: 코스피 지수가 전일 대비 상승(양봉)인 날에만 BUY 시그널 표시",
-                key="kospi_bullish_signal"
-            )
 
         # 백테스트 설정은 시뮬레이션 탭에서만 표시
         initial_cash = 50_000_000
@@ -141,7 +132,6 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
         "initial_cash": float(initial_cash),
         "max_daily_buys": int(max_daily_buys),
         "buy_unit": float(buy_unit),
-        "kospi_bullish_only": bool(kospi_bullish_only),
         "use_finance_filter": False,
         "per_max": None,
         "pbr_max": None,
@@ -909,7 +899,7 @@ def run_turnover_strategy_backtest(
     
     # 코스피 양봉 날짜 세트 생성 (전일 대비 상승한 날)
     kospi_bullish_dates = set()
-    if kospi_bullish_only and not kospi_index.empty:
+    if not kospi_index.empty:
         ki = kospi_index.copy()
         ki["date"] = pd.to_datetime(ki["date"], errors="coerce").dt.normalize()
         ki = ki.sort_values("date").drop_duplicates(subset=["date"], keep="last")
@@ -1036,15 +1026,16 @@ def run_turnover_strategy_backtest(
             ret = (close_price - pos["avg_cost"]) / pos["avg_cost"] if pos["avg_cost"] > 0 else 0
             
             if ret <= -0.05:
+                is_kospi_bullish = (date in kospi_bullish_dates) if kospi_bullish_dates else True
                 if pos["step"] == 0:
                     # step 0: 첫 번째 추가 매수 (다음날 시작가로)
-                    if next_date:
+                    if next_date and is_kospi_bullish:
                         if next_date not in pending_buys:
                             pending_buys[next_date] = []
                         pending_buys[next_date].append((code, buy_unit, 1))
                 elif pos["step"] == 1:
                     # step 1: 두 번째 추가 매수 (다음날 시작가로)
-                    if next_date:
+                    if next_date and is_kospi_bullish:
                         if next_date not in pending_buys:
                             pending_buys[next_date] = []
                         pending_buys[next_date].append((code, buy_unit * 2, 2))
@@ -1055,21 +1046,15 @@ def run_turnover_strategy_backtest(
 
         # 시그널 처리
         if next_date:
-            # 매수 시그널 (코스피 양봉 조건 체크)
+            # 매수 시그널
             if date in buy_by_date:
-                # 코스피 양봉 조건이 켜져 있으면, 해당 날짜가 양봉인지 확인
-                can_buy = True
-                if kospi_bullish_only and kospi_bullish_dates:
-                    can_buy = (date in kospi_bullish_dates)
-                
-                if can_buy:
-                    daily_buy_count = 0
-                    for code in buy_by_date[date]:
-                        if code not in positions and daily_buy_count < max_daily_buys:
-                            if next_date not in pending_buys:
-                                pending_buys[next_date] = []
-                            pending_buys[next_date].append((code, buy_unit, 0))
-                            daily_buy_count += 1
+                daily_buy_count = 0
+                for code in buy_by_date[date]:
+                    if code not in positions and daily_buy_count < max_daily_buys:
+                        if next_date not in pending_buys:
+                            pending_buys[next_date] = []
+                        pending_buys[next_date].append((code, buy_unit, 0))
+                        daily_buy_count += 1
             
             # 매도 시그널
             if date in sell_by_date:
@@ -1320,14 +1305,6 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
                 key="vol_options"
             )
         
-        st.markdown("**코스피 양봉 조건**")
-        kospi_bullish_options = st.multiselect(
-            "ON/OFF 테스트",
-            options=[False, True],
-            default=[False, True],
-            format_func=lambda x: "ON (양봉일때만 매수)" if x else "OFF (항상 매수)",
-            key="kospi_bullish_options"
-        )
     
     # 최적화 기준 선택
     st.markdown("#### 🎯 최적화 기준")
@@ -1354,10 +1331,6 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             st.error("평균 대비 배수 값을 최소 1개 이상 선택해주세요.")
             return
         
-        if not kospi_bullish_options:
-            st.error("코스피 양봉 조건을 최소 1개 이상 선택해주세요.")
-            return
-        
         if max_daily_buys_min > max_daily_buys_max:
             st.error("일일 최대 매수 종목 수의 최소값이 최대값보다 클 수 없습니다.")
             return
@@ -1366,16 +1339,14 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
         param_ranges = {
             'max_daily_buys': list(range(max_daily_buys_min, max_daily_buys_max + 1)),
             'rolling_days': sorted(rolling_days_options),
-            'volume_threshold': sorted(volume_threshold_options),
-            'kospi_bullish_only': kospi_bullish_options
+            'volume_threshold': sorted(volume_threshold_options)
         }
         
         # 총 조합 수 계산
         total_combinations = (
             len(param_ranges['max_daily_buys']) * 
             len(param_ranges['rolling_days']) * 
-            len(param_ranges['volume_threshold']) *
-            len(param_ranges['kospi_bullish_only'])
+            len(param_ranges['volume_threshold'])
         )
         
         st.info(f"총 {total_combinations}개의 파라미터 조합을 테스트합니다. 시간이 다소 걸릴 수 있습니다.")
@@ -1435,7 +1406,7 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             
             # 최적 파라미터 표시
             st.markdown("### 🏆 최적 파라미터")
-            col1, col2, col3, col4, col5 = st.columns(5)
+            col1, col2, col3, col4 = st.columns(4)
             
             with col1:
                 st.metric("일일 최대 매수 종목", f"{optimal_params['max_daily_buys']}개")
@@ -1444,9 +1415,6 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             with col3:
                 st.metric("평균 대비 배수", f"{optimal_params['volume_threshold']}배")
             with col4:
-                kospi_bullish_val = optimal_params.get('kospi_bullish_only', False)
-                st.metric("코스피 양봉", "ON" if kospi_bullish_val else "OFF")
-            with col5:
                 metric_name = {
                     "total_return": "총 수익률",
                     "sharpe_ratio": "샤프 비율",
@@ -1464,7 +1432,6 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
                 # session_state에 최적 파라미터 저장
                 st.session_state.applied_turnover_window = optimal_params['rolling_days']
                 st.session_state.applied_turnover_multiplier = optimal_params['volume_threshold']
-                st.session_state.applied_kospi_bullish = optimal_params.get('kospi_bullish_only', False)
                 st.session_state.optimal_params_applied = True
                 st.success("✅ 파라미터가 적용되었습니다! '📊 시그널' 탭에서 확인하세요.")
                 st.balloons()
@@ -1494,7 +1461,6 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
                     '일일매수': st.column_config.NumberColumn(format="%d"),
                     '평균일': st.column_config.NumberColumn(format="%d"),
                     '배수': st.column_config.NumberColumn(format="%.1f"),
-                    '코스피양봉': st.column_config.TextColumn(),
                     '수익률(%)': st.column_config.NumberColumn(format="%.2f"),
                     'KOSPI(%)': st.column_config.NumberColumn(format="%.2f"),
                     '초과수익(%)': st.column_config.NumberColumn(format="%.2f"),
@@ -1519,7 +1485,7 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             st.markdown("### 📊 파라미터별 성과 분석")
             
             # 각 파라미터별 평균 수익률
-            tab1, tab2, tab3, tab4 = st.tabs(["일일 매수 종목수", "평균 거래일", "평균 대비 배수", "코스피 양봉 조건"])
+            tab1, tab2, tab3 = st.tabs(["일일 매수 종목수", "평균 거래일", "평균 대비 배수"])
             
             with tab1:
                 avg_by_buys = results_df.groupby('max_daily_buys')[optimization_metric].mean().reset_index()
@@ -1533,11 +1499,6 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
                 avg_by_threshold = results_df.groupby('volume_threshold')[optimization_metric].mean().reset_index()
                 st.bar_chart(avg_by_threshold.set_index('volume_threshold'))
             
-            with tab4:
-                avg_by_kospi = results_df.groupby('kospi_bullish_only')[optimization_metric].mean().reset_index()
-                avg_by_kospi['kospi_bullish_only'] = avg_by_kospi['kospi_bullish_only'].apply(lambda x: 'ON (양봉만)' if x else 'OFF (항상)')
-                avg_by_kospi = avg_by_kospi.set_index('kospi_bullish_only')
-                st.bar_chart(avg_by_kospi)
             
         except Exception as e:
             st.error(f"최적화 중 오류가 발생했습니다: {str(e)}")
@@ -1551,7 +1512,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
     st.caption("거래량 급등 기반 스마트 투자 시그널")
 
     # 상위 사이드바에서 선택한 탭 사용
-    available_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", " 데이터"]
+    available_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", "🔄 데이터"]
     if current_tab not in available_tabs:
         current_tab = "📊 시그널"
 
@@ -1626,7 +1587,6 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         with filter_col1:
             st.caption(f"기준일: {selected_date.date()}")
             st.caption(f"표시 종목 수: 상위 {params['top_n']}개")
-            st.caption(f"코스피 양봉 조건: {'ON' if params['kospi_bullish_only'] else 'OFF'}")
         with filter_col2:
             st.caption("결과 표시 방식")
             view_mode = st.radio(
@@ -1642,11 +1602,6 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             else:
                 st.error(f"📉 음봉 ({kospi_change_pct:+.2f}%)")
         
-        # 코스피 양봉 조건이 켜져 있고 음봉일 때 경고
-        if params["kospi_bullish_only"] and not is_kospi_bullish:
-            st.warning("⚠️ 코스피가 음봉이므로 BUY 시그널이 필터링됩니다. (양봉 조건 ON)")
-            # BUY 시그널 필터링
-            signals = signals[signals["signal"] != "BUY"]
 
         st.divider()
         st.subheader(f"📊 결과 · {selected_date.date()} 투자 시그널")
@@ -1733,7 +1688,6 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             initial_cash=params["initial_cash"],
             max_daily_buys=params["max_daily_buys"],
             buy_unit=params["buy_unit"],
-            kospi_bullish_only=params["kospi_bullish_only"],
         )
         render_backtest_curve(equity_df, kospi_index, selected_date)
         if not equity_df.empty:

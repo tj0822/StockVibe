@@ -89,7 +89,6 @@ class BacktestOptimizer:
                     top_n=10,
                     initial_cash=initial_cash,
                     max_daily_buys=params.get('max_daily_buys', 2),
-                    kospi_bullish_only=params.get('kospi_bullish_only', False),
                     fee_rate=fee_rate,
                     slippage_rate=slippage_rate,
                     sell_tax_rate=sell_tax_rate,
@@ -142,7 +141,6 @@ class BacktestOptimizer:
                             'max_daily_buys': params.get('max_daily_buys', 2),
                             'rolling_days': params.get('rolling_days', 20),
                             'volume_threshold': params.get('volume_threshold', 2.0),
-                            'kospi_bullish_only': params.get('kospi_bullish_only', False),
                             'total_return': total_return,
                             'net_return': net_return,
                             'kospi_return': kospi_return,
@@ -236,7 +234,6 @@ class BacktestOptimizer:
             'max_daily_buys': int(best_row['max_daily_buys']),
             'rolling_days': int(best_row['rolling_days']),
             'volume_threshold': float(best_row['volume_threshold']),
-            'kospi_bullish_only': bool(best_row.get('kospi_bullish_only', False)),
             f'best_{metric}': float(best_row[metric])
         }
 
