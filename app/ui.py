@@ -872,18 +872,22 @@ def run_turnover_strategy_backtest(
     fee_rate: float = 0.0,
     slippage_rate: float = 0.0,
     sell_tax_rate: float = 0.0,
+    open_pivot: pd.DataFrame | None = None,
+    close_pivot: pd.DataFrame | None = None,
+    kospi_bullish_dates: set | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    # 데이터 전처리 및 최적화
-    price_data = price_df[["date", "code", "open", "close"]].copy()
-    price_data["date"] = pd.to_datetime(price_data["date"], errors="coerce").dt.normalize()
-    price_data = price_data.dropna(subset=["date", "code", "open", "close"])
-    
-    # 중복 제거 (같은 날짜, 같은 종목의 경우 마지막 값 사용)
-    price_data = price_data.sort_values(["date", "code"]).drop_duplicates(subset=["date", "code"], keep="last")
+    if open_pivot is None or close_pivot is None:
+        # 데이터 전처리 및 최적화
+        price_data = price_df[["date", "code", "open", "close"]].copy()
+        price_data["date"] = pd.to_datetime(price_data["date"], errors="coerce").dt.normalize()
+        price_data = price_data.dropna(subset=["date", "code", "open", "close"])
+        
+        # 중복 제거 (같은 날짜, 같은 종목의 경우 마지막 값 사용)
+        price_data = price_data.sort_values(["date", "code"]).drop_duplicates(subset=["date", "code"], keep="last")
 
-    # 빠른 조회를 위한 pivot 테이블 생성
-    open_pivot = price_data.pivot(index="date", columns="code", values="open")
-    close_pivot = price_data.pivot(index="date", columns="code", values="close")
+        # 빠른 조회를 위한 pivot 테이블 생성
+        open_pivot = price_data.pivot(index="date", columns="code", values="open")
+        close_pivot = price_data.pivot(index="date", columns="code", values="close")
     
     signal_df = signal_df.copy()
     signal_df["date"] = pd.to_datetime(signal_df["date"], errors="coerce").dt.normalize()
@@ -912,14 +916,15 @@ def run_turnover_strategy_backtest(
     dates = [d for d in open_pivot.index if d >= start_date]
     
     # 코스피 양봉 날짜 세트 생성 (전일 대비 상승한 날)
-    kospi_bullish_dates = set()
-    if not kospi_index.empty:
-        ki = kospi_index.copy()
-        ki["date"] = pd.to_datetime(ki["date"], errors="coerce").dt.normalize()
-        ki = ki.sort_values("date").drop_duplicates(subset=["date"], keep="last")
-        ki["prev_index"] = ki["index"].shift(1)
-        ki["is_bullish"] = ki["index"] > ki["prev_index"]
-        kospi_bullish_dates = set(ki[ki["is_bullish"]]["date"].values)
+    if kospi_bullish_dates is None:
+        kospi_bullish_dates = set()
+        if not kospi_index.empty:
+            ki = kospi_index.copy()
+            ki["date"] = pd.to_datetime(ki["date"], errors="coerce").dt.normalize()
+            ki = ki.sort_values("date").drop_duplicates(subset=["date"], keep="last")
+            ki["prev_index"] = ki["index"].shift(1)
+            ki["is_bullish"] = ki["index"] > ki["prev_index"]
+            kospi_bullish_dates = set(ki[ki["is_bullish"]]["date"].values)
     
     positions: dict[str, dict] = {}
     cash = float(initial_cash)
@@ -1312,8 +1317,8 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
         with col_c:
             rolling_days_options = st.multiselect(
                 "테스트할 값 선택",
-                options=[10, 15, 20, 30, 40, 60],
-                default=[10, 20, 30],
+                options=list(range(5, 31, 5)),
+                default=[5, 10, 20, 30],
                 key="rolling_options"
             )
         
@@ -1322,16 +1327,16 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
         with col_e:
             volume_threshold_options = st.multiselect(
                 "테스트할 값 선택",
-                options=[1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
-                default=[1.5, 2.0, 2.5, 3.0],
+                options=[x / 2 for x in range(4, 21)],
+                default=[2.0, 3.0, 4.0],
                 key="vol_options"
             )
 
         st.markdown("**추가매수 손실 임계값(%)**")
         add_buy_threshold_options = st.multiselect(
             "테스트할 값 선택",
-            options=[-10.0, -7.5, -5.0, -3.0, -2.0],
-            default=[-7.5, -5.0, -3.0],
+            options=[-float(x) for x in range(1, 11)],
+            default=[-5.0, -3.0, -2.0],
             key="add_buy_threshold_options"
         )
         
@@ -1346,6 +1351,32 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             "sharpe_ratio": "샤프 비율 (위험 대비 수익)",
             "excess_return": "초과 수익률 (KOSPI 대비)"
         }[x]
+    )
+
+    st.markdown("#### 🔎 탐색 방식")
+    search_mode = st.selectbox(
+        "최적화 방식",
+        options=["grid", "random"],
+        index=0,
+        format_func=lambda x: "그리드 서치" if x == "grid" else "랜덤 서치"
+    )
+    sample_count = st.number_input(
+        "랜덤 샘플 수",
+        min_value=50,
+        max_value=5000,
+        value=300,
+        step=50,
+        help="랜덤 서치에서 테스트할 파라미터 조합 개수",
+        disabled=(search_mode != "random")
+    )
+    random_seed = st.number_input(
+        "랜덤 시드",
+        min_value=0,
+        max_value=99999,
+        value=42,
+        step=1,
+        help="같은 시드면 동일한 샘플을 사용합니다",
+        disabled=(search_mode != "random")
     )
     
     # 최적화 실행 버튼
@@ -1384,8 +1415,17 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             len(param_ranges['volume_threshold']) *
             len(param_ranges['add_buy_threshold_pct'])
         )
-        
-        st.info(f"총 {total_combinations}개의 파라미터 조합을 테스트합니다. 시간이 다소 걸릴 수 있습니다.")
+
+        if search_mode == "random":
+            sample_count = min(int(sample_count), total_combinations)
+            if sample_count <= 0:
+                st.error("랜덤 샘플 수가 0입니다. 파라미터 범위를 확인하세요.")
+                return
+            st.info(
+                f"랜덤 서치: 총 {total_combinations}개 중 {sample_count}개 조합을 샘플링합니다."
+            )
+        else:
+            st.info(f"총 {total_combinations}개의 파라미터 조합을 테스트합니다. 시간이 다소 걸릴 수 있습니다.")
         
         # 프로그레스 바 설정
         progress_bar = st.progress(0)
@@ -1398,7 +1438,8 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
                 f"진행중: {current}/{total} "
                 f"(매수종목: {params.get('max_daily_buys')}, "
                 f"평균일: {params.get('rolling_days')}, "
-                f"배수: {params.get('volume_threshold')})"
+                f"배수: {params.get('volume_threshold')}, "
+                f"추가매수: {params.get('add_buy_threshold_pct')})"
             )
         
         # 최적화 실행
@@ -1410,7 +1451,10 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
                 end_date=end_date,
                 param_ranges=param_ranges,
                 initial_cash=initial_cash,
-                progress_callback=update_progress
+                progress_callback=update_progress,
+                search_mode=search_mode,
+                sample_size=sample_count,
+                random_seed=random_seed,
             )
             
             progress_bar.progress(1.0)

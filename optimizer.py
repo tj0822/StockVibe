@@ -7,6 +7,8 @@ from itertools import product
 from typing import Dict, List, Tuple
 import streamlit as st
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import random
 
 
 class BacktestOptimizer:
@@ -25,7 +27,10 @@ class BacktestOptimizer:
         fee_rate: float = 0.00015,
         slippage_rate: float = 0.0005,
         sell_tax_rate: float = 0.0018,
-        progress_callback=None
+        progress_callback=None,
+        search_mode: str = "grid",
+        sample_size: int = 0,
+        random_seed: int = 42,
     ) -> pd.DataFrame:
         """
         파라미터 그리드 서치를 통한 최적화
@@ -52,10 +57,34 @@ class BacktestOptimizer:
         param_names = list(param_ranges.keys())
         param_values = list(param_ranges.values())
         combinations = list(product(*param_values))
+
+        if search_mode == "random" and combinations:
+            rng = random.Random(random_seed)
+            effective_size = max(1, min(int(sample_size), len(combinations)))
+            combinations = rng.sample(combinations, effective_size)
         
         total_combinations = len(combinations)
         results = []
         completed_count = 0
+
+        signals_cache: dict[tuple[int, float], pd.DataFrame] = {}
+        cache_lock = threading.Lock()
+
+        price_data = self.price_df[["date", "code", "open", "close"]].copy()
+        price_data["date"] = pd.to_datetime(price_data["date"], errors="coerce").dt.normalize()
+        price_data = price_data.dropna(subset=["date", "code", "open", "close"])
+        price_data = price_data.sort_values(["date", "code"]).drop_duplicates(subset=["date", "code"], keep="last")
+        open_pivot = price_data.pivot(index="date", columns="code", values="open")
+        close_pivot = price_data.pivot(index="date", columns="code", values="close")
+
+        kospi_bullish_dates = set()
+        if not self.kospi_index.empty:
+            ki = self.kospi_index.copy()
+            ki["date"] = pd.to_datetime(ki["date"], errors="coerce").dt.normalize()
+            ki = ki.sort_values("date").drop_duplicates(subset=["date"], keep="last")
+            ki["prev_index"] = ki["index"].shift(1)
+            ki["is_bullish"] = ki["index"] > ki["prev_index"]
+            kospi_bullish_dates = set(ki[ki["is_bullish"]]["date"].values)
         
         # 병렬 처리를 위한 작업 함수
         def test_combination(combo):
@@ -65,20 +94,28 @@ class BacktestOptimizer:
             params = dict(zip(param_names, combo))
             
             try:
-                # 시그널 생성
-                signals = build_signals(
-                    df=self.price_df,
-                    turnover_window=params.get('rolling_days', 20),
-                    turnover_multiplier=params.get('volume_threshold', 2.0),
-                    momentum_window=20,
-                    momentum_threshold_pct=5.0,
-                    vol_window=20,
-                    vol_multiplier=2.0,
-                    mr_window=20,
-                    mr_z=2.0,
-                    enabled_algos=["Turnover Spike"],
-                    combine_mode="OR"
-                )
+                # 시그널 생성 (rolling_days, volume_threshold 조합별 캐시)
+                rolling_days = params.get('rolling_days', 20)
+                volume_threshold = params.get('volume_threshold', 2.0)
+                cache_key = (int(rolling_days), float(volume_threshold))
+                with cache_lock:
+                    signals = signals_cache.get(cache_key)
+                if signals is None:
+                    signals = build_signals(
+                        df=self.price_df,
+                        turnover_window=rolling_days,
+                        turnover_multiplier=volume_threshold,
+                        momentum_window=20,
+                        momentum_threshold_pct=5.0,
+                        vol_window=20,
+                        vol_multiplier=2.0,
+                        mr_window=20,
+                        mr_z=2.0,
+                        enabled_algos=["Turnover Spike"],
+                        combine_mode="OR"
+                    )
+                    with cache_lock:
+                        signals_cache[cache_key] = signals
                 
                 # 백테스트 실행
                 equity_df, trades_df = run_turnover_strategy_backtest(
@@ -93,6 +130,9 @@ class BacktestOptimizer:
                     fee_rate=fee_rate,
                     slippage_rate=slippage_rate,
                     sell_tax_rate=sell_tax_rate,
+                    open_pivot=open_pivot,
+                    close_pivot=close_pivot,
+                    kospi_bullish_dates=kospi_bullish_dates,
                 )
                 
                 if not equity_df.empty:
@@ -167,7 +207,7 @@ class BacktestOptimizer:
         
         # 병렬 실행 (CPU 코어 수의 절반 사용)
         import os
-        max_workers = max(1, os.cpu_count() // 2) if os.cpu_count() else 4
+        max_workers = max(1, (os.cpu_count() or 4) - 1)
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 모든 작업 제출
