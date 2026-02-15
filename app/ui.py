@@ -72,8 +72,8 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
                 st.rerun()
         
         # 적용된 파라미터 값 사용 (있으면)
-        default_window = st.session_state.get('applied_turnover_window', 30)
-        default_multiplier = st.session_state.get('applied_turnover_multiplier', 2.0)
+        default_window = st.session_state.get('applied_turnover_window', 10)
+        default_multiplier = st.session_state.get('applied_turnover_multiplier', 3.0)
         
         with st.expander("📊 거래량 분석", expanded=True):
             turnover_window = st.number_input(
@@ -92,7 +92,7 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
                 "추가매수 손실 임계값 (%)",
                 min_value=-30.0,
                 max_value=-1.0,
-                value=-5.0,
+                value=-7.0,
                 step=0.5,
                 key="add_buy_threshold_pct",
                 help="해당 종목 수익률이 이 값 이하일 때 추가매수 조건을 확인"
@@ -1701,6 +1701,23 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         else:
             st.caption(f"조회 결과: 총 {len(latest)}개 종목")
             render_table_with_finance(latest, cols, finance_df, df)
+
+        st.divider()
+        st.subheader("✅ 매수 후보")
+        buy_pick = latest[latest["signal"] == "BUY"].head(1)
+        if buy_pick.empty:
+            st.caption("상위 표시 종목 중 매수 시그널이 없습니다.")
+        else:
+            row = buy_pick.iloc[0]
+            import re
+            raw_name = row.get("name", "")
+            clean_name = re.sub(r"<[^>]+>", "", str(raw_name))
+            code = row.get("code", "")
+            spike_ratio = row.get("spike_ratio", None)
+            if pd.notna(spike_ratio):
+                st.success(f"매수 후보: {clean_name} ({code}) · 급등 비율 {spike_ratio:.0%}")
+            else:
+                st.success(f"매수 후보: {clean_name} ({code})")
 
         st.divider()
         st.subheader("📤 액션")
