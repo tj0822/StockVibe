@@ -1,4 +1,5 @@
 import json
+import textwrap
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -329,7 +330,13 @@ def render_table(latest: pd.DataFrame, cols: list[str]) -> None:
     st.markdown(styled.hide(axis="index").to_html(escape=False), unsafe_allow_html=True)
 
 
-def render_table_with_finance(latest: pd.DataFrame, cols: list[str], finance_df: pd.DataFrame, price_df: pd.DataFrame = None) -> None:
+def render_table_with_finance(
+    latest: pd.DataFrame,
+    cols: list[str],
+    finance_df: pd.DataFrame,
+    price_df: pd.DataFrame = None,
+    focus_code: str | None = None,
+) -> None:
     """재무정보를 포함하여 각 종목별로 개별 펼치기로 표시"""
     
     # 포트폴리오 정보 로드
@@ -393,8 +400,10 @@ def render_table_with_finance(latest: pd.DataFrame, cols: list[str], finance_df:
         else:
             title = f"{portfolio_badge}{signal_color} **{clean_name}** ({code}) | {signal}"
         
-        # 최상위 종목(idx=0)은 자동으로 펼치기
-        auto_expand = (idx == 0)
+        # 최상위 종목(idx=0) 또는 선택 종목은 자동으로 펼치기
+        if focus_code is not None:
+            focus_code = str(focus_code).strip()
+        auto_expand = (idx == 0) or (focus_code and str(code) == focus_code)
         
         with st.expander(title, expanded=auto_expand):
             # 탭으로 정보 구조화
@@ -1665,26 +1674,189 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                     is_kospi_bullish = today_val > prev_val
                     kospi_change_pct = ((today_val - prev_val) / prev_val * 100) if prev_val > 0 else 0
         
-        st.subheader("🧭 필터")
-        filter_col1, filter_col2, filter_col3 = st.columns([2, 1.5, 1.2])
-        with filter_col1:
-            st.caption(f"기준일: {selected_date.date()}")
-            st.caption(f"표시 종목 수: 상위 {params['top_n']}개")
-        with filter_col2:
-            st.caption("결과 표시 방식")
-            view_mode = st.radio(
-                "표시 방식",
-                ["📊 테이블", "📋 상세"],
-                horizontal=True,
-                label_visibility="collapsed",
-                key="signal_view_mode",
-            )
-        with filter_col3:
-            if is_kospi_bullish:
-                st.success(f"📈 양봉 ({kospi_change_pct:+.2f}%)")
-            else:
-                st.error(f"📉 음봉 ({kospi_change_pct:+.2f}%)")
-        
+        focus_code = st.query_params.get("focus", "")
+        if isinstance(focus_code, list):
+            focus_code = focus_code[0] if focus_code else ""
+        focus_code = str(focus_code).strip()
+
+        selected_signals = signals[(signals["date"] == selected_date) & (signals["signal"] != "")].copy()
+        buy_count = int((selected_signals["signal"] == "BUY").sum())
+        sell_count = int((selected_signals["signal"] == "SELL").sum())
+        total_count = int(len(selected_signals))
+
+        buy_alpha = min(0.35, 0.08 + (buy_count * 0.02))
+        sell_alpha = min(0.35, 0.08 + (sell_count * 0.02))
+        buy_border = min(0.5, buy_alpha + 0.15)
+        sell_border = min(0.5, sell_alpha + 0.15)
+
+        css = """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap');
+        :root {
+            --sv-bg: #f7f5ef;
+            --sv-card: #ffffff;
+            --sv-ink: #1f1f1f;
+            --sv-muted: #6b6b6b;
+            --sv-accent: #0ea5a8;
+            --sv-buy: #e11d48;
+            --sv-sell: #2563eb;
+            --sv-border: #e7e2d7;
+            --sv-buy-alpha: __BUY_ALPHA__;
+            --sv-sell-alpha: __SELL_ALPHA__;
+            --sv-buy-border: __BUY_BORDER__;
+            --sv-sell-border: __SELL_BORDER__;
+        }
+        .sv-dashboard {
+            background: linear-gradient(135deg, #faf6ee 0%, #eef7f6 100%);
+            border: 1px solid var(--sv-border);
+            border-radius: 18px;
+            padding: 16px;
+            box-shadow: 0 10px 24px rgba(22, 22, 22, 0.06);
+        }
+        .sv-grid {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .sv-card {
+            background: var(--sv-card);
+            border: 1px solid var(--sv-border);
+            border-radius: 14px;
+            padding: 12px 14px;
+            min-width: 160px;
+            flex: 1;
+        }
+        .sv-kicker {
+            font-size: 11px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--sv-muted);
+            margin-bottom: 6px;
+        }
+        .sv-title {
+            font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
+            font-weight: 700;
+            font-size: 18px;
+            color: var(--sv-ink);
+            margin: 0;
+        }
+        .sv-sub {
+            font-size: 13px;
+            color: var(--sv-muted);
+        }
+        .sv-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            border: 1px solid transparent;
+            margin-right: 6px;
+            margin-bottom: 6px;
+            text-decoration: none;
+        }
+        .sv-pill.buy { background: rgba(225, 29, 72, var(--sv-buy-alpha)); color: var(--sv-buy); border-color: rgba(225, 29, 72, var(--sv-buy-border)); }
+        .sv-pill.sell { background: rgba(37, 99, 235, var(--sv-sell-alpha)); color: var(--sv-sell); border-color: rgba(37, 99, 235, var(--sv-sell-border)); }
+        .sv-pill.neutral { background: rgba(14, 165, 168, 0.08); color: var(--sv-accent); border-color: rgba(14, 165, 168, 0.25); }
+        .sv-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+        .sv-highlight {
+            background: #fff8ef;
+            border: 1px solid #f0dcc4;
+            border-radius: 16px;
+            padding: 14px 16px;
+        }
+        .sv-card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 12px;
+        }
+        .sv-signal-card {
+            background: var(--sv-card);
+            border: 1px solid var(--sv-border);
+            border-radius: 14px;
+            padding: 12px 14px;
+            box-shadow: 0 8px 18px rgba(18, 18, 18, 0.04);
+        }
+        .sv-signal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .sv-tag {
+            font-size: 11px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            border: 1px solid transparent;
+        }
+        .sv-tag.buy { background: rgba(225, 29, 72, var(--sv-buy-alpha)); color: var(--sv-buy); border-color: rgba(225, 29, 72, var(--sv-buy-border)); }
+        .sv-tag.sell { background: rgba(37, 99, 235, var(--sv-sell-alpha)); color: var(--sv-sell); border-color: rgba(37, 99, 235, var(--sv-sell-border)); }
+        .sv-tag.neutral { background: rgba(14, 165, 168, 0.08); color: var(--sv-accent); border-color: rgba(14, 165, 168, 0.25); }
+        .sv-card-footer {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--sv-muted);
+        }
+        @media (max-width: 640px) {
+            .sv-card { min-width: 140px; }
+        }
+        </style>
+        """
+        css = css.replace("__BUY_ALPHA__", f"{buy_alpha:.2f}")
+        css = css.replace("__SELL_ALPHA__", f"{sell_alpha:.2f}")
+        css = css.replace("__BUY_BORDER__", f"{buy_border:.2f}")
+        css = css.replace("__SELL_BORDER__", f"{sell_border:.2f}")
+        css = textwrap.dedent(css).strip()
+        st.markdown(css, unsafe_allow_html=True)
+
+        mood_label = "양봉" if is_kospi_bullish else "음봉"
+        mood_emoji = "📈" if is_kospi_bullish else "📉"
+
+        dashboard_html = textwrap.dedent(
+            f"""
+            <div class="sv-dashboard">
+                <div class="sv-grid">
+                    <div class="sv-card">
+                        <div class="sv-kicker">Date</div>
+                        <div class="sv-title">{selected_date.date()}</div>
+                        <div class="sv-sub">기준일</div>
+                    </div>
+                    <div class="sv-card">
+                        <div class="sv-kicker">KOSPI Index</div>
+                        <div class="sv-title">{mood_emoji} {mood_label}</div>
+                        <div class="sv-sub">{kospi_change_pct:+.2f}%</div>
+                    </div>
+                    <div class="sv-card">
+                        <div class="sv-kicker">Signals</div>
+                        <div class="sv-title">{total_count}개</div>
+                        <div class="sv-sub">BUY {buy_count} · SELL {sell_count}</div>
+                    </div>
+                    <div class="sv-card">
+                        <div class="sv-kicker">Top Picks</div>
+                        <div class="sv-title">상위 {params['top_n']}개</div>
+                        <div class="sv-sub">표시 종목 수</div>
+                    </div>
+                </div>
+            </div>
+            """
+        ).strip()
+        st.markdown(dashboard_html, unsafe_allow_html=True)
+
+        if focus_code:
+            st.session_state.signal_view_mode = "📋 상세"
+        elif "signal_view_mode" not in st.session_state:
+            st.session_state.signal_view_mode = "📊 테이블"
+
+        view_mode = st.radio(
+            "표시 방식",
+            ["📊 테이블", "📋 상세"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="signal_view_mode",
+        )
 
         st.divider()
         st.subheader(f"📊 결과 · {selected_date.date()} 투자 시그널")
@@ -1695,29 +1867,103 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         if latest.empty:
             st.info("표시할 시그널 결과가 없습니다.")
             st.caption("분석 기간, 급등 기준, 표시 종목 수를 조정하면 결과가 나타날 수 있습니다.")
-        elif view_mode == "📊 테이블":
-            st.caption(f"조회 결과: 총 {len(latest)}개 종목")
-            render_table(latest, cols)
         else:
-            st.caption(f"조회 결과: 총 {len(latest)}개 종목")
-            render_table_with_finance(latest, cols, finance_df, df)
-
-        st.divider()
-        st.subheader("✅ 매수 후보")
-        buy_pick = latest[latest["signal"] == "BUY"].head(1)
-        if buy_pick.empty:
-            st.caption("상위 표시 종목 중 매수 시그널이 없습니다.")
-        else:
-            row = buy_pick.iloc[0]
+            import html
             import re
-            raw_name = row.get("name", "")
-            clean_name = re.sub(r"<[^>]+>", "", str(raw_name))
-            code = row.get("code", "")
-            spike_ratio = row.get("spike_ratio", None)
-            if pd.notna(spike_ratio):
-                st.success(f"매수 후보: {clean_name} ({code}) · 급등 비율 {spike_ratio:.0%}")
+
+            buy_pick = latest[latest["signal"] == "BUY"].head(1)
+            st.subheader("✅ 매수 후보")
+            if buy_pick.empty:
+                st.caption("상위 표시 종목 중 매수 시그널이 없습니다.")
             else:
-                st.success(f"매수 후보: {clean_name} ({code})")
+                row = buy_pick.iloc[0]
+                raw_name = row.get("name", "")
+                clean_name = re.sub(r"<[^>]+>", "", str(raw_name))
+                code = row.get("code", "")
+                spike_ratio = row.get("spike_ratio", None)
+                badge = "급등 비율 정보 없음"
+                if pd.notna(spike_ratio):
+                    badge = f"급등 비율 {spike_ratio:.0%}"
+                buy_pick_html = textwrap.dedent(
+                    f"""
+                    <div class="sv-highlight">
+                        <div class="sv-kicker">Buy Pick</div>
+                        <div class="sv-title">{html.escape(clean_name)} ({html.escape(str(code))})</div>
+                        <div class="sv-sub">{badge}</div>
+                    </div>
+                    """
+                ).strip()
+                st.markdown(buy_pick_html, unsafe_allow_html=True)
+
+            chip_items = []
+            for _, row in latest.iterrows():
+                raw_name = row.get("name", "")
+                clean_name = re.sub(r"<[^>]+>", "", str(raw_name))
+                code = row.get("code", "")
+                signal = row.get("signal", "")
+                chip_class = "buy" if signal == "BUY" else "sell" if signal == "SELL" else "neutral"
+                chip_items.append(
+                    f"<a class=\"sv-pill {chip_class}\" href=\"?focus={html.escape(str(code))}\" title=\"상세 보기\">{html.escape(str(clean_name))} ({html.escape(str(code))}) · {html.escape(str(signal))}</a>"
+                )
+            if chip_items:
+                st.markdown("#### 🔖 상위 시그널")
+                st.markdown(f"<div class=\"sv-chip-row\">{''.join(chip_items)}</div>", unsafe_allow_html=True)
+                st.caption("칩을 클릭하면 해당 종목 상세가 자동으로 펼쳐집니다.")
+
+            signal_cards = []
+            for _, row in latest.iterrows():
+                raw_name = row.get("name", "")
+                clean_name = re.sub(r"<[^>]+>", "", str(raw_name))
+                code = row.get("code", "")
+                signal = row.get("signal", "")
+                close_price = row.get("close", None)
+                change_rate = row.get("change_rate", None)
+                spike_ratio = row.get("spike_ratio", None)
+                tag_class = "buy" if signal == "BUY" else "sell" if signal == "SELL" else "neutral"
+
+                price_text = "-"
+                if pd.notna(close_price):
+                    price_text = f"{close_price:,.0f}원"
+
+                change_text = "-"
+                if pd.notna(change_rate):
+                    change_text = f"{change_rate:+.2f}%"
+
+                spike_text = "-"
+                if pd.notna(spike_ratio):
+                    spike_text = f"{spike_ratio:.0%}"
+
+                card_html = textwrap.dedent(
+                    f"""
+                    <div class="sv-signal-card">
+                        <div class="sv-signal-header">
+                            <div>
+                                <div class="sv-title">{html.escape(str(clean_name))}</div>
+                                <div class="sv-sub">{html.escape(str(code))}</div>
+                            </div>
+                            <span class="sv-tag {tag_class}">{html.escape(str(signal))}</span>
+                        </div>
+                        <div class="sv-sub">종가 {price_text}</div>
+                        <div class="sv-sub">등락률 {change_text} · 급등 {spike_text}</div>
+                        <div class="sv-card-footer">
+                            <span>상세 보기</span>
+                            <a href="?focus={html.escape(str(code))}">→</a>
+                        </div>
+                    </div>
+                    """
+                ).strip()
+                signal_cards.append(card_html)
+
+            if signal_cards:
+                st.markdown("#### 🧩 카드형 리스트")
+                st.markdown(f"<div class=\"sv-card-grid\">{''.join(signal_cards)}</div>", unsafe_allow_html=True)
+
+            if view_mode == "📊 테이블":
+                st.caption(f"조회 결과: 총 {len(latest)}개 종목")
+                render_table(latest, cols)
+            else:
+                st.caption(f"조회 결과: 총 {len(latest)}개 종목")
+                render_table_with_finance(latest, cols, finance_df, df, focus_code=focus_code)
 
         st.divider()
         st.subheader("📤 액션")
