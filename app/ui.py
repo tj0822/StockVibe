@@ -1678,6 +1678,9 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         if isinstance(focus_code, list):
             focus_code = focus_code[0] if focus_code else ""
         focus_code = str(focus_code).strip()
+        session_focus = str(st.session_state.get("focus_code", "")).strip()
+        if session_focus:
+            focus_code = session_focus
 
         selected_signals = signals[(signals["date"] == selected_date) & (signals["signal"] != "")].copy()
         buy_count = int((selected_signals["signal"] == "BUY").sum())
@@ -1845,7 +1848,9 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         ).strip()
         st.markdown(dashboard_html, unsafe_allow_html=True)
 
-        if focus_code:
+        if "pending_view_mode" in st.session_state:
+            st.session_state.signal_view_mode = st.session_state.pop("pending_view_mode")
+        elif focus_code:
             st.session_state.signal_view_mode = "📋 상세"
         elif "signal_view_mode" not in st.session_state:
             st.session_state.signal_view_mode = "📊 테이블"
@@ -1901,62 +1906,23 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 clean_name = re.sub(r"<[^>]+>", "", str(raw_name))
                 code = row.get("code", "")
                 signal = row.get("signal", "")
-                chip_class = "buy" if signal == "BUY" else "sell" if signal == "SELL" else "neutral"
-                chip_items.append(
-                    f"<a class=\"sv-pill {chip_class}\" href=\"?focus={html.escape(str(code))}\" title=\"상세 보기\">{html.escape(str(clean_name))} ({html.escape(str(code))}) · {html.escape(str(signal))}</a>"
-                )
+                chip_items.append({
+                    "label": f"{clean_name} ({code}) · {signal}",
+                    "code": str(code),
+                })
             if chip_items:
                 st.markdown("#### 🔖 상위 시그널")
-                st.markdown(f"<div class=\"sv-chip-row\">{''.join(chip_items)}</div>", unsafe_allow_html=True)
-                st.caption("칩을 클릭하면 해당 종목 상세가 자동으로 펼쳐집니다.")
-
-            signal_cards = []
-            for _, row in latest.iterrows():
-                raw_name = row.get("name", "")
-                clean_name = re.sub(r"<[^>]+>", "", str(raw_name))
-                code = row.get("code", "")
-                signal = row.get("signal", "")
-                close_price = row.get("close", None)
-                change_rate = row.get("change_rate", None)
-                spike_ratio = row.get("spike_ratio", None)
-                tag_class = "buy" if signal == "BUY" else "sell" if signal == "SELL" else "neutral"
-
-                price_text = "-"
-                if pd.notna(close_price):
-                    price_text = f"{close_price:,.0f}원"
-
-                change_text = "-"
-                if pd.notna(change_rate):
-                    change_text = f"{change_rate:+.2f}%"
-
-                spike_text = "-"
-                if pd.notna(spike_ratio):
-                    spike_text = f"{spike_ratio:.0%}"
-
-                card_html = textwrap.dedent(
-                    f"""
-                    <div class="sv-signal-card">
-                        <div class="sv-signal-header">
-                            <div>
-                                <div class="sv-title">{html.escape(str(clean_name))}</div>
-                                <div class="sv-sub">{html.escape(str(code))}</div>
-                            </div>
-                            <span class="sv-tag {tag_class}">{html.escape(str(signal))}</span>
-                        </div>
-                        <div class="sv-sub">종가 {price_text}</div>
-                        <div class="sv-sub">등락률 {change_text} · 급등 {spike_text}</div>
-                        <div class="sv-card-footer">
-                            <span>상세 보기</span>
-                            <a href="?focus={html.escape(str(code))}">→</a>
-                        </div>
-                    </div>
-                    """
-                ).strip()
-                signal_cards.append(card_html)
-
-            if signal_cards:
-                st.markdown("#### 🧩 카드형 리스트")
-                st.markdown(f"<div class=\"sv-card-grid\">{''.join(signal_cards)}</div>", unsafe_allow_html=True)
+                chips_per_row = 6
+                for start in range(0, len(chip_items), chips_per_row):
+                    row_items = chip_items[start:start + chips_per_row]
+                    chip_cols = st.columns(len(row_items))
+                    for chip_col, item in zip(chip_cols, row_items):
+                        with chip_col:
+                            if st.button(item["label"], key=f"chip_{item['code']}_{start}"):
+                                st.session_state.focus_code = item["code"]
+                                st.session_state.pending_view_mode = "📋 상세"
+                                st.rerun()
+                st.caption("칩을 클릭하면 해당 종목 상세가 즉시 펼쳐집니다.")
 
             if view_mode == "📊 테이블":
                 st.caption(f"조회 결과: 총 {len(latest)}개 종목")
