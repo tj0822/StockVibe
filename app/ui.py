@@ -1257,6 +1257,349 @@ def render_kakao_section(signals_df: pd.DataFrame, selected_date: pd.Timestamp) 
                         st.error(message)
 
 
+
+
+def render_stock_analysis_page(
+    price_df: pd.DataFrame,
+    signals: pd.DataFrame,
+    finance_df: pd.DataFrame,
+    params: dict,
+) -> None:
+    """종목별 분석 페이지: 차트상에 BUY/SELL 신호를 표시"""
+    st.title("📈 종목분석")
+    st.caption("개별 종목의 주가 추이와 매매 신호를 분석합니다")
+    
+    # KOSPI 200 종목 로드
+    from crawling_kospi import CrawlingKospi
+    from app.portfolio import PortfolioManager
+    
+    @st.cache_data(ttl=3600)
+    def load_kospi_stocks():
+        try:
+            crawler = CrawlingKospi()
+            kospi_dict = crawler.GetKospi200()
+            return kospi_dict
+        except:
+            return {}
+    
+    kospi_dict = load_kospi_stocks()  # {종목코드: 종목명}
+    
+    if not kospi_dict:
+        st.error("KOSPI 200 종목 데이터를 불러올 수 없습니다.")
+        return
+    
+    # 포트폴리오 로드
+    portfolio_mgr = PortfolioManager()
+    portfolio = portfolio_mgr.load_portfolio()
+    portfolio_codes = set(portfolio.keys())  # 보유 종목 코드
+    
+    # 최신 신호 발생 종목 추출
+    latest_signals = signals[signals['signal'].isin(['BUY', 'SELL'])].copy()
+    latest_signals = latest_signals.sort_values('date', ascending=False)
+    signal_codes = latest_signals['code'].unique().tolist()
+    
+    # 종목 선택 (UI 개선: 한 줄에 모두 배치)
+    st.subheader("📊 종목 분석")
+    
+    # 보유 종목 분리 및 통합 리스트 생성
+    held_stocks = []
+    unheld_stocks = []
+    code_to_name = {}
+    
+    # 신호 발생 종목 먼저 처리
+    for code in signal_codes:
+        if code in kospi_dict:
+            name = kospi_dict[code]
+            if code in portfolio_codes:
+                display_name = f"💼 {name} ({code})"  # 보유 + 신호
+                held_stocks.append(display_name)
+            else:
+                display_name = f"⭐ {name} ({code})"  # 신호만
+                unheld_stocks.append(display_name)
+            code_to_name[display_name] = code
+    
+    # 신호 없는 종목 처리
+    for code, name in sorted(kospi_dict.items()):
+        if code not in signal_codes:
+            if code in portfolio_codes:
+                display_name = f"💼 {name} ({code})"  # 보유만
+                held_stocks.append(display_name)
+            else:
+                display_name = f"{name} ({code})"  # 일반
+                unheld_stocks.append(display_name)
+            code_to_name[display_name] = code
+    
+    # 통합 리스트 생성 (보유 종목 먼저, 신호 있는 것 먼저)
+    all_stocks = held_stocks + unheld_stocks
+    
+    if not all_stocks:
+        st.error("분석 가능한 종목이 없습니다.")
+        return
+    
+    # 기간 선택 (기본값: 6개월)
+    period_map = {
+        "1개월": 30,
+        "3개월": 90,
+        "6개월": 180,
+        "1년": 365,
+        "3년": 1095,
+    }
+    
+    # 선택 UI를 한 줄에 배치
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        # 기본값: 첫 번째 보유 종목, 없으면 신호 발생 종목, 없으면 첫 번째 종목
+        default_index = 0
+        if held_stocks:
+            default_index = 0
+        elif unheld_stocks:
+            default_index = len(held_stocks)
+        
+        selected_stock = st.selectbox(
+            "종목",
+            all_stocks,
+            index=default_index,
+            label_visibility="collapsed",
+            key="stock_select"
+        )
+    
+    with col2:
+        selected_period = st.selectbox(
+            "기간",
+            list(period_map.keys()),
+            index=2,  # 기본값: 6개월
+            label_visibility="collapsed",
+            key="period_select"
+        )
+    
+    with col3:
+        st.write("")  # 간격 조정
+    
+    if selected_stock not in code_to_name:
+        st.error("종목을 선택해주세요.")
+        return
+    
+    selected_code = code_to_name[selected_stock]
+    selected_name = kospi_dict.get(selected_code, selected_code)
+    chart_period = selected_period
+    
+    # 주가 데이터 필터링
+    stock_prices = price_df[price_df['code'] == selected_code].copy()
+    stock_prices = stock_prices.sort_values('date')
+
+    
+    if stock_prices.empty:
+        st.warning(f"⚠️ {selected_name}({selected_code})의 주가 데이터가 없습니다.")
+        return
+    
+    # 기간 필터링
+    days = period_map[chart_period]
+    cutoff_date = pd.Timestamp.now() - pd.DateOffset(days=days)
+    filtered_prices = stock_prices[stock_prices['date'] >= cutoff_date].copy()
+    
+    if filtered_prices.empty:
+        st.warning(f"⚠️ {chart_period} 기간의 데이터가 없습니다.")
+        return
+    
+    # 해당 종목의 신호 추출
+    stock_signals = signals[signals['code'] == selected_code].copy()
+    stock_signals = stock_signals[stock_signals['date'] >= cutoff_date]
+    
+    # =====  캔들스틱 차트 + 신호 표시 =====
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.7, 0.3],
+        subplot_titles=('주가', '거래량')
+    )
+    
+    # 캔들스틱 차트
+    fig.add_trace(
+        go.Candlestick(
+            x=filtered_prices['date'],
+            open=filtered_prices['open'],
+            high=filtered_prices['high'],
+            low=filtered_prices['low'],
+            close=filtered_prices['close'],
+            name='주가',
+            increasing_line_color='red',
+            decreasing_line_color='blue'
+        ),
+        row=1, col=1
+    )
+    
+    # 거래량 바 차트
+    colors = ['red' if close >= open else 'blue' 
+             for close, open in zip(filtered_prices['close'], filtered_prices['open'])]
+    
+    fig.add_trace(
+        go.Bar(
+            x=filtered_prices['date'],
+            y=filtered_prices['volume'],
+            name='거래량',
+            marker_color=colors,
+            showlegend=False
+        ),
+        row=2, col=1
+    )
+    
+    # BUY/SELL 신호 표시 (스캐터 포인트)
+    buy_signals = stock_signals[stock_signals['signal'] == 'BUY']
+    sell_signals = stock_signals[stock_signals['signal'] == 'SELL']
+    
+    if not buy_signals.empty:
+        # 신호 발생 날짜의 종가 찾기
+        buy_prices = []
+        for _, signal_row in buy_signals.iterrows():
+            signal_date = signal_row['date']
+            price_on_date = filtered_prices[filtered_prices['date'] == signal_date]
+            if not price_on_date.empty:
+                buy_prices.append(price_on_date['high'].iloc[0] * 1.02)  # 고가 위에 약간 위에 표시
+            else:
+                # 날짜를 못 찾으면 가장 가까운 날짜 사용
+                closest = filtered_prices.iloc[(filtered_prices['date'] - signal_date).abs().argsort()[:1]]
+                if not closest.empty:
+                    buy_prices.append(closest['high'].iloc[0] * 1.02)
+        
+        if buy_prices:
+            fig.add_trace(
+                go.Scatter(
+                    x=buy_signals['date'],
+                    y=buy_prices,
+                    mode='markers',
+                    name='BUY',
+                    marker=dict(
+                        size=12,
+                        color='green',
+                        symbol='triangle-up',
+                        line=dict(width=2, color='darkgreen')
+                    ),
+                    text=[f"매수 신호<br>{v:.0f}원" for v in buy_prices],
+                    hoverinfo='text'
+                ),
+                row=1, col=1
+            )
+    
+    if not sell_signals.empty:
+        # 신호 발생 날짜의 종가 찾기
+        sell_prices = []
+        for _, signal_row in sell_signals.iterrows():
+            signal_date = signal_row['date']
+            price_on_date = filtered_prices[filtered_prices['date'] == signal_date]
+            if not price_on_date.empty:
+                sell_prices.append(price_on_date['low'].iloc[0] * 0.98)  # 저가 아래에 약간 아래에 표시
+            else:
+                # 날짜를 못 찾으면 가장 가까운 날짜 사용
+                closest = filtered_prices.iloc[(filtered_prices['date'] - signal_date).abs().argsort()[:1]]
+                if not closest.empty:
+                    sell_prices.append(closest['low'].iloc[0] * 0.98)
+        
+        if sell_prices:
+            fig.add_trace(
+                go.Scatter(
+                    x=sell_signals['date'],
+                    y=sell_prices,
+                    mode='markers',
+                    name='SELL',
+                    marker=dict(
+                        size=12,
+                        color='red',
+                        symbol='triangle-down',
+                        line=dict(width=2, color='darkred')
+                    ),
+                    text=[f"매도 신호<br>{v:.0f}원" for v in sell_prices],
+                    hoverinfo='text'
+                ),
+                row=1, col=1
+            )
+    
+    # 레이아웃 설정
+    fig.update_layout(
+        height=600,
+        xaxis_rangeslider_visible=False,
+        hovermode='x unified',
+        template='plotly_white',
+        margin=dict(l=0, r=0, t=40, b=0),
+        title=f"{selected_name} ({selected_code}) - {chart_period} 차트",
+    )
+    
+    # y축 레이블
+    fig.update_yaxes(title_text="가격 (원)", row=1, col=1)
+    fig.update_yaxes(title_text="거래량", row=2, col=1)
+    
+    # x축 설정
+    fig.update_xaxes(
+        rangebreaks=[
+            dict(bounds=["sat", "mon"])  # 주말 제거
+        ]
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # =====  신호 통계 및 상세 정보 =====
+    st.divider()
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("현재가", f"{filtered_prices['close'].iloc[-1]:,.0f}원")
+    with col2:
+        price_change = filtered_prices['close'].iloc[-1] - filtered_prices['close'].iloc[0]
+        price_change_pct = (price_change / filtered_prices['close'].iloc[0] * 100)
+        st.metric("기간 수익률", f"{price_change_pct:+.2f}%")
+    with col3:
+        st.metric("최고가", f"{filtered_prices['high'].max():,.0f}원")
+    with col4:
+        st.metric("최저가", f"{filtered_prices['low'].min():,.0f}원")
+    
+    # 신호 통계
+    st.subheader("📊 신호 통계")
+    
+    buy_count = len(buy_signals)
+    sell_count = len(sell_signals)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info(f"🟢 **BUY 신호**: {buy_count}회")
+        if not buy_signals.empty:
+            st.caption("발생 날짜:")
+            for _, row in buy_signals.sort_values('date', ascending=False).head(5).iterrows():
+                st.text(f"  • {row['date'].date()}")
+    
+    with col2:
+        st.info(f"🔴 **SELL 신호**: {sell_count}회")
+        if not sell_signals.empty:
+            st.caption("발생 날짜:")
+            for _, row in sell_signals.sort_values('date', ascending=False).head(5).iterrows():
+                st.text(f"  • {row['date'].date()}")
+    
+    # 재무정보 (있으면)
+    if not finance_df.empty:
+        stock_finance = finance_df[finance_df['code'] == selected_code].copy()
+        if not stock_finance.empty:
+            stock_finance = stock_finance.sort_values('date')
+            latest_finance = stock_finance.iloc[-1]
+            
+            st.divider()
+            st.subheader("💼 재무정보")
+            
+            fin_col1, fin_col2, fin_col3, fin_col4 = st.columns(4)
+            
+            with fin_col1:
+                if pd.notna(latest_finance.get('per')):
+                    st.metric("PER", f"{latest_finance['per']:.2f}")
+            with fin_col2:
+                if pd.notna(latest_finance.get('pbr')):
+                    st.metric("PBR", f"{latest_finance['pbr']:.2f}")
+            with fin_col3:
+                if pd.notna(latest_finance.get('eps')):
+                    st.metric("EPS", f"{latest_finance['eps']:,.0f}원")
+            with fin_col4:
+                if pd.notna(latest_finance.get('dvr')):
+                    st.metric("배당수익률", f"{latest_finance['dvr']:.2f}%")
+
+
 def render_kospi_crawling_page() -> None:
     st.subheader("🔄 KOSPI 데이터 업데이트")
     st.caption("최신 주가 데이터를 수집합니다")
@@ -1604,7 +1947,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
     st.caption("거래량 급등 기반 스마트 투자 시그널")
 
     # 상위 사이드바에서 선택한 탭 사용
-    available_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", "🔄 데이터"]
+    available_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", "� 종목분석", "�🔄 데이터"]
     if current_tab not in available_tabs:
         current_tab = "📊 시그널"
 
@@ -2110,5 +2453,6 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             kospi_index = load_kospi_index(params["data_dir"])
 
         render_optimizer_page(df, kospi_index, params)
+    
     else:
         render_kospi_crawling_page()

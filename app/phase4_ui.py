@@ -91,14 +91,15 @@ def render_sidebar_menu() -> tuple[str, str]:
     # 페이지 선택
     pages = {
         "🏠 메인 대시보드": "main",
-        "💼 포트폴리오": "portfolio",
+        "� 종목분석": "analysis",
+        "�💼 포트폴리오": "portfolio",
         "⚙️ 설정": "settings"
     }
     
     selected = st.sidebar.radio("메뉴", list(pages.keys()))
     selected_page = pages[selected]
 
-    main_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", "🔄 데이터"]
+    main_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", " 데이터"]
     selected_main_tab = st.session_state.get("active_tab", "📊 시그널")
 
     if selected_page == "main":
@@ -118,10 +119,14 @@ def render_sidebar_menu() -> tuple[str, str]:
 
 
 def page_portfolio():
-    """포트폴리오 관리 페이지 (간소화 버전)"""
+    """포트폴리오 관리 페이지 - 개선 버전"""
     st.title("💼 포트폴리오 관리")
     
     portfolio_mgr = PortfolioManager()
+    
+    # 세션 상태 초기화
+    if 'selected_portfolio_code' not in st.session_state:
+        st.session_state.selected_portfolio_code = None
     
     # KOSPI 200 데이터 로드 함수 (캐싱)
     @st.cache_data(ttl=3600)
@@ -133,70 +138,243 @@ def page_portfolio():
         except:
             return {}
     
-    # KOSPI 200 종목 데이터 로드
-    kospi_dict = load_kospi_stocks()  # {종목코드: 종목명}
+    # 주가 데이터 로드 (캐싱)
+    @st.cache_data(ttl=1800)
+    def load_stock_prices():
+        try:
+            from app.data import load_stock_data
+            return load_stock_data("data")
+        except:
+            return pd.DataFrame()
     
-    # 2열 레이아웃: 왼쪽(보유종목), 오른쪽(종목추가)
-    col_left, col_right = st.columns([2, 1])
+    # 재무 데이터 로드 (캐싱)
+    @st.cache_data(ttl=1800)
+    def load_finance_info():
+        try:
+            from app.data import load_finance_data
+            return load_finance_data("data")
+        except:
+            return pd.DataFrame()
     
-    with col_left:
-        st.subheader("📊 보유 종목")
+    # 뉴스 로드
+    def load_portfolio_news(stock_code):
+        try:
+            from naver_news_crawler import NaverNewsCrawler
+            crawler = NaverNewsCrawler()
+            return crawler.get_recent_news(stock_code, max_news=5)
+        except:
+            return pd.DataFrame()
+    
+    # 데이터 로드
+    kospi_dict = load_kospi_stocks()
+    price_df = load_stock_prices()
+    finance_df = load_finance_info()
+    portfolio = portfolio_mgr.load_portfolio()
+    
+    if not portfolio:
+        st.info("보유 종목이 없습니다. 아래에서 종목을 추가해주세요.")
+        # 종목 추가 섹션
+        st.subheader("➕ 종목 추가")
+        if kospi_dict:
+            available_stocks = {code: name for code, name in kospi_dict.items()}
+            stock_options = ["선택하세요..."] + [f"{name} ({code})" 
+                            for code, name in sorted(available_stocks.items(), key=lambda x: x[1])]
+            
+            selected = st.selectbox("종목 선택", options=stock_options, label_visibility="collapsed")
+            
+            if selected and selected != "선택하세요...":
+                parts = selected.split(" (")
+                stock_name = parts[0]
+                stock_code = parts[1].rstrip(")")
+                
+                if st.button("추가", type="primary", use_container_width=True):
+                    portfolio_mgr.add_to_portfolio(stock_code, stock_name, 1, 0)
+                    st.success(f"✅ {stock_name} 추가됨")
+                    st.rerun()
+    else:
+        # 3열 레이아웃
+        col_left, col_middle, col_right = st.columns([1.2, 1.5, 1.3])
         
-        portfolio = portfolio_mgr.load_portfolio()
-        
-        if not portfolio:
-            st.info("보유 종목이 없습니다. 오른쪽에서 종목을 추가해주세요.")
-        else:
-            # 종목 목록 표시
-            for code, info in portfolio.items():
-                col_name, col_btn = st.columns([4, 1])
-                with col_name:
-                    st.markdown(f"**{info['name']}** ({code})")
-                with col_btn:
+        # ===== 왼쪽: 보유종목 목록 =====
+        with col_left:
+            st.subheader("📊 보유 종목")
+            
+            # 영문/한글 구분 함수
+            def is_english_stock(name):
+                if not name:
+                    return False
+                return ord(name[0]) < 128
+            
+            # 종목명으로 정렬
+            sorted_portfolio = sorted(
+                portfolio.items(),
+                key=lambda x: (not is_english_stock(x[1]['name']), x[1]['name'])
+            )
+            
+            # 종목 선택 버튼들
+            for code, info in sorted_portfolio:
+                is_selected = code == st.session_state.selected_portfolio_code
+                btn_color = "🟢" if is_selected else "⚪"
+                
+                col_select, col_del = st.columns([4, 1])
+                with col_select:
+                    if st.button(f"{btn_color} {info['name']}\n({code})", 
+                                key=f"select_{code}",
+                                use_container_width=True):
+                        st.session_state.selected_portfolio_code = code
+                        st.rerun()
+                
+                with col_del:
                     if st.button("🗑️", key=f"del_{code}", help="삭제"):
                         portfolio_mgr.remove_from_portfolio(code)
+                        st.session_state.selected_portfolio_code = None
                         st.rerun()
             
             st.markdown("---")
             st.caption(f"총 {len(portfolio)}개 종목")
-    
-    with col_right:
-        st.subheader("➕ 종목 추가")
-        
-        if kospi_dict:
-            # 현재 포트폴리오의 종목코드 목록
-            current_codes = set(portfolio_mgr.load_portfolio().keys())
             
-            # 이미 보유한 종목 제외
-            available_stocks = {code: name for code, name in kospi_dict.items() 
-                               if code not in current_codes}
-            
-            if not available_stocks:
-                st.success("모든 KOSPI 200 종목을 보유 중입니다!")
-            else:
-                # 드롭다운 옵션: 종목명 (종목코드) 형식
-                stock_options = ["선택하세요..."] + [f"{name} ({code})" 
-                                for code, name in sorted(available_stocks.items(), key=lambda x: x[1])]
+            # 종목 추가
+            st.subheader("➕ 추가")
+            if kospi_dict:
+                current_codes = set(portfolio_mgr.load_portfolio().keys())
+                available_stocks = {code: name for code, name in kospi_dict.items() 
+                                   if code not in current_codes}
                 
-                selected = st.selectbox(
-                    "종목 선택",
-                    options=stock_options,
-                    label_visibility="collapsed"
-                )
-                
-                if selected and selected != "선택하세요...":
-                    # 종목코드와 종목명 추출
-                    parts = selected.split(" (")
-                    stock_name = parts[0]
-                    stock_code = parts[1].rstrip(")")
+                if not available_stocks:
+                    st.success("모든 KOSPI 200 보유 중!")
+                else:
+                    stock_options = ["선택..."] + [f"{name} ({code})" 
+                                    for code, name in sorted(available_stocks.items(), key=lambda x: x[1])]
                     
-                    if st.button("추가", type="primary", use_container_width=True):
-                        # 기본값으로 저장 (수량=1, 가격=0)
-                        portfolio_mgr.add_to_portfolio(stock_code, stock_name, 1, 0)
-                        st.success(f"✅ {stock_name} 추가됨")
-                        st.rerun()
-        else:
-            st.error("종목 데이터를 불러올 수 없습니다.")
+                    selected = st.selectbox("종목", options=stock_options, 
+                                           label_visibility="collapsed", key="add_stock")
+                    
+                    if selected and selected != "선택...":
+                        parts = selected.split(" (")
+                        stock_name = parts[0]
+                        stock_code = parts[1].rstrip(")")
+                        
+                        if st.button("✅ 추가", use_container_width=True, type="primary"):
+                            portfolio_mgr.add_to_portfolio(stock_code, stock_name, 1, 0)
+                            st.success(f"{stock_name} 추가됨")
+                            st.rerun()
+        
+        # ===== 중간: 주가흐름 차트 =====
+        with col_middle:
+            if st.session_state.selected_portfolio_code:
+                selected_code = st.session_state.selected_portfolio_code
+                selected_info = portfolio.get(selected_code, {})
+                
+                st.subheader(f"📈 {selected_info.get('name', selected_code)}")
+                
+                # 선택된 종목의 최근 30일 주가 데이터
+                if not price_df.empty:
+                    stock_data = price_df[price_df['code'] == selected_code].copy()
+                    stock_data = stock_data.tail(30).sort_values('date')
+                    
+                    if not stock_data.empty:
+                        # 간단한 라인 차트 (Plotly)
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=stock_data['date'],
+                            y=stock_data['close'],
+                            mode='lines+markers',
+                            name='종가',
+                            line=dict(color='#1f77b4', width=2),
+                            marker=dict(size=4)
+                        ))
+                        fig.update_layout(
+                            title=f"최근 30일 주가추이",
+                            xaxis_title="날짜",
+                            yaxis_title="가격 (₩)",
+                            height=300,
+                            hovermode='x unified',
+                            margin=dict(l=50, r=20, t=40, b=50)
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # 주가 통계
+                        col_stat1, col_stat2 = st.columns(2)
+                        with col_stat1:
+                            st.metric("현재가", f"₩{stock_data['close'].iloc[-1]:,.0f}")
+                            st.metric("30일 고가", f"₩{stock_data['high'].max():,.0f}" if 'high' in stock_data.columns else "N/A")
+                        
+                        with col_stat2:
+                            change_pct = ((stock_data['close'].iloc[-1] - stock_data['close'].iloc[0]) / stock_data['close'].iloc[0] * 100) if len(stock_data) > 1 else 0
+                            st.metric("30일 등락률", f"{change_pct:+.2f}%")
+                            st.metric("30일 저가", f"₩{stock_data['low'].min():,.0f}" if 'low' in stock_data.columns else "N/A")
+                    else:
+                        st.warning("주가 데이터가 없습니다.")
+                else:
+                    st.warning("주가 데이터를 불러올 수 없습니다.")
+            else:
+                st.info("왼쪽에서 종목을 선택하면 차트가 표시됩니다.")
+        
+        # ===== 오른쪽: 상세정보 & 뉴스 =====
+        with col_right:
+            if st.session_state.selected_portfolio_code:
+                selected_code = st.session_state.selected_portfolio_code
+                selected_info = portfolio.get(selected_code, {})
+                
+                st.subheader("📊 상세 정보")
+                
+                # 재무정보 표시
+                if not finance_df.empty:
+                    finance_data = finance_df[finance_df['code'] == selected_code]
+                    
+                    if not finance_data.empty:
+                        latest_finance = finance_data.sort_values('date').iloc[-1]
+                        
+                        st.markdown("**주요 지표**")
+                        col_f1, col_f2 = st.columns(2)
+                        
+                        with col_f1:
+                            if pd.notna(latest_finance.get('per')):
+                                st.metric("PER", f"{latest_finance['per']:.2f}")
+                            if pd.notna(latest_finance.get('eps')):
+                                st.metric("EPS", f"₩{latest_finance['eps']:,.0f}")
+                        
+                        with col_f2:
+                            if pd.notna(latest_finance.get('pbr')):
+                                st.metric("PBR", f"{latest_finance['pbr']:.2f}")
+                            if pd.notna(latest_finance.get('bps')):
+                                st.metric("BPS", f"₩{latest_finance['bps']:,.0f}")
+                        
+                        # 추가 정보
+                        col_f3, col_f4 = st.columns(2)
+                        with col_f3:
+                            if pd.notna(latest_finance.get('dvr')):
+                                st.metric("배당률", f"{latest_finance['dvr']:.2f}%")
+                        
+                        with col_f4:
+                            if 'foreigner_ratio' in latest_finance and pd.notna(latest_finance['foreigner_ratio']):
+                                st.metric("외국인 보유율", f"{latest_finance['foreigner_ratio']:.1f}%")
+                        
+                        st.markdown("---")
+                
+                # 뉴스 섹션
+                st.markdown("**📰 최근 뉴스**")
+                
+                with st.spinner("뉴스를 로딩 중입니다..."):
+                    news_df = load_portfolio_news(selected_code)
+                    
+                    if not news_df.empty:
+                        for idx, news in news_df.head(5).iterrows():
+                            news_title = news.get('title', '제목 없음')
+                            news_date = news.get('date', '')
+                            news_source = news.get('source', '')
+                            news_link = news.get('link', '')
+                            
+                            st.markdown(f"**{news_title}**")
+                            st.caption(f"{news_source} · {news_date}")
+                            
+                            if news_link:
+                                st.markdown(f"[📌 기사 보기]({news_link})")
+                            st.markdown("---")
+                    else:
+                        st.info("최근 뉴스가 없습니다.")
+            else:
+                st.info("왼쪽에서 종목을 선택하면\n상세 정보가 표시됩니다.")
 
 
 def page_alerts():
@@ -574,7 +752,8 @@ def run_phase4_app():
         # 메뉴명을 페이지 키로 변환
         menu_to_page = {
             "🏠 메인 대시보드": "main",
-            "💼 포트폴리오": "portfolio",
+            "� 종목분석": "analysis",
+            "�💼 포트폴리오": "portfolio",
             "⚙️ 설정": "settings"
         }
         selected_menu = st.session_state.selected_menu
@@ -591,6 +770,38 @@ def run_phase4_app():
         page_portfolio()
     elif page == "settings":
         page_settings()
+    elif page == "analysis":
+        # 종목분석 페이지
+        from app.ui import render_stock_analysis_page
+        from app.data import load_stock_data, load_kospi_list, load_finance_data
+        from app.signals import build_signals
+        
+        # 데이터 로딩
+        with st.spinner("📊 데이터 로딩 중..."):
+            df = load_stock_data("data")
+            kospi = load_kospi_list("data")
+            finance_df = load_finance_data("data")
+        
+        # 시그널 생성
+        with st.spinner("🔍 시그널 분석 중..."):
+            signals = build_signals(
+                df,
+                10,  # turnover_window
+                3.0,  # turnover_multiplier
+                20, 5.0, 20, 2.0, 20, 2.0,
+                ["Turnover Spike"],
+                "ANY",
+            )
+            signals = signals.merge(kospi, on="code", how="left")
+        
+        # 기본 params
+        params = {
+            "data_dir": "data",
+            "turnover_window": 10,
+            "turnover_multiplier": 3.0,
+        }
+        
+        render_stock_analysis_page(df, signals, finance_df, params)
     else:
         # 기존 메인 대시보드
         from app.ui import run_app
