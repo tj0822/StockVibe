@@ -145,5 +145,12 @@
     "avg_price": 0,
     "purchase_date": "2026-02-13",
     "last_updated": "2026-02-13 22:57:23"
+  },
+  "009240": {
+    "name": "한샘",
+    "quantity": 1,
+    "avg_price": 0,
+    "purchase_date": "2026-02-19",
+    "last_updated": "2026-02-19 14:19:05"
   }
 }

@@ -1947,7 +1947,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
     st.caption("거래량 급등 기반 스마트 투자 시그널")
 
     # 상위 사이드바에서 선택한 탭 사용
-    available_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", "� 종목분석", "�🔄 데이터"]
+    available_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", "🔄 데이터"]
     if current_tab not in available_tabs:
         current_tab = "📊 시그널"
 

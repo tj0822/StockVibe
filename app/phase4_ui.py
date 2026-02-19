@@ -91,15 +91,15 @@ def render_sidebar_menu() -> tuple[str, str]:
     # 페이지 선택
     pages = {
         "🏠 메인 대시보드": "main",
-        "� 종목분석": "analysis",
-        "�💼 포트폴리오": "portfolio",
+        "📈 종목분석": "analysis",
+        "💼 포트폴리오": "portfolio",
         "⚙️ 설정": "settings"
     }
     
     selected = st.sidebar.radio("메뉴", list(pages.keys()))
     selected_page = pages[selected]
 
-    main_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", " 데이터"]
+    main_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", "🔄 데이터"]
     selected_main_tab = st.session_state.get("active_tab", "📊 시그널")
 
     if selected_page == "main":
@@ -752,8 +752,8 @@ def run_phase4_app():
         # 메뉴명을 페이지 키로 변환
         menu_to_page = {
             "🏠 메인 대시보드": "main",
-            "� 종목분석": "analysis",
-            "�💼 포트폴리오": "portfolio",
+            "📈 종목분석": "analysis",
+            "💼 포트폴리오": "portfolio",
             "⚙️ 설정": "settings"
         }
         selected_menu = st.session_state.selected_menu
