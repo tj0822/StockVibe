@@ -89,15 +89,6 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
                 key="turnover_multiplier",
                 help="평균 대비 몇 배 이상 급등"
             )
-            add_buy_threshold_pct = st.number_input(
-                "추가매수 손실 임계값 (%)",
-                min_value=-30.0,
-                max_value=-1.0,
-                value=-7.0,
-                step=0.5,
-                key="add_buy_threshold_pct",
-                help="해당 종목 수익률이 이 값 이하일 때 추가매수 조건을 확인"
-            )
             top_n = st.number_input(
                 "표시 종목 수", 
                 min_value=1, max_value=200, value=10, step=1,
@@ -142,7 +133,7 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
         "initial_cash": float(initial_cash),
         "max_daily_buys": int(max_daily_buys),
         "buy_unit": float(buy_unit),
-        "add_buy_threshold_pct": float(add_buy_threshold_pct),
+        "add_buy_threshold_pct": -7.0,  # 기본값 (시뮬레이션 탭에서 동적 조정)
         "use_finance_filter": False,
         "per_max": None,
         "pbr_max": None,
@@ -877,7 +868,7 @@ def run_turnover_strategy_backtest(
     max_daily_buys: int = 2,
     buy_unit: float = 2_000_000,
     kospi_bullish_only: bool = False,
-    add_buy_threshold_pct: float = -5.0,
+    add_buy_threshold_pct: float = -7.0,
     fee_rate: float = 0.0,
     slippage_rate: float = 0.0,
     sell_tax_rate: float = 0.0,
@@ -1076,8 +1067,8 @@ def run_turnover_strategy_backtest(
                             pending_buys[next_date] = []
                         pending_buys[next_date].append((code, buy_unit * 2, 2))
                 else:
-                    # step 2 이상: 즉시 손절 (평균매수가의 -5% 가격)
-                    stop_price = pos["avg_cost"] * 0.95
+                    # step 2 이상: 즉시 손절 (평균매수가의 -7% 가격)
+                    stop_price = pos["avg_cost"] * 0.93
                     _sell(code, date, stop_price, "STOP_LOSS")
 
         # 시그널 처리
@@ -1624,26 +1615,27 @@ def render_kospi_crawling_page() -> None:
 def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: dict) -> None:
     """파라미터 최적화 페이지 렌더링"""
     st.subheader("🎯 파라미터 최적화")
-    st.caption("최적의 투자 전략 파라미터를 찾습니다")
-    st.write("다양한 파라미터 조합을 테스트하여 최적의 전략을 찾습니다.")
+    st.caption("여러 기간에 대해 최적의 투자 전략 파라미터를 찾습니다")
+    st.write("백테스트 기간별로 파라미터 조합을 테스트하여 최적의 전략을 찾습니다.")
     
     # 설정 영역을 컬럼으로 나누기
     col1, col2 = st.columns(2)
     
     with col1:
         st.markdown("#### 📅 투자 기간 설정")
-        period = st.selectbox(
-            "백테스트 기간",
-            options=["1Y", "3Y", "5Y"],
-            index=1,
-            format_func=lambda x: {"1Y": "1년", "3Y": "3년", "5Y": "5년"}[x]
+        periods = st.multiselect(
+            "최적화할 기간 선택",
+            options=["1Y", "2Y", "3Y", "4Y", "5Y"],
+            default=["1Y", "2Y", "3Y", "4Y", "5Y"],
+            format_func=lambda x: {"1Y": "1년", "2Y": "2년", "3Y": "3년", "4Y": "4년", "5Y": "5년"}[x]
         )
         
-        # 데이터의 최대 날짜 가져오기
-        max_date = pd.to_datetime(df['date'].max()).normalize()
-        start_date, end_date = get_period_dates(period, max_date)
+        if not periods:
+            st.error("최소 1개 이상의 기간을 선택해주세요.")
+            return
         
-        st.info(f"테스트 기간: {start_date.date()} ~ {end_date.date()}")
+        period_labels = {'1Y': '1년', '2Y': '2년', '3Y': '3년', '4Y': '4년', '5Y': '5년'}
+        st.info(f"선택된 기간: {', '.join([period_labels[p] for p in periods])}")
         
         initial_cash = st.number_input(
             "초기 자산 (원)",
@@ -1670,7 +1662,7 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             rolling_days_options = st.multiselect(
                 "테스트할 값 선택",
                 options=list(range(5, 31, 5)),
-                default=[5, 10, 20, 30],
+                default=list(range(5, 31, 5)),
                 key="rolling_options"
             )
         
@@ -1680,7 +1672,7 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             volume_threshold_options = st.multiselect(
                 "테스트할 값 선택",
                 options=[x / 2 for x in range(4, 21)],
-                default=[2.0, 3.0, 4.0],
+                default=[x / 2 for x in range(4, 21)],
                 key="vol_options"
             )
 
@@ -1688,7 +1680,7 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
         add_buy_threshold_options = st.multiselect(
             "테스트할 값 선택",
             options=[-float(x) for x in range(1, 11)],
-            default=[-5.0, -3.0, -2.0],
+            default=[-float(x) for x in range(1, 11)],
             key="add_buy_threshold_options"
         )
         
@@ -1734,7 +1726,7 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
     # 최적화 실행 버튼
     st.divider()
     
-    if st.button("🚀 최적화 실행", type="primary", use_container_width=True):
+    if st.button("🚀 여러 기간 최적화 실행", type="primary", use_container_width=True):
         # 파라미터 범위 검증
         if not rolling_days_options:
             st.error("직전 거래일 평균 값을 최소 1개 이상 선택해주세요.")
@@ -1773,172 +1765,164 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             if sample_count <= 0:
                 st.error("랜덤 샘플 수가 0입니다. 파라미터 범위를 확인하세요.")
                 return
-            st.info(
-                f"랜덤 서치: 총 {total_combinations}개 중 {sample_count}개 조합을 샘플링합니다."
-            )
-        else:
-            st.info(f"총 {total_combinations}개의 파라미터 조합을 테스트합니다. 시간이 다소 걸릴 수 있습니다.")
         
-        # 프로그레스 바 설정
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        # 각 기간별 최적화 결과 저장
+        all_results = {}
         
-        def update_progress(current, total, params):
-            progress = current / total
-            progress_bar.progress(progress)
-            status_text.text(
-                f"진행중: {current}/{total} "
-                f"(매수종목: {params.get('max_daily_buys')}, "
-                f"평균일: {params.get('rolling_days')}, "
-                f"배수: {params.get('volume_threshold')}, "
-                f"추가매수: {params.get('add_buy_threshold_pct')})"
-            )
+        # 데이터의 최대 날짜 가져오기
+        max_date = pd.to_datetime(df['date'].max()).normalize()
         
-        # 최적화 실행
-        optimizer = BacktestOptimizer(df, kospi_index)
-        
-        try:
-            results_df = optimizer.optimize_parameters(
-                start_date=start_date,
-                end_date=end_date,
-                param_ranges=param_ranges,
-                initial_cash=initial_cash,
-                progress_callback=update_progress,
-                search_mode=search_mode,
-                sample_size=sample_count,
-                random_seed=random_seed,
-            )
+        # 각 기간에 대해 최적화 실행
+        period_labels_dict = {'1Y': '1년', '2Y': '2년', '3Y': '3년', '4Y': '4년', '5Y': '5년'}
+        for period in periods:
+            st.markdown("---")
+            st.info(f"📊 **{period_labels_dict[period]} 기간 최적화 중...**")
             
-            progress_bar.progress(1.0)
-            status_text.text(f"완료! {len(results_df)}개 결과 분석 중...")
+            start_date, end_date = get_period_dates(period, max_date)
+            period_label = period_labels_dict[period]
             
-            # 디버깅: 결과 확인
-            st.write(f"📊 디버깅 정보: 총 {total_combinations}개 조합 중 {len(results_df)}개 성공")
+            # 프로그레스 바 설정
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-            if results_df.empty:
-                st.error("⚠️ 최적화 결과가 없습니다.")
-                st.info("""
-                가능한 원인:
-                1. 선택한 기간에 거래 데이터가 부족합니다
-                2. 모든 백테스트에서 오류가 발생했습니다
-                3. 시그널이 생성되지 않았습니다
+            def update_progress(current, total, params):
+                progress = current / total
+                progress_bar.progress(progress)
+                status_text.text(
+                    f"진행중 ({period_label}): {current}/{total} "
+                    f"(매수종목: {params.get('max_daily_buys')}, "
+                    f"평균일: {params.get('rolling_days')}, "
+                    f"배수: {params.get('volume_threshold')}, "
+                    f"추가매수: {params.get('add_buy_threshold_pct')})"
+                )
+            
+            # 최적화 실행
+            optimizer = BacktestOptimizer(df, kospi_index)
+            
+            try:
+                results_df = optimizer.optimize_parameters(
+                    start_date=start_date,
+                    end_date=end_date,
+                    param_ranges=param_ranges,
+                    initial_cash=initial_cash,
+                    progress_callback=update_progress,
+                    search_mode=search_mode,
+                    sample_size=sample_count,
+                    random_seed=random_seed,
+                )
                 
-                해결 방법:
-                - 더 긴 기간(3년 또는 5년)을 선택해보세요
-                - 파라미터 범위를 조정해보세요
-                - 터미널 출력을 확인하여 상세 오류를 확인하세요
-                """)
-                return
+                progress_bar.progress(1.0)
+                
+                if results_df.empty:
+                    st.warning(f"⚠️ {period_label} 기간: 최적화 결과가 없습니다.")
+                    continue
+                
+                # 최적 파라미터 찾기
+                optimal_params = optimizer.get_optimal_params(results_df, optimization_metric)
+                all_results[period_label] = {
+                    'params': optimal_params,
+                    'results_df': results_df
+                }
+                
+                # 기간별 최적 결과 표시
+                st.success(f"✅ {period_label} 기간 최적화 완료!")
+                
+                col1, col2, col3, col4, col5 = st.columns(5)
+                
+                with col1:
+                    st.metric("일일 최대 매수", f"{optimal_params['max_daily_buys']}개")
+                with col2:
+                    st.metric("평균 기간", f"{optimal_params['rolling_days']}일")
+                with col3:
+                    st.metric("배수", f"{optimal_params['volume_threshold']}배")
+                with col4:
+                    st.metric("손절 기준", f"{optimal_params['add_buy_threshold_pct']:.1f}%")
+                with col5:
+                    metric_name = {
+                        "total_return": "총 수익률",
+                        "sharpe_ratio": "샤프 비율",
+                        "excess_return": "초과 수익률"
+                    }[optimization_metric]
+                    metric_value = optimal_params[f'best_{optimization_metric}']
+                    if optimization_metric in ["total_return", "excess_return"]:
+                        st.metric(metric_name, f"{metric_value:.2f}%")
+                    else:
+                        st.metric(metric_name, f"{metric_value:.4f}")
+                        
+            except Exception as e:
+                st.error(f"⚠️ {period_label} 기간 최적화 중 오류 발생: {str(e)}")
+                continue
+        
+        # 모든 기간의 결과 비교
+        if all_results:
+            st.divider()
+            st.markdown("### 📊 기간별 최적화 결과 비교")
             
-            # 최적 파라미터 찾기
-            optimal_params = optimizer.get_optimal_params(results_df, optimization_metric)
+            # 비교 테이블 구성
+            comparison_data = []
+            for period_label, result_dict in all_results.items():
+                optimal_params = result_dict['params']
+                row = {
+                    '기간': period_label,
+                    '일일 매수': optimal_params['max_daily_buys'],
+                    '평균 일수': optimal_params['rolling_days'],
+                    '배수': optimal_params['volume_threshold'],
+                    '손절(%)': optimal_params['add_buy_threshold_pct'],
+                    '총 수익률(%)': f"{optimal_params['best_total_return']:.2f}",
+                    '샤프 비율': f"{optimal_params['best_sharpe_ratio']:.4f}",
+                    '초과 수익률(%)': f"{optimal_params['best_excess_return']:.2f}",
+                    '총 거래': optimal_params['total_trades'],
+                    '승률(%)': f"{optimal_params['win_rate']:.2f}"
+                }
+                comparison_data.append(row)
             
-            # 결과 표시
-            st.success("✅ 최적화 완료!")
+            comparison_df = pd.DataFrame(comparison_data)
+            st.dataframe(comparison_df, use_container_width=True)
             
-            # 최적 파라미터 표시
-            st.markdown("### 🏆 최적 파라미터")
-            col1, col2, col3, col4, col5 = st.columns(5)
+            # 최고 성과 기간 강조
+            st.markdown("### 🏆 최고 성과 기간")
+            best_period = max(all_results.items(), 
+                            key=lambda x: x[1]['params'][f'best_{optimization_metric}'])
             
+            best_label, best_result = best_period
+            best_params = best_result['params']
+            
+            col1, col2 = st.columns(2)
             with col1:
-                st.metric("일일 최대 매수 종목", f"{optimal_params['max_daily_buys']}개")
+                st.success(f"**최고 성과 기간: {best_label}**")
+                st.write(f"""
+                📈 **최적 파라미터**
+                - 일일 최대 매수: {best_params['max_daily_buys']}개
+                - 직전 거래일 평균: {best_params['rolling_days']}일
+                - 평균 대비 배수: {best_params['volume_threshold']}배
+                - 추가매수 손절: {best_params['add_buy_threshold_pct']:.1f}%
+                """)
+            
             with col2:
-                st.metric("직전 거래일 평균", f"{optimal_params['rolling_days']}일")
-            with col3:
-                st.metric("평균 대비 배수", f"{optimal_params['volume_threshold']}배")
-            with col4:
-                st.metric("추가매수 임계값", f"{optimal_params['add_buy_threshold_pct']:.1f}%")
-            with col5:
                 metric_name = {
                     "total_return": "총 수익률",
                     "sharpe_ratio": "샤프 비율",
                     "excess_return": "초과 수익률"
                 }[optimization_metric]
-                metric_value = optimal_params[f'best_{optimization_metric}']
-                if optimization_metric in ["total_return", "excess_return"]:
-                    st.metric(metric_name, f"{metric_value:.2f}%")
-                else:
-                    st.metric(metric_name, f"{metric_value:.3f}")
+                metric_value = best_params[f'best_{optimization_metric}']
+                
+                st.write(f"""
+                📊 **성과 지표**
+                - {metric_name}: {metric_value:.4f} {'%' if optimization_metric in ['total_return', 'excess_return'] else ''}
+                - 샤프 비율: {best_params['best_sharpe_ratio']:.4f}
+                - 최대 낙폭: {best_params['mdd']:.2f}%
+                - 총 거래: {best_params['total_trades']}회
+                - 승률: {best_params['win_rate']:.2f}%
+                """)
             
-            # 파라미터 적용 버튼
-            st.markdown("")
-            if st.button("🎯 이 파라미터로 시그널 설정 적용", type="primary", use_container_width=True):
-                # session_state에 최적 파라미터 저장
-                st.session_state.applied_turnover_window = optimal_params['rolling_days']
-                st.session_state.applied_turnover_multiplier = optimal_params['volume_threshold']
+            # 최적 파라미터 적용
+            if st.button("✅ 최고 성과 파라미터 적용하기", type="secondary"):
                 st.session_state.optimal_params_applied = True
-                st.success("✅ 파라미터가 적용되었습니다! '📊 시그널' 탭에서 확인하세요.")
-                st.balloons()
-            
-            # 상위 결과 표시
-            st.markdown("### 📈 상위 10개 결과")
-            top_results = results_df.nlargest(10, optimization_metric).copy()
-            
-            # 컬럼명 한글화
-            display_df = top_results[[
-                'max_daily_buys', 'rolling_days', 'volume_threshold', 'add_buy_threshold_pct',
-                'total_return', 'kospi_return', 'excess_return',
-                'sharpe_ratio', 'mdd', 'win_rate', 'total_trades'
-            ]].copy()
-            
-            display_df.columns = [
-                '일일매수', '평균일', '배수', '추가매수임계(%)',
-                '수익률(%)', 'KOSPI(%)', '초과수익(%)',
-                '샤프비율', 'MDD(%)', '승률(%)', '거래수'
-            ]
-            
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    '일일매수': st.column_config.NumberColumn(format="%d"),
-                    '평균일': st.column_config.NumberColumn(format="%d"),
-                    '배수': st.column_config.NumberColumn(format="%.1f"),
-                    '추가매수임계(%)': st.column_config.NumberColumn(format="%.1f"),
-                    '수익률(%)': st.column_config.NumberColumn(format="%.2f"),
-                    'KOSPI(%)': st.column_config.NumberColumn(format="%.2f"),
-                    '초과수익(%)': st.column_config.NumberColumn(format="%.2f"),
-                    '샤프비율': st.column_config.NumberColumn(format="%.3f"),
-                    'MDD(%)': st.column_config.NumberColumn(format="%.2f"),
-                    '승률(%)': st.column_config.NumberColumn(format="%.2f"),
-                    '거래수': st.column_config.NumberColumn(format="%d"),
-                }
-            )
-            
-            # 전체 결과 다운로드
-            st.markdown("### 💾 전체 결과 다운로드")
-            csv = results_df.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="📥 CSV 다운로드",
-                data=csv,
-                file_name=f"optimization_results_{period}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
-            
-            # 시각화
-            st.markdown("### 📊 파라미터별 성과 분석")
-            
-            # 각 파라미터별 평균 수익률
-            tab1, tab2, tab3 = st.tabs(["일일 매수 종목수", "평균 거래일", "평균 대비 배수"])
-            
-            with tab1:
-                avg_by_buys = results_df.groupby('max_daily_buys')[optimization_metric].mean().reset_index()
-                st.bar_chart(avg_by_buys.set_index('max_daily_buys'))
-            
-            with tab2:
-                avg_by_days = results_df.groupby('rolling_days')[optimization_metric].mean().reset_index()
-                st.bar_chart(avg_by_days.set_index('rolling_days'))
-            
-            with tab3:
-                avg_by_threshold = results_df.groupby('volume_threshold')[optimization_metric].mean().reset_index()
-                st.bar_chart(avg_by_threshold.set_index('volume_threshold'))
-            
-            
-        except Exception as e:
-            st.error(f"최적화 중 오류가 발생했습니다: {str(e)}")
-            import traceback
-            st.code(traceback.format_exc())
+                st.session_state.applied_turnover_window = best_params['rolling_days']
+                st.session_state.applied_turnover_multiplier = best_params['volume_threshold']
+                st.success("✨ 최적 파라미터가 적용되었습니다!")
+                st.info(f"시그널 탭에서 {best_label} 기간 최적 파라미터로 신호를 생성합니다.")
+                st.rerun()
 
 
 def run_app(current_tab: str = "📊 시그널") -> None:
@@ -2283,18 +2267,66 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             render_kakao_section(latest, selected_date)
 
     elif current_tab == "🎯 시뮬레이션":
+        st.subheader("🎯 백테스트 시뮬레이션")
+        
+        # 파라미터 조정 섹션
+        with st.expander("⚙️ 거래량 분석 파라미터 설정", expanded=True):
+            st.caption("파라미터를 조정하고 백테스트를 실행하세요")
+            
+            col_roll, col_vol, col_add = st.columns(3)
+            
+            with col_roll:
+                rolling_days = st.slider(
+                    "분석 기간 (일)",
+                    min_value=5, max_value=60, 
+                    value=params["turnover_window"], 
+                    step=1,
+                    help="거래량 평균을 계산하는 기간",
+                    key="backtest_rolling_days"
+                )
+            
+            with col_vol:
+                volume_threshold = st.slider(
+                    "급등 기준 (배수)",
+                    min_value=1.0, max_value=10.0, 
+                    value=params["turnover_multiplier"], 
+                    step=0.1,
+                    help="평균 거래량 대비 배수",
+                    key="backtest_volume_threshold"
+                )
+            
+            with col_add:
+                loss_threshold = st.slider(
+                    "추가매수 손실 임계값 (%)",
+                    min_value=-30.0, max_value=-1.0, 
+                    value=params["add_buy_threshold_pct"], 
+                    step=0.5,
+                    help="이 수익률 이하일 때 추가매수 고려",
+                    key="backtest_loss_threshold"
+                )
+            
+            # 현재 설정 표시
+            st.markdown("---")
+            col_info1, col_info2, col_info3 = st.columns(3)
+            with col_info1:
+                st.metric("📅 분석 기간", f"{int(rolling_days)}일")
+            with col_info2:
+                st.metric("📈 급등 기준", f"{volume_threshold:.1f}배")
+            with col_info3:
+                st.metric("🔴 손절 기준", f"{loss_threshold:.1f}%")
+        
         # 데이터 로딩 (시뮬레이션 탭 전용)
         with st.spinner("📊 데이터 로딩 중..."):
             df = load_stock_data(params["data_dir"])
             kospi = load_kospi_list(params["data_dir"])
             kospi_index = load_kospi_index(params["data_dir"])
 
-        # 시그널 생성 (시뮬레이션 탭 전용)
+        # 시그널 생성 (시뮬레이션 탭 전용) - 조정된 파라미터 사용
         with st.spinner("🔍 시그널 분석 중..."):
             signals = build_signals(
                 df,
-                params["turnover_window"],
-                params["turnover_multiplier"],
+                int(rolling_days),
+                float(volume_threshold),
                 20,
                 5.0,
                 20,
@@ -2321,8 +2353,8 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         st.subheader("📊 백테스트 결과")
         strategy_signals = build_signals(
             df,
-            params["turnover_window"],
-            params["turnover_multiplier"],
+            int(rolling_days),
+            float(volume_threshold),
             20,
             5.0,
             20,
@@ -2343,7 +2375,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             initial_cash=params["initial_cash"],
             max_daily_buys=params["max_daily_buys"],
             buy_unit=params["buy_unit"],
-            add_buy_threshold_pct=params["add_buy_threshold_pct"],
+            add_buy_threshold_pct=float(loss_threshold),
         )
         render_backtest_curve(equity_df, kospi_index, selected_date)
         if not equity_df.empty:

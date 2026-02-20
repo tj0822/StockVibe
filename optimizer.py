@@ -126,7 +126,7 @@ class BacktestOptimizer:
                     top_n=10,
                     initial_cash=initial_cash,
                     max_daily_buys=params.get('max_daily_buys', 2),
-                    add_buy_threshold_pct=params.get('add_buy_threshold_pct', -5.0),
+                    add_buy_threshold_pct=params.get('add_buy_threshold_pct', -7.0),
                     fee_rate=fee_rate,
                     slippage_rate=slippage_rate,
                     sell_tax_rate=sell_tax_rate,
@@ -182,7 +182,7 @@ class BacktestOptimizer:
                             'max_daily_buys': params.get('max_daily_buys', 2),
                             'rolling_days': params.get('rolling_days', 20),
                             'volume_threshold': params.get('volume_threshold', 2.0),
-                            'add_buy_threshold_pct': params.get('add_buy_threshold_pct', -5.0),
+                            'add_buy_threshold_pct': params.get('add_buy_threshold_pct', -7.0),
                             'total_return': total_return,
                             'net_return': net_return,
                             'kospi_return': kospi_return,
@@ -276,7 +276,7 @@ class BacktestOptimizer:
             'max_daily_buys': int(best_row['max_daily_buys']),
             'rolling_days': int(best_row['rolling_days']),
             'volume_threshold': float(best_row['volume_threshold']),
-            'add_buy_threshold_pct': float(best_row.get('add_buy_threshold_pct', -5.0)),
+            'add_buy_threshold_pct': float(best_row.get('add_buy_threshold_pct', -7.0)),
             f'best_{metric}': float(best_row[metric])
         }
 
@@ -286,7 +286,7 @@ def get_period_dates(period: str, end_date: pd.Timestamp = None) -> Tuple[pd.Tim
     투자 기간에 따른 시작일/종료일 계산
     
     Args:
-        period: '1Y', '3Y', '5Y'
+        period: '1Y', '2Y', '3Y', '4Y', '5Y'
         end_date: 종료일 (None이면 최신 데이터 날짜)
         
     Returns:
@@ -295,13 +295,18 @@ def get_period_dates(period: str, end_date: pd.Timestamp = None) -> Tuple[pd.Tim
     if end_date is None:
         end_date = pd.Timestamp.now().normalize()
     
-    if period == '1Y':
-        start_date = end_date - pd.DateOffset(years=1)
-    elif period == '3Y':
-        start_date = end_date - pd.DateOffset(years=3)
-    elif period == '5Y':
-        start_date = end_date - pd.DateOffset(years=5)
-    else:
-        raise ValueError(f"Invalid period: {period}. Use '1Y', '3Y', or '5Y'")
+    period_years = {
+        '1Y': 1,
+        '2Y': 2,
+        '3Y': 3,
+        '4Y': 4,
+        '5Y': 5
+    }
+    
+    if period not in period_years:
+        raise ValueError(f"Invalid period: {period}. Use '1Y', '2Y', '3Y', '4Y', or '5Y'")
+    
+    years = period_years[period]
+    start_date = end_date - pd.DateOffset(years=years)
     
     return start_date, end_date

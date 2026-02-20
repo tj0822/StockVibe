@@ -254,7 +254,7 @@ class PortfolioManager:
     
     def analyze_sell_timing(self, code: str, current_price: float, 
                            price_history: pd.DataFrame = None,
-                           stop_loss_rate: float = -5.0) -> Dict:
+                           stop_loss_rate: float = -7.0) -> Dict:
         """매도 타이밍 분석
         
         Args:
