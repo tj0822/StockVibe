@@ -16,6 +16,7 @@ from app.settings import UserSettings, ThemeManager, DisplaySettings
 # 기존 모듈
 from crawling_kospi import CrawlingKospi
 from app.data import load_stock_data
+from app.ui import run_app
 
 
 # ===== 캐싱 함수들 (성능 최적화) =====
@@ -804,5 +805,4 @@ def run_phase4_app():
         render_stock_analysis_page(df, signals, finance_df, params)
     else:
         # 기존 메인 대시보드
-        from app.ui import run_app
         run_app(selected_main_tab)
