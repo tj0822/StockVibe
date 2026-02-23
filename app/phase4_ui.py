@@ -19,6 +19,17 @@ from app.data import load_stock_data
 from app.ui import run_app
 
 
+# ===== 유틸리티 함수들 =====
+
+def convert_to_bool(value):
+    """문자열이나 다른 타입의 값을 boolean으로 변환"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in ('true', '1', 'yes', 'on')
+    return bool(value)
+
+
 # ===== 캐싱 함수들 (성능 최적화) =====
 
 @st.cache_data(ttl=3600)  # 1시간 캐싱
@@ -157,13 +168,14 @@ def page_portfolio():
         except:
             return pd.DataFrame()
     
-    # 뉴스 로드
+    # 뉴스 로드 (캐싱)
+    @st.cache_data(ttl=1800)
     def load_portfolio_news(stock_code):
         try:
             from naver_news_crawler import NaverNewsCrawler
             crawler = NaverNewsCrawler()
             return crawler.get_recent_news(stock_code, max_news=5)
-        except:
+        except Exception as e:
             return pd.DataFrame()
     
     # 데이터 로드
@@ -356,24 +368,37 @@ def page_portfolio():
                 # 뉴스 섹션
                 st.markdown("**📰 최근 뉴스**")
                 
-                with st.spinner("뉴스를 로딩 중입니다..."):
-                    news_df = load_portfolio_news(selected_code)
+                news_df = load_portfolio_news(selected_code)
+                
+                if not news_df.empty:
+                    from naver_news_crawler import NaverNewsCrawler
+                    crawler = NaverNewsCrawler()
                     
-                    if not news_df.empty:
-                        for idx, news in news_df.head(5).iterrows():
-                            news_title = news.get('title', '제목 없음')
-                            news_date = news.get('date', '')
-                            news_source = news.get('source', '')
-                            news_link = news.get('link', '')
+                    for idx, news in news_df.head(5).iterrows():
+                        # NaverNewsCrawler의 컬럼명: '제목', '출처', '날짜', '링크'
+                        news_title = news.get('제목', '제목 없음')
+                        news_date = news.get('날짜', '')
+                        news_source = news.get('출처', '')
+                        news_link = news.get('링크', '')
+                        
+                        # Expander로 뉴스 제목을 클릭하면 본문 표시
+                        with st.expander(f"📰 {news_title[:50]}... ({news_source})"):
+                            st.caption(f"📅 {news_date}")
                             
-                            st.markdown(f"**{news_title}**")
-                            st.caption(f"{news_source} · {news_date}")
-                            
-                            if news_link:
-                                st.markdown(f"[📌 기사 보기]({news_link})")
-                            st.markdown("---")
-                    else:
-                        st.info("최근 뉴스가 없습니다.")
+                            if news_link and news_link.startswith('http'):
+                                with st.spinner("📄 뉴스 본문 로딩 중..."):
+                                    try:
+                                        news_body = crawler.get_news_body(news_link)
+                                        if news_body:
+                                            st.markdown(f"""{news_body}""")
+                                        else:
+                                            st.info("본문을 가져올 수 없습니다.")
+                                    except Exception as e:
+                                        st.error(f"본문 로드 실패: {str(e)}")
+                            else:
+                                st.info("기사 링크를 찾을 수 없습니다.")
+                else:
+                    st.info("최근 뉴스가 없습니다.")
             else:
                 st.info("왼쪽에서 종목을 선택하면\n상세 정보가 표시됩니다.")
 
@@ -701,9 +726,19 @@ def page_settings():
         theme = st.selectbox("테마", ["light", "dark", "blue"], 
                             index=["light", "dark", "blue"].index(current_settings.get('theme', 'light')))
         
-        chart_height = st.slider("차트 높이", 400, 800, current_settings.get('chart_height', 600), 50)
+        # chart_height 값을 정수로 변환
+        chart_height_value = current_settings.get('chart_height', 600)
+        if isinstance(chart_height_value, str):
+            try:
+                chart_height_value = int(chart_height_value)
+            except (ValueError, TypeError):
+                chart_height_value = 600
         
-        show_volume = st.checkbox("거래량 표시", value=current_settings.get('show_volume', True))
+        chart_height = st.slider("차트 높이", 400, 800, chart_height_value, 50)
+        
+        # boolean 값 제대로 변환
+        show_volume_value = convert_to_bool(current_settings.get('show_volume', True))
+        show_volume = st.checkbox("거래량 표시", value=show_volume_value)
         
         if st.button("저장"):
             settings_mgr.set('theme', theme)
@@ -718,8 +753,10 @@ def page_settings():
                                      ["1mo", "3mo", "6mo", "1y", "3y"],
                                      index=["1mo", "3mo", "6mo", "1y", "3y"].index(current_settings.get('default_period', '1y')))
         
+        # boolean 값 제대로 변환
+        auto_expand_value = convert_to_bool(current_settings.get('auto_expand_top', True))
         auto_expand = st.checkbox("1위 종목 자동 펼치기", 
-                                 value=current_settings.get('auto_expand_top', True))
+                                 value=auto_expand_value)
         
         if st.button("저장", key="save_defaults"):
             settings_mgr.set('default_period', default_period)

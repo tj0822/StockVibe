@@ -23,7 +23,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-# 모듈 레벨 함수 (ProcessPoolExecutor로 pickle 가능하게)
+# 모듈 레벨 함수 (병렬 처리용 최소화된 문제)
 def _test_combination_worker(
     combo_idx: int,
     combo,
@@ -39,38 +39,24 @@ def _test_combination_worker(
     open_pivot,
     close_pivot,
     kospi_bullish_dates,
-    signals_cache_dict,
+    signals_by_key,  # 미리 계산된 signal dict
 ):
-    """백테스트 조합 테스트 (병렬 처리용 모듈 레벨 함수)"""
-    from app.signals import build_signals
+    """백테스트 조합 테스트 - signal은 미리 계산됨"""
     from app.ui import run_turnover_strategy_backtest
     
     params = dict(zip(param_names, combo))
     
     try:
-        # 시그널 생성 (rolling_days, volume_threshold 조합별 캐시)
+        # 미리 계산된 signal 조회 (생성 X)
         rolling_days = params.get('rolling_days', 20)
         volume_threshold = params.get('volume_threshold', 2.0)
         cache_key = (int(rolling_days), float(volume_threshold))
         
-        # signals_cache_dict는 공유 메모리가 아니므로, 각 프로세스에서 독립적으로 생성됨
-        if cache_key not in signals_cache_dict:
-            signals = build_signals(
-                df=price_df,
-                turnover_window=rolling_days,
-                turnover_multiplier=volume_threshold,
-                momentum_window=20,
-                momentum_threshold_pct=5.0,
-                vol_window=20,
-                vol_multiplier=2.0,
-                mr_window=20,
-                mr_z=2.0,
-                enabled_algos=["Turnover Spike"],
-                combine_mode="OR"
-            )
-            signals_cache_dict[cache_key] = signals
-        else:
-            signals = signals_cache_dict[cache_key]
+        if cache_key not in signals_by_key:
+            # signal이 없으면 스킵
+            return None
+        
+        signals = signals_by_key[cache_key]
         
         # 백테스트 실행
         equity_df, trades_df = run_turnover_strategy_backtest(
@@ -261,9 +247,53 @@ class BacktestOptimizer:
         dates_in_range = [d for d in open_pivot.index if d >= pd.to_datetime(start_date)]
         print(f"[pivot] dates >= start_date count: {len(dates_in_range)}", file=sys.stderr)
         
+        # 병렬 실행을 위해 필요한 unique signal 조합 먼저 생성 (메인 프로세스)
+        print(f"[신호 생성] Unique signal 조합 미리 계산 중...", file=sys.stderr)
+        
+        from app.signals import build_signals
+        
+        # param_ranges에서 rolling_days와 volume_threshold 조합 추출
+        rolling_days_list = param_ranges.get('rolling_days', [20])
+        volume_threshold_list = param_ranges.get('volume_threshold', [2.0])
+        
+        # 중복 제거 + unique 조합만 생성
+        unique_signal_keys = set()
+        for rd in rolling_days_list:
+            for vt in volume_threshold_list:
+                unique_signal_keys.add((int(rd), float(vt)))
+        
+        # 메인 프로세스에서 signal 미리 생성
+        signals_by_key = {}
+        signal_count = len(unique_signal_keys)
+        print(f"[신호 생성] {signal_count}개 signal 조합 생성 중...", file=sys.stderr)
+        
+        for idx, (rolling_days, volume_threshold) in enumerate(sorted(unique_signal_keys)):
+            try:
+                signals = build_signals(
+                    df=self.price_df,
+                    turnover_window=rolling_days,
+                    turnover_multiplier=volume_threshold,
+                    momentum_window=20,
+                    momentum_threshold_pct=5.0,
+                    vol_window=20,
+                    vol_multiplier=2.0,
+                    mr_window=20,
+                    mr_z=2.0,
+                    enabled_algos=["Turnover Spike"],
+                    combine_mode="OR"
+                )
+                signals_by_key[(rolling_days, volume_threshold)] = signals
+                
+                if (idx + 1) % max(1, signal_count // 5) == 0:
+                    print(f"[신호 생성] {idx + 1}/{signal_count} 완료", file=sys.stderr)
+            except Exception as e:
+                print(f"[경고] Signal 생성 실패 (rolling_days={rolling_days}, volume_threshold={volume_threshold}): {e}", file=sys.stderr)
+        
+        print(f"[신호 생성] 완료! {len(signals_by_key)}개 signal 준비됨", file=sys.stderr)
+        
         # 병렬 실행 설정
         num_workers = min(os.cpu_count() or 4, 8)  # 최대 8개 워커로 제한 (Windows 안정성)
-        signals_cache_dict = {}  # 공유 캐시 (각 프로세스가 독립적으로 사용)
+        signals_cache_dict = {}  # (미사용 - signal은 이미 메인에서 생성)
         
         print(f"[병렬처리] multiprocessing.Pool 사용 (워커 수: {num_workers})", file=sys.stderr)
         print(f"[병렬처리] 총 파라미터 조합: {total_combinations}개", file=sys.stderr)
@@ -291,14 +321,15 @@ class BacktestOptimizer:
                         open_pivot,
                         close_pivot,
                         kospi_bullish_dates,
-                        signals_cache_dict,
+                        signals_by_key,  # 미리 생성된 signal 딕셔너리
                     )
                 
                 # 작업 제출 (점진적 처리)
                 combo_with_idx = [(i, combo) for i, combo in enumerate(combinations)]
                 
                 # imap_unordered로 완료된 작업부터 처리 (진행상황 반영)
-                for result in pool.imap_unordered(worker_wrapper, combo_with_idx, chunksize=2):
+                # chunksize를 20으로 증가 (CPU-bound 작업이므로 더 큰 chunk가 효율적)
+                for result in pool.imap_unordered(worker_wrapper, combo_with_idx, chunksize=20):
                     completed_count += 1
                     
                     # 진행상황 업데이트
@@ -309,7 +340,7 @@ class BacktestOptimizer:
                         results.append(result)
                     
                     # 진행률 표시 (콘솔)
-                    if completed_count % max(1, total_combinations // 10) == 0:
+                    if completed_count % max(1, total_combinations // 20) == 0:
                         print(f"[진행] {completed_count}/{total_combinations} 완료 ({completed_count*100//total_combinations}%)", file=sys.stderr)
         
         except Exception as e:
@@ -335,7 +366,7 @@ class BacktestOptimizer:
                     open_pivot,
                     close_pivot,
                     kospi_bullish_dates,
-                    signals_cache_dict,
+                    signals_by_key,  # 미리 생성된 signal 딕셔너리
                 )
                 
                 if progress_callback and result is not None:

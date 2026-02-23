@@ -398,7 +398,8 @@ def render_table_with_finance(
         # 최상위 종목(idx=0) 또는 선택 종목은 자동으로 펼치기
         if focus_code is not None:
             focus_code = str(focus_code).strip()
-        auto_expand = (idx == 0) or (focus_code and str(code) == focus_code)
+        # auto_expand를 명시적으로 boolean으로 변환
+        auto_expand = bool((idx == 0) or (focus_code and str(code) == focus_code))
         
         with st.expander(title, expanded=auto_expand):
             # 탭으로 정보 구조화

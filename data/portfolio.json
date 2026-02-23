@@ -111,13 +111,6 @@
     "purchase_date": "2026-02-11",
     "last_updated": "2026-02-11 22:14:16"
   },
-  "088350": {
-    "name": "한화생명",
-    "quantity": 968,
-    "avg_price": 4172,
-    "purchase_date": "2026-02-11",
-    "last_updated": "2026-02-11 22:15:52"
-  },
   "066570": {
     "name": "LG전자",
     "quantity": 1,
@@ -152,5 +145,12 @@
     "avg_price": 0,
     "purchase_date": "2026-02-19",
     "last_updated": "2026-02-19 14:19:05"
+  },
+  "034220": {
+    "name": "LG디스플레이",
+    "quantity": 1,
+    "avg_price": 0,
+    "purchase_date": "2026-02-23",
+    "last_updated": "2026-02-23 11:56:05"
   }
 }
