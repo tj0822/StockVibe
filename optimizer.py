@@ -291,12 +291,16 @@ class BacktestOptimizer:
         
         print(f"[신호 생성] 완료! {len(signals_by_key)}개 signal 준비됨", file=sys.stderr)
         
-        # 병렬 실행 설정
-        num_workers = min(os.cpu_count() or 4, 8)  # 최대 8개 워커로 제한 (Windows 안정성)
+        # 병렬 실행 설정 (최적화: CPU 코어 수에 따라 워커 수 동적 결정)
+        cpu_count = os.cpu_count() or 4
+        num_workers = min(cpu_count, max(4, cpu_count - 1))  # CPU 코어 - 1, 최소 4개
+        optimal_chunksize = max(10, total_combinations // (num_workers * 4))  # 동적 chunksize
+        
         signals_cache_dict = {}  # (미사용 - signal은 이미 메인에서 생성)
         
-        print(f"[병렬처리] multiprocessing.Pool 사용 (워커 수: {num_workers})", file=sys.stderr)
+        print(f"[병렬처리] multiprocessing.Pool 사용 (워커 수: {num_workers}/{cpu_count})", file=sys.stderr)
         print(f"[병렬처리] 총 파라미터 조합: {total_combinations}개", file=sys.stderr)
+        print(f"[병렬처리] Chunksize: {optimal_chunksize} (최적화됨)", file=sys.stderr)
         
         # multiprocessing.Pool 사용 (Windows 호환성 더 좋음)
         try:
@@ -328,8 +332,8 @@ class BacktestOptimizer:
                 combo_with_idx = [(i, combo) for i, combo in enumerate(combinations)]
                 
                 # imap_unordered로 완료된 작업부터 처리 (진행상황 반영)
-                # chunksize를 20으로 증가 (CPU-bound 작업이므로 더 큰 chunk가 효율적)
-                for result in pool.imap_unordered(worker_wrapper, combo_with_idx, chunksize=20):
+                # chunksize를 동적으로 최적화 (CPU-bound 작업)
+                for result in pool.imap_unordered(worker_wrapper, combo_with_idx, chunksize=optimal_chunksize):
                     completed_count += 1
                     
                     # 진행상황 업데이트

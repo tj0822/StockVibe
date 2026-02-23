@@ -17,6 +17,15 @@ from app.settings import UserSettings, ThemeManager, DisplaySettings
 from crawling_kospi import CrawlingKospi
 from app.data import load_stock_data
 from app.ui import run_app
+from long_term_analyzer import LongTermAnalyzer, create_investment_portfolio_recommendation
+
+# 산업 트렌드 분석 (선택적 import)
+try:
+    from industry_trend_analyzer import IndustryTrendAnalyzer, get_industry_trend_recommendation
+    HAS_INDUSTRY_TREND = True
+except ImportError as e:
+    HAS_INDUSTRY_TREND = False
+    print(f"⚠️ 산업 트렌드 분석 모듈 로드 실패: {e}")
 
 
 # ===== 유틸리티 함수들 =====
@@ -104,12 +113,22 @@ def render_sidebar_menu() -> tuple[str, str]:
     pages = {
         "🏠 메인 대시보드": "main",
         "📈 종목분석": "analysis",
-        "💼 포트폴리오": "portfolio",
+        "� 중장기 투자": "long_term",
+        "�💼 포트폴리오": "portfolio",
         "⚙️ 설정": "settings"
     }
     
-    selected = st.sidebar.radio("메뉴", list(pages.keys()))
-    selected_page = pages[selected]
+    selected = st.sidebar.radio("메뉴", ["메인 대시보드", "종목분석", "뉴스 트렌드", "중장기 투자", "포트폴리오", "설정"])
+    
+    page_map = {
+        "메인 대시보드": "main",
+        "종목분석": "analysis",
+        "뉴스 트렌드": "industry_trend",
+        "중장기 투자": "long_term",
+        "포트폴리오": "portfolio",
+        "설정": "settings"
+    }
+    selected_page = page_map[selected]
 
     main_tabs = ["📊 시그널", "🎯 시뮬레이션", "⚙️ 최적화", "🔄 데이터"]
     selected_main_tab = st.session_state.get("active_tab", "📊 시그널")
@@ -128,6 +147,316 @@ def render_sidebar_menu() -> tuple[str, str]:
     st.sidebar.markdown("---")
     
     return selected_page, selected_main_tab
+
+
+def page_industry_trends():
+    """
+    🔥 뉴스 트렌드 분석 페이지
+    최신 뉴스를 분석하여 유망한 산업을 식별하고 관련 종목을 추천
+    """
+    st.title("🔥 뉴스 트렌드 분석")
+    
+    st.markdown("""
+    ### 📰 산업 트렌드 분석
+    - **목표**: 최신 뉴스 분석을 통해 유망한 산업 식별
+    - **방법**: 산업별 뉴스 수 + 감정 분석 + 시장 반응
+    - **활용**: 미래 성장 가능성 높은 산업의 종목 투자
+    """)
+    
+    # 모듈 가용성 확인
+    if not HAS_INDUSTRY_TREND:
+        st.error("""
+        ❌ **뉴스 트렌드 분석 기능을 사용할 수 없습니다.**
+        
+        필요한 모듈이 로드되지 않았습니다. 다음을 확인해주세요:
+        1. `industry_trend_analyzer.py` 파일이 존재하는지 확인
+        2. 터미널에서 다음 명령 실행:
+           ```
+           pip install transformers torch
+           ```
+        3. Streamlit을 다시 시작해주세요
+        
+        임시로 중장기 투자 기능을 사용해주세요.
+        """)
+        return
+    
+    try:
+        # 분석 옵션
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            st.markdown("### 📊 산업 트렌드 분석")
+            analysis_days = st.slider("분석 기간 (일)", min_value=1, max_value=30, value=7)
+        
+        with col2:
+            if st.button("🔍 분석 실행", type="primary", key="analyze_trends", use_container_width=True):
+                with st.spinner("📰 산업 뉴스 트렌드 분석 중... (이 과정은 1-2분 소요될 수 있습니다)"):
+                    try:
+                        analyzer = IndustryTrendAnalyzer()
+                        st.session_state.industry_analyzer = analyzer
+                        
+                        # 트렌딩 산업 분석
+                        trending_df = analyzer.get_trending_industries(top_n=10)
+                        st.session_state.trending_industries = trending_df
+                        
+                        st.success("✅ 분석 완료!")
+                    
+                    except Exception as e:
+                        st.error(f"❌ 분석 중 오류: {e}")
+                        return
+        
+        if 'trending_industries' in st.session_state:
+            trending_df = st.session_state.trending_industries
+            
+            # 탭 생성
+            tab1, tab2, tab3 = st.tabs(["🏆 유망 산업", "📰 산업별 뉴스", "📈 종목 추천"])
+            
+            # ===== TAB 1: 유망 산업 =====
+            with tab1:
+                st.markdown("### 🔥 TOP 유망 산업")
+                
+                # 상점 메트릭 (상위 3개)
+                if len(trending_df) >= 3:
+                    col1, col2, col3 = st.columns(3)
+                    
+                    for idx, (col, row) in enumerate(zip([col1, col2, col3], trending_df.head(3).itertuples())):
+                        with col:
+                            # 산업명과 점수
+                            st.metric(
+                                row.산업,
+                                f"{row.유망도:.1f}/100",
+                                f"외신 {int(row.뉴스수)}개"
+                            )
+                
+                st.markdown("---")
+                
+                # 전체 산업 랭킹
+                st.markdown("### 📊 산업별 유망도 순위")
+                
+                # 데이터 표시
+                display_df = trending_df.copy()
+                display_df = display_df.astype({
+                    '유망도': float,
+                    '뉴스수': int,
+                    '감정점수': float,
+                    '긍정': int,
+                    '중립': int,
+                    '부정': int
+                })
+                
+                # 컬럼 재정렬
+                display_df = display_df[['산업', '유망도', '뉴스수', '감정점수', '긍정', '중립', '부정']]
+                
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                
+                # 차트
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # 유망도 차트
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        y=trending_df['산업'],
+                        x=trending_df['유망도'],
+                        orientation='h',
+                        marker=dict(
+                            color=trending_df['유망도'],
+                            colorscale='RdYlGn',
+                            showscale=True,
+                            colorbar=dict(title="유망도")
+                        ),
+                        text=trending_df['유망도'].round(1),
+                        textposition='auto',
+                    ))
+                    fig.update_layout(
+                        title="산업별 유망도",
+                        xaxis_title="유망도 점수",
+                        yaxis_title="산업",
+                        height=500,
+                        margin=dict(l=150)
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    # 감정 점수와 뉴스 수
+                    fig = go.Figure()
+                    
+                    fig.add_trace(go.Scatter(
+                        y=trending_df['산업'],
+                        x=trending_df['감정점수'],
+                        mode='markers',
+                        name='감정점수',
+                        marker=dict(
+                            size=trending_df['뉴스수'] * 2,
+                            color=trending_df['감정점수'],
+                            colorscale='RdYlGn',
+                            showscale=True,
+                            colorbar=dict(title="감정점수"),
+                            line=dict(color='white', width=2)
+                        ),
+                        text=trending_df['산업'],
+                        customdata=trending_df['뉴스수'].astype(int),
+                        hovertemplate="<b>%{text}</b><br>감정점수: %{x:.1f}<br>뉴스 수: %{customdata}<extra></extra>"
+                    ))
+                    
+                    fig.update_layout(
+                        title="감정점수 vs 뉴스수 (버블 크기 = 뉴스수)",
+                        xaxis_title="감정점수",
+                        yaxis_title="산업",
+                        height=500,
+                        hovermode='closest'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            # ===== TAB 2: 산업별 뉴스 =====
+            with tab2:
+                st.markdown("### 📰 산업별 최근 뉴스")
+                
+                selected_industry = st.selectbox(
+                    "산업 선택",
+                    options=trending_df['산업'].tolist(),
+                    index=0
+                )
+                
+                if selected_industry and 'industry_analyzer' in st.session_state:
+                    analyzer = st.session_state.industry_analyzer
+                    industry_details = analyzer.get_industry_details(selected_industry)
+                    
+                    if industry_details:
+                        # 산업 정보 요약
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            st.metric("유망도", f"{industry_details['trend_score']:.1f}/100")
+                        with col2:
+                            st.metric("감정점수", f"{industry_details['sentiment_score']:.1f}/100")
+                        with col3:
+                            st.metric("뉴스수", industry_details['news_count'])
+                        with col4:
+                            st.metric("관련종목수", len(industry_details['stocks']))
+                        
+                        st.markdown("---")
+                        
+                        # 분석 의견
+                        st.markdown("### 🔍 산업 분석")
+                        st.info(industry_details['analysis'])
+                        
+                        st.markdown("---")
+                        
+                        # 최근 뉴스
+                        st.markdown("### 🌟 최근 뉴스")
+                        
+                        recent_news = industry_details['recent_news']
+                        
+                        if not recent_news.empty:
+                            for idx, news in recent_news.head(10).iterrows():
+                                # 뉴스 카드
+                                with st.expander(f"📰 {news['제목'][:60]}..."):
+                                    col1, col2 = st.columns([3, 1])
+                                    
+                                    with col1:
+                                        st.caption(f"출처: {news.get('출처', 'N/A')}")
+                                        st.caption(f"종목: {news.get('name', 'N/A')} ({news.get('code', 'N/A')})")
+                                    
+                                    with col2:
+                                        st.caption(f"날짜: {news.get('날짜', 'N/A')}")
+                        else:
+                            st.info("최근 뉴스가 없습니다.")
+            
+            # ===== TAB 3: 종목 추천 =====
+            with tab3:
+                st.markdown("### 📈 유망 산업 관련 종목 추천")
+                
+                # 추천 산업 선택
+                selected_rec_industry = st.selectbox(
+                    "산업 선택",
+                    options=trending_df['산업'].tolist(),
+                    index=0,
+                    key="recommendation_industry"
+                )
+                
+                # 추천 종목 수
+                num_recommendations = st.slider(
+                    "추천 종목 수",
+                    min_value=3,
+                    max_value=20,
+                    value=10,
+                    key="num_recommendations"
+                )
+                
+                if st.button("📊 종목 추천", type="primary", use_container_width=True):
+                    if selected_rec_industry and 'industry_analyzer' in st.session_state:
+                        analyzer = st.session_state.industry_analyzer
+                        industry_data = analyzer.get_industry_details(selected_rec_industry)
+                        
+                        if industry_data:
+                            from industry_trend_analyzer import get_industry_trend_recommendation
+                            
+                            recommendations = get_industry_trend_recommendation(
+                                industry_data,
+                                kospi_list=None
+                            )
+                            
+                            st.session_state.industry_recommendations = recommendations
+                            st.success(f"✅ {selected_rec_industry} 관련 {len(recommendations)}개 종목 추천 완료!")
+                
+                # 추천 결과 표시
+                if 'industry_recommendations' in st.session_state:
+                    recommendations = st.session_state.industry_recommendations
+                    
+                    # 메트릭
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("산업 유망도", 
+                                trending_df[trending_df['산업'] == selected_rec_industry]['유망도'].values[0] 
+                                if selected_rec_industry in trending_df['산업'].values else 0)
+                    with col2:
+                        st.metric("추천 종목 수", len(recommendations))
+                    
+                    st.markdown("---")
+                    
+                    # 종목 정보 테이블
+                    st.markdown("### 📋 추천 종목 목록")
+                    
+                    display_rec = recommendations.head(num_recommendations).copy()
+                    display_rec = display_rec[['code', 'name', 'level', 'score']]
+                    display_rec.columns = ['종목코드', '종목명', '추천등급', '점수']
+                    display_rec['점수'] = display_rec['점수'].round(1)
+                    
+                    st.dataframe(display_rec, use_container_width=True, hide_index=True)
+                    
+                    # 점수 차트
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        x=recommendations['name'],
+                        y=recommendations['score'],
+                        text=recommendations['score'].round(1),
+                        textposition='auto',
+                        marker=dict(
+                            color=recommendations['score'],
+                            colorscale='RdYlGn',
+                            showscale=True,
+                            colorbar=dict(title="점수")
+                        ),
+                        hovertemplate="<b>%{x}</b><br>점수: %{y:.1f}<extra></extra>"
+                    ))
+                    fig.update_layout(
+                        title=f"{selected_rec_industry} 추천 종목",
+                        xaxis_title="종목",
+                        yaxis_title="추천 점수",
+                        height=400,
+                        xaxis_tickangle=-45
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+        
+        else:
+            st.info("👈 왼쪽에서 '분석 실행' 버튼을 클릭하여 산업 트렌드 분석을 시작하세요.")
+    
+    except Exception as e:
+        st.error(f"❌ 오류: {e}")
+        import traceback
+        with st.expander("🔍 상세 오류 정보"):
+            st.error(traceback.format_exc())
 
 
 def page_portfolio():
@@ -778,6 +1107,577 @@ def page_settings():
             st.json(current_settings)
 
 
+def page_long_term_investment():
+    """
+    💎 중장기 투자 추천 페이지
+    재무 정보와 뉴스를 종합하여 3-5년 이상 우상향할 수 있는 종목 추천
+    """
+    st.title("💎 중장기 투자 추천")
+    
+    st.markdown("""
+    ### 📊 시스템 소개
+    - **분석 기준**: 재무 건전성 (40%) + 밸류에이션 (30%) + 모멘텀 (30%)
+    - **투자 기간**: 최소 3~5년 장기 보유 기준
+    - **목표**: 안정적인 배당 + 꾸준한 성장성
+    """)
+    
+    # 데이터 로드
+    from app.data import load_finance_data, load_stock_data
+    
+    with st.spinner("📊 데이터 로딩 중..."):
+        try:
+            finance_df = load_finance_data("data")
+            price_df = load_stock_data("data")
+            kospi_dict = load_kospi_name_map()
+            
+            if finance_df.empty:
+                st.error("❌ 재무 데이터가 없습니다.")
+                st.info("""
+                📋 **해결 방법:**
+                1. 메인 대시보드 → 🔄 데이터 탭으로 이동
+                2. 데이터 수집 버튼 클릭
+                3. 재무 데이터와 주가 데이터 모두 로드 완료 후 다시 시도
+                """)
+                return
+            
+            if price_df.empty:
+                st.error("❌ 주가 데이터가 없습니다.")
+                st.info("""
+                📋 **해결 방법:**
+                1. 메인 대시보드 → 🔄 데이터 탭으로 이동
+                2. 데이터 수집 버튼 클릭
+                3. 주가 데이터 로드 완료 후 다시 시도
+                """)
+                return
+            
+            # 데이터 통계 표시
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📊 재무 데이터 행", len(finance_df))
+            with col2:
+                st.metric("💹 주가 데이터 행", len(price_df))
+            with col3:
+                unique_codes = finance_df['code'].nunique() if 'code' in finance_df.columns else 0
+                st.metric("🏢 종목 수", unique_codes)
+            
+        except Exception as e:
+            st.error(f"❌ 데이터 로드 오류: {e}")
+            st.error(f"세부 정보: {str(e)}")
+            return
+    
+    # 탭 생성
+    tab1, tab2, tab3 = st.tabs(["🎯 추천 종목", "📊 상세 분석", "💰 포트폴리오 구성"])
+    
+    # ===== TAB 1: 추천 종목 =====
+    with tab1:
+        st.subheader("🎯 추천 종목 순위")
+        
+        st.markdown("""
+        💡 **팁**: 최소 점수가 높을수록 더 우수한 종목만 선별됩니다.
+        처음 실행 시 최소 점수를 **30~40점** 정도로 낮춘 후 시작하는 것을 추천합니다.
+        """)
+        
+        # 분석 파라미터 섹션
+        st.markdown("### ⚙️ 분석 파라미터")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            num_stocks = st.slider("추천 종목 수", 5, 30, 10)
+        
+        with col2:
+            min_score = st.slider("최소 재무 건전성 점수", 20, 80, 40)
+        
+        # 가중치 조정 섹션
+        st.markdown("### 📊 분석 기준 가중치")
+        st.markdown("""
+        가중치를 조정하여 분석 초점을 변경할 수 있습니다.
+        **합계가 100%가 되어야 합니다.**
+        """)
+        
+        # 슬라이더 컬럼 레이아웃
+        col_w1, col_w2, col_w3 = st.columns(3)
+        
+        with col_w1:
+            weight_fundamental = st.slider(
+                "재무 건전성 (%)",
+                min_value=10,
+                max_value=70,
+                value=40,
+                step=5,
+                key="weight_fund"
+            )
+        
+        with col_w2:
+            weight_valuation = st.slider(
+                "밸류에이션 (%)",
+                min_value=10,
+                max_value=70,
+                value=30,
+                step=5,
+                key="weight_val"
+            )
+        
+        with col_w3:
+            weight_momentum = st.slider(
+                "모멘텀 (%)",
+                min_value=10,
+                max_value=70,
+                value=30,
+                step=5,
+                key="weight_mom"
+            )
+        
+        # 가중치 합계 확인
+        total_weight = weight_fundamental + weight_valuation + weight_momentum
+        
+        # 합계 표시 및 검증
+        col_sum1, col_sum2 = st.columns([2, 1])
+        with col_sum1:
+            if total_weight == 100:
+                st.success(f"✅ 가중치 합계: {total_weight}%")
+            else:
+                st.warning(f"⚠️ 가중치 합계: {total_weight}% (100%가 되도록 조정해주세요)")
+        
+        with col_sum2:
+            # 기본값으로 리셋 버튼
+            if st.button("🔄 기본값 리셋", use_container_width=True):
+                st.session_state.weight_fund = 40
+                st.session_state.weight_val = 30
+                st.session_state.weight_mom = 30
+                st.rerun()
+        
+        # 가중치 설명
+        with st.expander("🔍 가중치별 투자 성향"):
+            st.markdown("""
+            **재무 건전성** (기본: 40%)
+            - 높을수록: ROE, 영업이익률 등 기업 기본 체질 중시
+            - 안정성, 배당금, 장기 수익성 추구
+            
+            **밸류에이션** (기본: 30%)
+            - 높을수록: PER, PBR 등 저평가 상태 중시
+            - 단기 상승 여력, 가성비 투자 추구
+            
+            **모멘텀** (기본: 30%)
+            - 높을수록: 최근 주가 추세 중시
+            - 최근 상승 추세, 시장 인기도 중시
+            
+            **추천 조합:**
+            - 🟢 안정형: 재무 50% + 밸류 30% + 모멘텀 20%
+            - 🟡 균형형: 재무 40% + 밸류 30% + 모멘텀 30% (기본)
+            - 🔴 공격형: 재무 30% + 밸류 20% + 모멘텀 50%
+            """)
+        
+        if st.button("🔍 추천 종목 분석", use_container_width=True, type="primary"):
+            # 가중치 검증
+            if total_weight != 100:
+                st.error("❌ 가중치 합계가 100%가 아닙니다. 다시 조정해주세요.")
+            else:
+                with st.spinner(f"🔍 {num_stocks}개 종목 분석 중... (가중치: 재무 {weight_fundamental}%, 밸류 {weight_valuation}%, 모멘텀 {weight_momentum}%)"):
+                    try:
+                        analyzer = LongTermAnalyzer(finance_df, price_df)
+                        recommendations = analyzer.recommend_long_term_stocks(
+                            num_stocks=num_stocks,
+                            min_fundamental_score=min_score,
+                            kospi_list=kospi_dict,
+                            weight_fundamental=weight_fundamental / 100,
+                            weight_valuation=weight_valuation / 100,
+                            weight_momentum=weight_momentum / 100
+                        )
+                        
+                        if recommendations.empty:
+                            st.warning("""
+                            ⚠️ **조건에 맞는 추천 종목이 없습니다.**
+                            
+                            📋 **원인 분석:**
+                            - 선택한 최소 점수가 너무 높을 수 있습니다 (권장: 30~40점)
+                            - 재무 데이터 컬럼명이 예상과 다를 수 있습니다
+                            - 주가 데이터가 부족할 수 있습니다
+                            
+                            🔧 **해결 방법:**
+                            1. **최소 점수를 낮춰보세요** (현재: {0}점 → 30점으로 시도)
+                            2. **메인 대시보드**에서 데이터 재수집
+                            3. 페이지 새로고침 (F5) 후 다시 시도
+                            """.format(min_score))
+                        else:
+                            # 세션에 저장 (가중치도 함께)
+                            st.session_state.long_term_recommendations = recommendations
+                            st.session_state.last_weights = {
+                                'fundamental': weight_fundamental / 100,
+                                'valuation': weight_valuation / 100,
+                                'momentum': weight_momentum / 100
+                            }
+                            
+                            st.success(f"✅ {len(recommendations)}개 종목 분석 완료!")
+                            
+                            # 추천 종목 테이블
+                            st.markdown("### 📋 추천 종목 목록")
+                            
+                            display_df = recommendations[
+                                ['name', 'code', 'total_score', 'fundamental_score', 
+                                 'valuation_score', 'momentum_score', 'roe', 'per', 
+                                 'pbr', 'trend', 'reasons']
+                            ].copy()
+                            
+                            display_df.columns = [
+                                '종목명', '코드', '종합점수',
+                                '재무점수', '밸류에이션점수', '모멘텀점수',
+                                'ROE(%)', 'PER(배)', 'PBR(배)', '추세', '추천이유'
+                            ]
+                            
+                            display_df = display_df.sort_values('종합점수', ascending=False)
+                            
+                            # 조건부 포매팅이 있는 데이터프레임
+                            st.dataframe(display_df, use_container_width=True, hide_index=True)
+                            
+                            # 점수 분포 시각화
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                # 종합점수 차트
+                                fig = go.Figure()
+                                fig.add_trace(go.Bar(
+                                    y=recommendations['name'],
+                                    x=recommendations['total_score'],
+                                    orientation='h',
+                                    marker=dict(
+                                        color=recommendations['total_score'],
+                                        colorscale='RdYlGn',
+                                        showscale=True,
+                                        colorbar=dict(title="종합점수")
+                                    ),
+                                    text=recommendations['total_score'].round(1),
+                                    textposition='auto',
+                                ))
+                                fig.update_layout(
+                                    title="종합 투자점수",
+                                    xaxis_title="점수",
+                                    yaxis_title="종목",
+                                    height=600,
+                                    margin=dict(l=150)
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                            
+                            with col2:
+                                # 평가 구성 요소별 스택
+                                fig = go.Figure()
+                                fig.add_trace(go.Bar(
+                                    y=recommendations['name'],
+                                    x=recommendations['fundamental_score'],
+                                    name='재무 건전성',
+                                    orientation='h',
+                                    marker=dict(color='#636EFA')
+                                ))
+                                fig.add_trace(go.Bar(
+                                    y=recommendations['name'],
+                                    x=recommendations['valuation_score'],
+                                    name='밸류에이션',
+                                    orientation='h',
+                                    marker=dict(color='#EF553B')
+                                ))
+                                fig.add_trace(go.Bar(
+                                    y=recommendations['name'],
+                                    x=recommendations['momentum_score'],
+                                    name='모멘텀',
+                                    orientation='h',
+                                    marker=dict(color='#00CC96')
+                                ))
+                                fig.update_layout(
+                                    barmode='stack',
+                                    title="평가 점수 구성",
+                                    xaxis_title="점수",
+                                    yaxis_title="종목",
+                                    height=600,
+                                    margin=dict(l=150),
+                                    hovermode='y unified'
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                    
+                    except Exception as e:
+                        st.error(f"❌ 분석 중 오류: {e}")
+                        import traceback
+                        with st.expander("🔍 상세 오류 정보"):
+                            st.error(traceback.format_exc())
+    
+    # ===== TAB 2: 상세 분석 =====
+    with tab2:
+        st.subheader("📊 종목별 상세 분석")
+        
+        if 'long_term_recommendations' not in st.session_state:
+            st.info("👈 먼저 추천 종목을 분석해주세요.")
+        else:
+            recommendations = st.session_state.long_term_recommendations
+            
+            # 종목 선택
+            stock_options = [f"{row['name']} ({row['code']})" 
+                           for _, row in recommendations.iterrows()]
+            
+            selected_stock = st.selectbox("종목 선택", stock_options)
+            
+            if selected_stock:
+                # 선택한 종목의 데이터 추출
+                selected_idx = stock_options.index(selected_stock)
+                selected_code = recommendations.iloc[selected_idx]['code']
+                selected_name = recommendations.iloc[selected_idx]['name']
+                
+                with st.spinner(f"📊 {selected_name} 상세 분석 중..."):
+                    try:
+                        analyzer = LongTermAnalyzer(finance_df, price_df)
+                        
+                        # 저장된 가중치 불러오기 (없으면 기본값 사용)
+                        weights = st.session_state.get('last_weights', {
+                            'fundamental': 0.40,
+                            'valuation': 0.30,
+                            'momentum': 0.30
+                        })
+                        
+                        details = analyzer.get_stock_recommendation_details(
+                            selected_code,
+                            selected_name,
+                            weight_fundamental=weights.get('fundamental', 0.40),
+                            weight_valuation=weights.get('valuation', 0.30),
+                            weight_momentum=weights.get('momentum', 0.30)
+                        )
+                        
+                        # 상단: 추천 레벨 및 점수
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            st.metric("추천 레벨", details['level'])
+                        with col2:
+                            st.metric("종합 점수", f"{details['total_score']:.1f}/100")
+                        with col3:
+                            st.metric("재무 점수", f"{details['fundamental']['score']}")
+                        with col4:
+                            st.metric("밸류에이션 점수", f"{details['valuation']['score']}")
+                        
+                        st.markdown("---")
+                        
+                        # 재무 지표
+                        st.markdown("### 💰 재무 지표")
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            st.metric("ROE", f"{details['fundamental'].get('roe', 0):.1f}%")
+                        with col2:
+                            st.metric("영업이익률", f"{details['fundamental'].get('operating_margin', 0):.1f}%")
+                        with col3:
+                            st.metric("이익 성장률", f"{details['fundamental'].get('profit_growth', 0):.1f}%")
+                        with col4:
+                            st.metric("PBR", f"{details['valuation'].get('pbr', 0):.2f}배")
+                        
+                        st.markdown("---")
+                        
+                        # 밸류에이션
+                        st.markdown("### 💵 밸류에이션")
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.metric("PER", f"{details['valuation'].get('per', 0):.1f}배")
+                            st.caption("낮을수록 저평가 상태")
+                        
+                        with col2:
+                            st.metric("1년 수익률", f"{details['momentum'].get('return_1y', 0):.1f}%")
+                            st.caption(f"추세: {details['momentum'].get('trend', '미정')}")
+                        
+                        st.markdown("---")
+                        
+                        # 투자 전망
+                        st.markdown("### 🔮 투자 전망")
+                        for outlook in details.get('outlook', []):
+                            st.markdown(f"- {outlook}")
+                        
+                        st.markdown("---")
+                        
+                        # 추천 이유 정리
+                        st.markdown("### ✅ 추천 이유")
+                        
+                        reasons_list = []
+                        
+                        # 재무 기반
+                        if details['fundamental'].get('roe', 0) > 15:
+                            reasons_list.append(f"✔️ **높은 수익성**: ROE {details['fundamental'].get('roe', 0):.1f}% (안정적 배당 기대)")
+                        
+                        if details['fundamental'].get('operating_margin', 0) > 10:
+                            reasons_list.append(f"✔️ **우수한 경영효율**: 영업이익률 {details['fundamental'].get('operating_margin', 0):.1f}%")
+                        
+                        if details['fundamental'].get('profit_growth', 0) > 5:
+                            reasons_list.append(f"✔️ **실적 성장성**: 이익 성장률 {details['fundamental'].get('profit_growth', 0):.1f}%")
+                        
+                        # 밸류에이션 기반
+                        if details['valuation'].get('per', 20) < 15:
+                            reasons_list.append(f"✔️ **저평가 상태**: PER {details['valuation'].get('per', 20):.1f}배 (상승 여유 있음)")
+                        
+                        if details['valuation'].get('pbr', 1.0) < 1.0:
+                            reasons_list.append(f"✔️ **주가순자산비율 저가**: PBR {details['valuation'].get('pbr', 1.0):.2f}배 (순자산 대비 저가)")
+                        
+                        # 모멘텀 기반
+                        if details['momentum'].get('return_1y', 0) > 10:
+                            reasons_list.append(f"✔️ **긍정적 추세**: 1년 수익률 {details['momentum'].get('return_1y', 0):.1f}%")
+                        
+                        if reasons_list:
+                            for reason in reasons_list:
+                                st.markdown(reason)
+                        else:
+                            st.info("기본적으로 우량한 종목입니다.")
+                        
+                        st.markdown("---")
+                        
+                        # 주의사항
+                        st.warning("""
+                        ⚠️ **투자 유의사항**
+                        - 과거 실적이 미래를 보장하지 않습니다.
+                        - 본 분석은 참고자료일 뿐 투자 권고가 아닙니다.
+                        - 충분한 조사 후 신중하게 투자 결정하세요.
+                        - 본인의 투자 목표와 위험도를 고려하여 포트폴리오를 구성하세요.
+                        """)
+                    
+                    except Exception as e:
+                        st.error(f"❌ 상세 분석 오류: {e}")
+    
+    # ===== TAB 3: 포트폴리오 구성 =====
+    with tab3:
+        st.subheader("💰 추천 포트폴리오 구성")
+        
+        if 'long_term_recommendations' not in st.session_state:
+            st.info("👈 먼저 추천 종목을 분석해주세요.")
+        else:
+            recommendations = st.session_state.long_term_recommendations
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                total_investment = st.number_input(
+                    "총 투자 금액 (원)",
+                    value=10_000_000,
+                    step=1_000_000,
+                    min_value=1_000_000
+                )
+            
+            with col2:
+                num_portfolio_stocks = st.slider(
+                    "포트폴리오 구성 종목 수",
+                    min_value=3,
+                    max_value=len(recommendations),
+                    value=min(10, len(recommendations))
+                )
+            
+            if st.button("📊 포트폴리오 구성", use_container_width=True, type="primary"):
+                with st.spinner("포트폴리오 구성 중..."):
+                    try:
+                        # 상위 종목으로 구성
+                        top_stocks = recommendations.head(num_portfolio_stocks)
+                        
+                        # 포트폴리오 배분
+                        portfolio_result = create_investment_portfolio_recommendation(
+                            top_stocks,
+                            total_investment=total_investment
+                        )
+                        
+                        st.session_state.portfolio_result = portfolio_result
+                        
+                        # 포트폴리오 전략
+                        st.markdown("### 🎯 포트폴리오 전략")
+                        st.info(f"**{portfolio_result['strategy']}**")
+                        
+                        # 배분 현황
+                        st.markdown("### 💼 종목별 배분")
+                        
+                        portfolio_df = pd.DataFrame(portfolio_result['portfolio'])
+                        portfolio_df['비중(%)'] = (
+                            portfolio_df['allocation'] / total_investment * 100
+                        ).round(1)
+                        portfolio_df['배분액'] = portfolio_df['allocation'].apply(
+                            lambda x: f"₩{x:,.0f}"
+                        )
+                        
+                        display_df = portfolio_df[['code', 'name', '비중(%)', '배분액', 'total_score']]
+                        display_df.columns = ['코드', '종목명', '비중', '배분액', '종합점수']
+                        display_df['종합점수'] = display_df['종합점수'].round(1)
+                        
+                        st.dataframe(display_df, use_container_width=True, hide_index=True)
+                        
+                        # 배분 차트
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # 파이 차트
+                            fig = go.Figure(data=[go.Pie(
+                                labels=portfolio_df['name'],
+                                values=portfolio_df['allocation'],
+                                textinfo="label+percent",
+                                hovertemplate="<b>%{label}</b><br>₩%{value:,.0f}<br>%{percent}"
+                            )])
+                            fig.update_layout(
+                                title="포트폴리오 구성 비중",
+                                height=500
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        
+                        with col2:
+                            # 종목 점수 비교
+                            fig = go.Figure()
+                            fig.add_trace(go.Bar(
+                                x=portfolio_df['name'],
+                                y=portfolio_df['total_score'],
+                                text=portfolio_df['total_score'].round(1),
+                                textposition='auto',
+                                marker=dict(
+                                    color=portfolio_df['total_score'],
+                                    colorscale='RdYlGn',
+                                    showscale=True,
+                                    colorbar=dict(title="종합점수")
+                                )
+                            ))
+                            fig.update_layout(
+                                title="포트폴리오 종목 점수",
+                                xaxis_title="종목",
+                                yaxis_title="점수",
+                                height=500,
+                                xaxis_tickangle=-45
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        
+                        # 요약 통계
+                        st.markdown("### 📊 포트폴리오 통계")
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            avg_score = portfolio_df['total_score'].mean()
+                            st.metric("평균 종합점수", f"{avg_score:.1f}/100")
+                        
+                        with col2:
+                            min_score = portfolio_df['total_score'].min()
+                            st.metric("최저 종합점수", f"{min_score:.1f}/100")
+                        
+                        with col3:
+                            st.metric("구성 종목 수", f"{len(portfolio_df)}개")
+                        
+                        with col4:
+                            st.metric("총 배분액", f"₩{total_investment:,.0f}")
+                        
+                        # 포트폴리오 다운로드
+                        st.markdown("---")
+                        st.markdown("### 📥 포트폴리오 저장")
+                        
+                        # CSV로 변환
+                        csv = display_df.to_csv(index=False)
+                        
+                        st.download_button(
+                            label="📥 포트폴리오 CSV 다운로드",
+                            data=csv,
+                            file_name=f"long_term_portfolio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+                    
+                    except Exception as e:
+                        st.error(f"❌ 포트폴리오 구성 오류: {e}")
+                        import traceback
+                        st.error(traceback.format_exc())
+
+
 # 메인 실행 함수
 def run_phase4_app():
     """Phase 4 앱 실행"""
@@ -808,6 +1708,10 @@ def run_phase4_app():
         page_portfolio()
     elif page == "settings":
         page_settings()
+    elif page == "long_term":
+        page_long_term_investment()
+    elif page == "industry_trend":
+        page_industry_trends()
     elif page == "analysis":
         # 종목분석 페이지
         from app.ui import render_stock_analysis_page

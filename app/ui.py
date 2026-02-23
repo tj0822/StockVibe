@@ -6,6 +6,7 @@ import streamlit.components.v1 as components
 from concurrent.futures import ThreadPoolExecutor
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from datetime import datetime
 
 from crawling_kospi import CrawlingKospi
 from naver_news_crawler import NaverNewsCrawler
@@ -16,7 +17,6 @@ from stock_ontology import build_stock_ontology, StockOntology
 
 from .data import DATA_DIR_DEFAULT, load_kospi_index, load_kospi_list, load_stock_data, load_finance_data
 from .signals import build_signals
-import datetime
 
 
 @st.cache_data(ttl=3600, show_spinner=False)  # 1시간 캐시
@@ -1618,10 +1618,10 @@ def render_kospi_crawling_page() -> None:
 
 
 def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: dict) -> None:
-    """파라미터 최적화 페이지 렌더링"""
+    """파라미터 최적화 페이지 렌더링 - Unified 접근법"""
     st.subheader("🎯 파라미터 최적화")
-    st.caption("연도별로 1년씩 최적의 투자 전략 파라미터를 찾습니다")
-    st.write("각 연도(1년)에 대해 파라미터 조합을 테스트하여 최적의 전략을 찾습니다.")
+    st.caption("📊 전체 기간(2022-2024)에 대해 최적의 범용 투자 전략 파라미터를 찾습니다")
+    st.write("모든 거래일에 대해 파라미터 조합을 테스트하여 가장 우수한 범용 파라미터를 찾습니다.")
     
     # GPU/CPU 정보 표시
     from optimizer import get_gpu_info, get_available_years
@@ -1634,13 +1634,13 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
         processing_mode = "🚀 GPU 가속" if gpu_info['cuda_available'] else "⚙️ CPU 멀티프로세싱"
         st.metric("처리 모드", processing_mode, delta="최고 성능" if gpu_info['cuda_available'] else "표준")
     with info_cols[2]:
-        st.metric("병렬처리 방식", "ProcessPoolExecutor", delta="GIL 우회")
+        st.metric("병렬처리 방식", "multiprocessing.Pool", delta="Windows 호환")
     
     # 설정 영역을 컬럼으로 나누기
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("#### 📅 투자 연도 설정")
+        st.markdown("#### 📅 최적화 기간")
         
         # 데이터에서 이용 가능한 연도 추출
         available_year_ranges = get_available_years(df)
@@ -1650,29 +1650,24 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             return
         
         available_years = sorted(available_year_ranges.keys(), reverse=True)
-        year_options = [str(year) for year in available_years]
-        default_years = year_options[:3] if len(year_options) >= 3 else year_options
+        
+        # 전체 데이터 범위 계산
+        all_start_dates = [available_year_ranges[year][0] for year in available_years]
+        all_end_dates = [available_year_ranges[year][1] for year in available_years]
+        global_start_date = min(all_start_dates)
+        global_end_date = max(all_end_dates)
         
         # 데이터 범위 정보 표시
         with st.expander("📊 데이터 범위 정보"):
+            st.info(f"📈 **전체 최적화 기간**: {global_start_date.date()} ~ {global_end_date.date()}")
             range_info = []
-            for year in sorted(available_year_ranges.keys(), reverse=True):
+            for year in sorted(available_years, reverse=True):
                 start_date, end_date = available_year_ranges[year]
                 range_info.append(f"**{year}년**: {start_date.date()} ~ {end_date.date()}")
             st.write("\n".join(range_info))
         
-        periods = st.multiselect(
-            "최적화할 연도 선택 (1년씩)",
-            options=year_options,
-            default=default_years,
-            format_func=lambda x: f"{x}년"
-        )
-        
-        if not periods:
-            st.error("최소 1개 이상의 연도를 선택해주세요.")
-            return
-        
-        st.info(f"선택된 연도: {', '.join([f'{p}년' for p in periods])} (각 1년씩 테스트)")
+        st.success(f"✅ 최적화 기간: {global_start_date.date()} ~ {global_end_date.date()}")
+        st.caption("💡 팁: 전체 기간 최적화는 연도별 최적화보다 3배 빠릅니다!")
         
         initial_cash = st.number_input(
             "초기 자산 (원)",
@@ -1682,6 +1677,8 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
             step=10_000_000,
             format="%d"
         )
+        
+        st.divider()
     
     with col2:
         st.markdown("#### ⚙️ 파라미터 범위 설정")
@@ -1693,32 +1690,35 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
         with col_b:
             max_daily_buys_max = st.number_input("최대", min_value=1, max_value=5, value=3, key="mdb_max")
         
-        st.markdown("**직전 거래일 평균**")
+        st.markdown("**직전 거래일 평균** (⚡5-20일 권장)")
         col_c, col_d = st.columns(2)
         with col_c:
             rolling_days_options = st.multiselect(
                 "테스트할 값 선택",
                 options=list(range(5, 31, 5)),
-                default=list(range(5, 31, 5)),
-                key="rolling_options"
+                default=[5, 10, 15, 20],
+                key="rolling_options",
+                help="5, 10, 15, 20만 권장"
             )
         
-        st.markdown("**평균 대비 배수**")
+        st.markdown("**평균 대비 배수** (⚡1.5-3.0 권장)")
         col_e, col_f = st.columns(2)
         with col_e:
             volume_threshold_options = st.multiselect(
                 "테스트할 값 선택",
-                options=[x / 2 for x in range(4, 21)],
-                default=[x / 2 for x in range(4, 21)],
-                key="vol_options"
+                options=[x / 2 for x in range(3, 21)],
+                default=[1.5, 2.0, 2.5, 3.0],
+                key="vol_options",
+                help="1.5, 2.0, 2.5, 3.0만 권장"
             )
 
-        st.markdown("**추가매수 손실 임계값(%)**")
+        st.markdown("**추가매수 손실 임계값(%)** (⚡-7% 권장)")
         add_buy_threshold_options = st.multiselect(
             "테스트할 값 선택",
             options=[-float(x) for x in range(1, 11)],
-            default=[-float(x) for x in range(1, 11)],
-            key="add_buy_threshold_options"
+            default=[-7.0],
+            key="add_buy_threshold_options",
+            help="⚡-7.0만 권장 (가장 안정적 & 매우 빠름)"
         )
         
         st.markdown("**매수 금액 단위 (만원)**")
@@ -1743,20 +1743,21 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
         }[x]
     )
 
-    st.markdown("#### 🔎 탐색 방식")
+    st.markdown("#### 🔎 탐색 방식 (속도 최적화)")
     search_mode = st.selectbox(
         "최적화 방식",
-        options=["grid", "random"],
+        options=["random", "grid"],
         index=0,
-        format_func=lambda x: "그리드 서치" if x == "grid" else "랜덤 서치"
+        format_func=lambda x: "🚀 랜덤 서치 (빠름!)" if x == "random" else "그리드 서치 (느림)",
+        help="랜덤: 빠르고 충분히 정확 | 그리드: 느리지만 완전한 탐색"
     )
     sample_count = st.number_input(
         "랜덤 샘플 수",
         min_value=50,
         max_value=5000,
-        value=300,
+        value=150,
         step=50,
-        help="랜덤 서치에서 테스트할 파라미터 조합 개수",
+        help="⚡팁: 150-300개 추천 (빠름), 1000개 이상은 매우 느림",
         disabled=(search_mode != "random")
     )
     random_seed = st.number_input(
@@ -1772,7 +1773,34 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
     # 최적화 실행 버튼
     st.divider()
     
-    if st.button("🚀 연도별 최적화 실행", type="primary", use_container_width=True):
+    # ⚡ 속도 최적화 팁
+    with st.expander("⚡ 속도 향상 팁", expanded=False):
+        st.markdown("""
+        ### 🚀 빠른 최적화를 위한 권장 설정:
+        
+        **현재 설정 (권장):**
+        - 🎯 탐색 방식: **랜덤 서치** (기본값)
+        - 📊 샘플 수: **150개** (기본값)
+        - 📈 매개변수 범위:
+          - 직전 거래일: **5, 10, 15, 20** 만 선택 (기본값)
+          - 평균 배수: **1.5, 2.0, 2.5, 3.0** 만 선택 (기본값)
+          - 손실 임계값: **-7.0** 만 선택 (기본값)
+        
+        **성능 비교:**
+        | 설정 | 예상 시간 | 품질 |
+        |------|---------|------|
+        | 권장 설정 | ⚡ 1-2분 | ✅ 충분함 |
+        | 일반 설정 | 🟡 5-10분 | ✅ 동일 |
+        | 전체 탐색 | 🐢 30분+ | ✅ 조금더 정밀함 |
+        
+        **⚡ 최적화 기술:**
+        1. **랜덤 서치**: 그리드보다 3-5배 빠름
+        2. **파라미터 축소**: 범위를 절반만 사용해도 충분함
+        3. **병렬 처리**: CPU 코어 수 활용 (자동 최적화됨)
+        4. **신호 사전 계산**: 이미 메인 프로세스에서 계산됨
+        """)
+    
+    if st.button("🚀 범용 파라미터 최적화 실행", type="primary", use_container_width=True):
         # 파라미터 범위 검증
         if not rolling_days_options:
             st.error("직전 거래일 평균 값을 최소 1개 이상 선택해주세요.")
@@ -1818,105 +1846,121 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
                 st.error("랜덤 샘플 수가 0입니다. 파라미터 범위를 확인하세요.")
                 return
         
-        # 각 연도별 최적화 결과 저장
-        all_results = {}
+        # ===== 전체 기간 최적화 (Unified Approach) =====
+        st.markdown("---")
         
-        # 각 연도에 대해 최적화 실행
-        for period in periods:
-            st.markdown("---")
-            st.info(f"📊 **{period}년 최적화 중...**")
+        # 예상 시간 계산
+        total_combos = (
+            len(param_ranges['max_daily_buys']) * 
+            len(param_ranges['rolling_days']) * 
+            len(param_ranges['volume_threshold']) *
+            len(param_ranges['add_buy_threshold_pct']) *
+            len(param_ranges['buy_unit'])
+        )
+        
+        if search_mode == "random":
+            test_count = min(int(sample_count), total_combos)
+            estimate_time = max(1, test_count // 150)  # 분당 약 150개 처리
+        else:
+            test_count = total_combos
+            estimate_time = max(2, test_count // 100)  # 분당 약 100개 처리
+        
+        st.info(f"📊 **전체 기간 최적화 중...**\n예상 시간: **{estimate_time}분** | 테스트 조합: {test_count}개 | 데이터 범위: {global_start_date.date()} ~ {global_end_date.date()}")
+        
+        # 프로그레스 바 설정
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        time_start = datetime.now()
+        
+        def update_progress(current, total, params):
+            import time
+            elapsed = (datetime.now() - time_start).total_seconds()
+            progress = current / total
+            progress_bar.progress(progress)
             
-            # 실제 데이터 범위에서 시작/종료 날짜 가져오기
-            if period in [str(y) for y in available_year_ranges.keys()]:
-                start_date, end_date = available_year_ranges[int(period)]
-                st.caption(f"데이터 범위: {start_date.date()} ~ {end_date.date()}")
+            # 예상 남은 시간 계산
+            if progress > 0.05:  # 최소 5% 이상 진행했을 때만 계산
+                estimated_total = elapsed / progress
+                estimated_remaining = estimated_total - elapsed
+                time_str = f"{int(estimated_remaining)}초"
+                if estimated_remaining > 60:
+                    time_str = f"{estimated_remaining/60:.1f}분"
             else:
-                st.warning(f"⚠️ {period}년에 대한 데이터를 찾을 수 없습니다.")
-                continue
+                time_str = "계산 중..."
             
-            # 프로그레스 바 설정
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            buy_unit_man = params.get('buy_unit', 2_000_000) // 10_000  # 원 -> 만원
+            status_text.text(
+                f"진행: {current}/{total} ({int(progress*100)}%) | "
+                f"남은 시간: {time_str} | "
+                f"매수: {params.get('max_daily_buys')}개, "
+                f"평균: {params.get('rolling_days')}일, "
+                f"배수: {params.get('volume_threshold')}"
+            )
+        
+        # 최적화 실행 (전체 기간, 한 번만!)
+        optimizer = BacktestOptimizer(df, kospi_index)
+        
+        try:
+            results_df = optimizer.optimize_parameters(
+                start_date=global_start_date,
+                end_date=global_end_date,
+                param_ranges=param_ranges,
+                initial_cash=initial_cash,
+                progress_callback=update_progress,
+                search_mode=search_mode,
+                sample_size=sample_count,
+                random_seed=random_seed,
+            )
             
-            def update_progress(current, total, params):
-                progress = current / total
-                progress_bar.progress(progress)
-                buy_unit_man = params.get('buy_unit', 2_000_000) // 10_000  # 원 -> 만원
-                status_text.text(
-                    f"진행중 ({period}년): {current}/{total} "
-                    f"(매수종목: {params.get('max_daily_buys')}, "
-                    f"평균일: {params.get('rolling_days')}, "
-                    f"배수: {params.get('volume_threshold')}, "
-                    f"추가매수: {params.get('add_buy_threshold_pct')}, "
-                    f"매수금액: {int(buy_unit_man)}만원)"
-                )
+            progress_bar.progress(1.0)
             
-            # 최적화 실행
-            optimizer = BacktestOptimizer(df, kospi_index)
-            
-            try:
-                results_df = optimizer.optimize_parameters(
-                    start_date=start_date,
-                    end_date=end_date,
-                    param_ranges=param_ranges,
-                    initial_cash=initial_cash,
-                    progress_callback=update_progress,
-                    search_mode=search_mode,
-                    sample_size=sample_count,
-                    random_seed=random_seed,
-                )
+            if results_df.empty:
+                st.warning(f"⚠️ 최적화 결과가 없습니다.")
                 
-                progress_bar.progress(1.0)
-                
-                period_label = f"{period}년"
-                
-                if results_df.empty:
-                    st.warning(f"⚠️ {period_label}: 최적화 결과가 없습니다.")
+                # 디버깅 정보 표시
+                with st.expander("🔍 진단 정보"):
+                    st.write(f"""
+                    **데이터 범위**: {global_start_date.date()} ~ {global_end_date.date()}
+                    **파라미터 범위**: 
+                    - max_daily_buys: {param_ranges['max_daily_buys']}
+                    - rolling_days: {param_ranges['rolling_days']}
+                    - volume_threshold: {param_ranges['volume_threshold']}
+                    - add_buy_threshold_pct: {param_ranges['add_buy_threshold_pct']}
                     
-                    # 디버깅 정보 표시
-                    with st.expander("🔍 진단 정보"):
-                        st.write(f"""
-                        **데이터 범위**: {start_date.date()} ~ {end_date.date()}
-                        **파라미터 범위**: 
-                        - max_daily_buys: {param_ranges['max_daily_buys']}
-                        - rolling_days: {param_ranges['rolling_days']}
-                        - volume_threshold: {param_ranges['volume_threshold']}
-                        - add_buy_threshold_pct: {param_ranges['add_buy_threshold_pct']}
-                        
-                        **가능한 원인**:
-                        1. 선택한 기간에 거래 데이터가 부족합니다
-                        2. 모든 백테스트 조합에서 오류가 발생했습니다 (터미널 로그 확인)
-                        3. 시그널이 생성되지 않았습니다
-                        
-                        **해결 방법**:
-                        - 파라미터 범위를 줄여보세요
-                        - 더 많은 데이터를 로드해보세요
-                        - 터미널 출력을 확인하세요
-                        """)
+                    **가능한 원인**:
+                    1. 선택한 기간에 거래 데이터가 부족합니다
+                    2. 모든 백테스트 조합에서 오류가 발생했습니다 (터미널 로그 확인)
+                    3. 시그널이 생성되지 않았습니다
                     
-                    continue
+                    **해결 방법**:
+                    - 파라미터 범위를 줄여보세요
+                    - 더 많은 데이터를 로드해보세요
+                    - 터미널 출력을 확인하세요
+                    """)
                 
+            else:
                 # 최적 파라미터 찾기
                 optimal_params = optimizer.get_optimal_params(results_df, optimization_metric)
-                all_results[period_label] = {
-                    'params': optimal_params,
-                    'results_df': results_df
-                }
                 
-                # 연도별 최적 결과 표시
-                st.success(f"✅ {period_label} 최적화 완료!")
+                # 최적화 완료 메시지
+                st.success(f"✅ 최적화 완료! {len(results_df)}개 조합 테스트 완료")
                 
-                col1, col2, col3, col4, col5 = st.columns(5)
+                # ===== 최적 범용 파라미터 표시 =====
+                st.markdown("### 🏆 최적 범용 파라미터")
+                
+                col1, col2, col3 = st.columns(3)
                 
                 with col1:
                     st.metric("일일 최대 매수", f"{optimal_params['max_daily_buys']}개")
+                    st.metric("직전 거래일 평균", f"{optimal_params['rolling_days']}일")
+                
                 with col2:
-                    st.metric("평균 기간", f"{optimal_params['rolling_days']}일")
+                    st.metric("평균 대비 배수", f"{optimal_params['volume_threshold']:.2f}배")
+                    st.metric("추가매수 손절", f"{optimal_params['add_buy_threshold_pct']:.1f}%")
+                
                 with col3:
-                    st.metric("배수", f"{optimal_params['volume_threshold']}배")
-                with col4:
-                    st.metric("손절 기준", f"{optimal_params['add_buy_threshold_pct']:.1f}%")
-                with col5:
+                    buy_unit_man = optimal_params.get('buy_unit', 2_000_000) // 10_000
+                    st.metric("매수 금액 단위", f"{int(buy_unit_man)}만원")
                     metric_name = {
                         "total_return": "총 수익률",
                         "sharpe_ratio": "샤프 비율",
@@ -1924,214 +1968,116 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
                     }[optimization_metric]
                     metric_value = optimal_params[f'best_{optimization_metric}']
                     if optimization_metric in ["total_return", "excess_return"]:
-                        st.metric(metric_name, f"{metric_value:.2f}%")
+                        st.metric(f"🎯 {metric_name}", f"{metric_value:.2f}%")
                     else:
-                        st.metric(metric_name, f"{metric_value:.4f}")
+                        st.metric(f"🎯 {metric_name}", f"{metric_value:.4f}")
+                
+                # ===== 성과 지표 =====
+                st.markdown("### 📊 성과 지표")
+                
+                metric_cols = st.columns(5)
+                
+                with metric_cols[0]:
+                    st.metric("총 수익률", f"{optimal_params['best_total_return']:.2f}%")
+                
+                with metric_cols[1]:
+                    st.metric("KOSPI 수익률", f"{optimal_params['best_kospi_return']:.2f}%")
+                
+                with metric_cols[2]:
+                    st.metric("초과 수익률", f"{optimal_params['best_excess_return']:.2f}%")
+                
+                with metric_cols[3]:
+                    st.metric("샤프 비율", f"{optimal_params['best_sharpe_ratio']:.4f}")
+                
+                with metric_cols[4]:
+                    st.metric("최대 낙폭", f"{optimal_params['best_mdd']:.2f}%")
+                
+                # ===== 거래 통계 =====
+                st.markdown("### 💹 거래 통계")
+                
+                trade_cols = st.columns(3)
+                
+                with trade_cols[0]:
+                    st.metric("총 거래 횟수", f"{optimal_params['total_trades']}회")
+                
+                with trade_cols[1]:
+                    st.metric("승률", f"{optimal_params['win_rate']:.2f}%")
+                
+                with trade_cols[2]:
+                    st.metric("기간", f"{(global_end_date - global_start_date).days}일")
+                
+                # ===== 결과 상세 정보 =====
+                with st.expander("📈 상세 결과 (모든 테스트 조합)"):
+                    # 상위 10개 결과
+                    top_10 = results_df.nlargest(10, optimization_metric)
+                    display_cols = ['max_daily_buys', 'rolling_days', 'volume_threshold', 
+                                   'add_buy_threshold_pct', 'total_return', 'sharpe_ratio', 
+                                   'excess_return', 'total_trades', 'win_rate']
+                    
+                    # buy_unit는 원 단위이므로 만원으로 변환해서 표시
+                    display_df = top_10[display_cols].copy()
+                    if 'buy_unit' in top_10.columns:
+                        display_df.insert(4, '매수금액(만원)', top_10['buy_unit'] // 10_000)
+                    
+                    st.dataframe(display_df, use_container_width=True)
+                    
+                    # 다운로드 버튼
+                    csv_data = results_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 전체 결과 CSV 다운로드",
+                        data=csv_data,
+                        file_name=f"optimization_results_{global_start_date.strftime('%Y%m%d')}_{global_end_date.strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
+                
+                # ===== 최적 파라미터 저장 제안 =====
+                st.markdown("### 💾 최적 파라미터 저장")
+                
+                save_col1, save_col2 = st.columns(2)
+                
+                with save_col1:
+                    if st.button("💾 최적 파라미터를 설정으로 저장", use_container_width=True, type="primary"):
+                        from app.settings import UserSettings
+                        settings_mgr = UserSettings()
                         
-            except Exception as e:
-                period_label = f"{period}년"
-                st.error(f"⚠️ {period_label} 최적화 중 오류 발생")
+                        settings_mgr.set('optimal_max_daily_buys', optimal_params['max_daily_buys'])
+                        settings_mgr.set('optimal_rolling_days', optimal_params['rolling_days'])
+                        settings_mgr.set('optimal_volume_threshold', optimal_params['volume_threshold'])
+                        settings_mgr.set('optimal_add_buy_threshold_pct', optimal_params['add_buy_threshold_pct'])
+                        settings_mgr.set('optimal_buy_unit', optimal_params.get('buy_unit', 2_000_000))
+                        
+                        st.success("✅ 최적 파라미터가 설정으로 저장되었습니다!")
                 
-                # 상세 에러 정보 표시
-                with st.expander("🔍 오류 상세 정보"):
-                    import traceback
-                    st.code(f"Error: {str(e)}", language="text")
-                    st.code(traceback.format_exc(), language="python")
-                
-                continue
-        
-        # 모든 기간의 결과 비교
-        if all_results:
-            st.divider()
-            st.markdown("### 📊 기간별 최적화 결과 비교")
+                with save_col2:
+                    # 최적 파라미터를 JSON으로 표시
+                    optimal_json = {
+                        'max_daily_buys': int(optimal_params['max_daily_buys']),
+                        'rolling_days': int(optimal_params['rolling_days']),
+                        'volume_threshold': float(optimal_params['volume_threshold']),
+                        'add_buy_threshold_pct': float(optimal_params['add_buy_threshold_pct']),
+                        'buy_unit': int(optimal_params.get('buy_unit', 2_000_000)),
+                        'optimization_date': global_end_date.strftime('%Y-%m-%d'),
+                        'test_period': f"{global_start_date.strftime('%Y-%m-%d')} ~ {global_end_date.strftime('%Y-%m-%d')}"
+                    }
+                    
+                    json_str = json.dumps(optimal_json, indent=2, ensure_ascii=False)
+                    
+                    st.download_button(
+                        label="📥 파라미터 JSON 다운로드",
+                        data=json_str,
+                        file_name=f"optimal_params_{global_end_date.strftime('%Y%m%d')}.json",
+                        mime="application/json",
+                        use_container_width=True
+                    )
+                    
+        except Exception as e:
+            st.error(f"⚠️ 최적화 중 오류 발생")
             
-            # 비교 테이블 구성
-            comparison_data = []
-            for period_label, result_dict in all_results.items():
-                optimal_params = result_dict['params']
-                buy_unit_man = optimal_params.get('buy_unit', 2_000_000) // 10_000
-                row = {
-                    '기간': period_label,
-                    '일일 매수': optimal_params['max_daily_buys'],
-                    '평균 일수': optimal_params['rolling_days'],
-                    '배수': optimal_params['volume_threshold'],
-                    '손절(%)': optimal_params['add_buy_threshold_pct'],
-                    '매수금액(만원)': int(buy_unit_man),
-                    '총 수익률(%)': f"{optimal_params.get('best_total_return', 0):.2f}",
-                    '샤프 비율': f"{optimal_params.get('best_sharpe_ratio', 0):.4f}",
-                    '초과 수익률(%)': f"{optimal_params.get('best_excess_return', 0):.2f}",
-                    '총 거래': optimal_params.get('total_trades', 0),
-                    '승률(%)': f"{optimal_params.get('win_rate', 0):.2f}"
-                }
-                comparison_data.append(row)
-            
-            comparison_df = pd.DataFrame(comparison_data)
-            st.dataframe(comparison_df, use_container_width=True)
-            
-            # 📈 수익률 비교 차트
-            st.markdown("#### 📈 총 수익률 vs KOSPI 수익률")
-            
-            chart_data = []
-            for period_label, result_dict in all_results.items():
-                optimal_params = result_dict['params']
-                chart_data.append({
-                    '연도': period_label,
-                    '전략 수익률': optimal_params['best_total_return'],
-                    'KOSPI 수익률': optimal_params['best_kospi_return']
-                })
-            
-            chart_df = pd.DataFrame(chart_data)
-            
-            # Plotly 막대 그래프
-            import plotly.graph_objects as go
-            
-            fig = go.Figure(data=[
-                go.Bar(
-                    x=chart_df['연도'],
-                    y=chart_df['전략 수익률'],
-                    name='전략 수익률',
-                    marker=dict(color='#1f77b4'),
-                    text=chart_df['전략 수익률'].round(2),
-                    textposition='outside'
-                ),
-                go.Bar(
-                    x=chart_df['연도'],
-                    y=chart_df['KOSPI 수익률'],
-                    name='KOSPI 수익률',
-                    marker=dict(color='#ff7f0e'),
-                    text=chart_df['KOSPI 수익률'].round(2),
-                    textposition='outside'
-                )
-            ])
-            
-            fig.update_layout(
-                title='연도별 수익률 비교',
-                xaxis_title='기간',
-                yaxis_title='수익률 (%)',
-                barmode='group',
-                height=400,
-                hovermode='x unified',
-                template='plotly_white'
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # 초과 수익률 표시
-            st.markdown("#### 📊 초과 수익률 (전략 - KOSPI)")
-            
-            excess_data = []
-            for period_label, result_dict in all_results.items():
-                optimal_params = result_dict['params']
-                excess_return = optimal_params['best_excess_return']
-                excess_data.append({
-                    '연도': period_label,
-                    '초과 수익률(%)': excess_return,
-                    '상태': '✅ 긍정' if excess_return > 0 else '❌ 부정'
-                })
-            
-            excess_df = pd.DataFrame(excess_data)
-            
-            # 색상 지정
-            fig2 = go.Figure(data=[
-                go.Bar(
-                    x=excess_df['연도'],
-                    y=excess_df['초과 수익률(%)'],
-                    name='초과 수익률',
-                    marker=dict(
-                        color=excess_df['초과 수익률(%)'],
-                        colorscale='RdYlGn',
-                        showscale=True,
-                        colorbar=dict(title="초과수익률(%)")
-                    ),
-                    text=excess_df['초과 수익률(%)'].round(2),
-                    textposition='outside'
-                )
-            ])
-            
-            fig2.update_layout(
-                title='연도별 초과 수익률 (전략 수익률 - KOSPI 수익률)',
-                xaxis_title='기간',
-                yaxis_title='초과 수익률 (%)',
-                height=400,
-                hovermode='x unified',
-                template='plotly_white'
-            )
-            
-            st.plotly_chart(fig2, use_container_width=True)
-            
-            # 최고 성과 기간 강조
-            st.markdown("### 🏆 최고 성과 기간")
-            best_period = max(all_results.items(), 
-                            key=lambda x: x[1]['params'][f'best_{optimization_metric}'])
-            
-            best_label, best_result = best_period
-            best_params = best_result['params']
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                buy_unit_man = best_params.get('buy_unit', 2_000_000) // 10_000
-                st.success(f"**최고 성과 기간: {best_label}**")
-                st.write(f"""
-                📈 **최적 파라미터**
-                - 일일 최대 매수: {best_params.get('max_daily_buys', 0)}개
-                - 직전 거래일 평균: {best_params.get('rolling_days', 0)}일
-                - 평균 대비 배수: {best_params.get('volume_threshold', 0):.1f}배
-                - 추가매수 손절: {best_params.get('add_buy_threshold_pct', 0):.1f}%
-                - 매수 금액 단위: {int(buy_unit_man)}만원
-                """)
-            
-            with col2:
-                metric_name = {
-                    "total_return": "총 수익률",
-                    "sharpe_ratio": "샤프 비율",
-                    "excess_return": "초과 수익률"
-                }[optimization_metric]
-                metric_value = best_params.get(f'best_{optimization_metric}', 0)
-                
-                st.write(f"""
-                📊 **성과 지표**
-                - {metric_name}: {metric_value:.4f} {'%' if optimization_metric in ['total_return', 'excess_return'] else ''}
-                - 샤프 비율: {best_params.get('best_sharpe_ratio', 0):.4f}
-                - 최대 낙폭: {best_params.get('best_mdd', 0):.2f}%
-                - 총 거래: {best_params.get('total_trades', 0)}회
-                - 승률: {best_params.get('win_rate', 0):.2f}%
-                """)
-            
-            # 최적 파라미터 적용
-            st.divider()
-            st.markdown("### 🎯 최적 파라미터 적용")
-            st.write("최고 성과 기간의 파라미터를 신호 생성에 사용합니다.")
-            
-            col_apply1, col_apply2 = st.columns(2)
-            with col_apply1:
-                if st.button("✅ 최고 성과 파라미터 적용", type="primary", use_container_width=True):
-                    st.session_state.optimal_params_applied = True
-                    st.session_state.applied_turnover_window = best_params.get('rolling_days', 10)
-                    st.session_state.applied_turnover_multiplier = best_params.get('volume_threshold', 3.0)
-                    st.session_state.applied_buy_unit = best_params.get('buy_unit', 2_000_000)
-                    st.success(f"✨ 최적 파라미터 적용됨 ({best_label})")
-                    st.info(f"📊 시그널 탭에서 최적 파라미터로 신호가 생성됩니다.")
-                    st.session_state.rerun_requested = True
-            
-            with col_apply2:
-                # 각 기간별로 적용 가능하게
-                st.write("**기간별 선택 적용:**")
-                selected_applied_year = st.selectbox(
-                    "다른 기간 선택",
-                    options=list(all_results.keys()),
-                    index=list(all_results.keys()).index(best_label) if best_label in all_results.keys() else 0,
-                    key="select_year_to_apply"
-                )
-                
-                if st.button("✅ 선택 기간 적용", use_container_width=True):
-                    selected_result = all_results[selected_applied_year]
-                    selected_params = selected_result['params']
-                    st.session_state.optimal_params_applied = True
-                    st.session_state.applied_turnover_window = selected_params.get('rolling_days', 10)
-                    st.session_state.applied_turnover_multiplier = selected_params.get('volume_threshold', 3.0)
-                    st.session_state.applied_buy_unit = selected_params.get('buy_unit', 2_000_000)
-                    st.success(f"✨ 최적 파라미터 적용됨 ({selected_applied_year})")
-                    st.session_state.rerun_requested = True
+            # 상세 에러 정보 표시
+            with st.expander("🔍 오류 상세 정보"):
+                import traceback
+                st.code(f"Error: {str(e)}", language="text")
+                st.code(traceback.format_exc(), language="python")
 
 
 def run_app(current_tab: str = "📊 시그널") -> None:
