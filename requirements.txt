@@ -12,6 +12,9 @@ plotly>=5.17.0
 torch>=2.0.0
 transformers>=4.30.0
 
+# OpenAI API (AI 투자 분석)
+openai>=1.0.0
+
 # GPU 가속화 (병렬처리)
 numba>=0.57.0  # GPU 병렬처리 (CUDA 선택사항)
 

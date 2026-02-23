@@ -3,6 +3,8 @@ Phase 4 통합 페이지 - 모든 신규 기능을 담은 메뉴 시스템
 """
 import streamlit as st
 import pandas as pd
+import os
+import traceback
 from datetime import datetime
 import plotly.graph_objects as go
 
@@ -26,6 +28,22 @@ try:
 except ImportError as e:
     HAS_INDUSTRY_TREND = False
     print(f"⚠️ 산업 트렌드 분석 모듈 로드 실패: {e}")
+
+# AI 투자 분석 (선택적 import)
+try:
+    from ai_investment_analyzer import AIInvestmentAnalyzer
+    HAS_AI_ANALYZER = True
+except ImportError as e:
+    HAS_AI_ANALYZER = False
+    print(f"⚠️ AI 투자 분석 모듈 로드 실패: {e}")
+
+# Stock Scoring Engine (선택적 import)
+try:
+    from financial_utils import StockScoringEngine
+    HAS_SCORING_ENGINE = True
+except ImportError as e:
+    HAS_SCORING_ENGINE = False
+    print(f"⚠️ Stock Scoring Engine 모듈 로드 실패: {e}")
 
 
 # ===== 유틸리티 함수들 =====
@@ -118,13 +136,12 @@ def render_sidebar_menu() -> tuple[str, str]:
         "⚙️ 설정": "settings"
     }
     
-    selected = st.sidebar.radio("메뉴", ["메인 대시보드", "종목분석", "뉴스 트렌드", "중장기 투자", "포트폴리오", "설정"])
+    selected = st.sidebar.radio("메뉴", ["메인 대시보드", "종목분석", "📊 종목평가", "포트폴리오", "설정"])
     
     page_map = {
         "메인 대시보드": "main",
         "종목분석": "analysis",
-        "뉴스 트렌드": "industry_trend",
-        "중장기 투자": "long_term",
+        "📊 종목평가": "stock_scoring",
         "포트폴리오": "portfolio",
         "설정": "settings"
     }
@@ -457,6 +474,938 @@ def page_industry_trends():
         import traceback
         with st.expander("🔍 상세 오류 정보"):
             st.error(traceback.format_exc())
+
+
+def page_stock_scoring():
+    """
+    📊 종목 종합 점수 평가 페이지
+    재무 건전성, 상대 밸류에이션, 성장성, 모멘텀을 종합하여 최종 투자 등급 산출
+    """
+    st.title("📊 종목 종합 점수 평가")
+    
+    st.markdown("""
+    ### 🎯 기능 설명
+    다양한 재무 지표와 기술적 지표를 통합하여 종목의 투자 가치를 평가합니다.
+    - **재무 건전성** (25%): ROE, 부채비율, 영업이익률, FCF
+    - **상대 밸류에이션** (25%): 산업평균 대비 PER/PBR
+    - **성장성** (20%): 3년 매출액 & 순이익 CAGR
+    - **기술적 모멘텀** (20%): 200일 추세, MA60, 1년 수익률
+    - **산업 태풍** (10%, 선택): 산업의 성장 잠재력
+    
+    **평가 등급**: S(80+) > A(65-79) > B(50-64) > C(35-49) > D(<35)
+    """)
+    
+    if not HAS_SCORING_ENGINE:
+        st.error("❌ Stock Scoring Engine을 불러올 수 없습니다. financial_utils.py를 확인하세요.")
+        return
+    
+    # 평가 방식 선택
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        eval_mode = st.radio(
+            "평가 방식",
+            ["📝 수동 입력", "📊 데이터 로드"],
+            key="scoring_mode"
+        )
+    
+    with col2:
+        st.info("💡 수동 입력으로 빠른 평가, 데이터 로드로 정확한 분석 가능")
+    
+    # 초기화
+    engine = StockScoringEngine()
+    
+    if eval_mode == "📝 수동 입력":
+        page_stock_scoring_manual(engine)
+    else:
+        page_stock_scoring_data_load(engine)
+
+
+def page_stock_scoring_manual(engine):
+    """수동 입력 방식"""
+    st.subheader("📝 종목 정보 입력")
+    
+    # 포트폴리오 로드 (보유 종목 식별)
+    import json
+    import os
+    
+    portfolio_stocks = []  # 보유 중인 종목
+    kospi_list = load_kospi_name_map()
+    
+    # kospi_list가 없거나 비어있으면 경고
+    if not kospi_list:
+        st.warning("⚠️ KOSPI 종목 목록을 로드하지 못했습니다. 메인 대시보드에서 데이터를 먼저 로드해주세요.")
+        kospi_list = {}
+    else:
+        # kospi_list의 키를 문자열로 정규화 (혼합 타입 방지)
+        kospi_list_normalized = {}
+        for k, v in kospi_list.items():
+            key_str = str(k)  # 모든 키를 문자열로 변환
+            kospi_list_normalized[key_str] = str(v)
+        kospi_list = kospi_list_normalized
+    
+    try:
+        if os.path.exists("data/portfolio.json"):
+            with open("data/portfolio.json", "r", encoding="utf-8") as f:
+                portfolio_data = json.load(f)
+                # portfolio.json은 직접 {code: {name, quantity, ...}} 형식
+                if isinstance(portfolio_data, dict):
+                    # stocks 키가 있으면 그것을 사용, 없으면 portfolio_data 자체를 사용
+                    if 'stocks' in portfolio_data:
+                        portfolio_stocks = portfolio_data['stocks']
+                    else:
+                        portfolio_stocks = portfolio_data
+    except Exception as e:
+        st.warning(f"포트폴리오 로드 중 오류: {e}")
+    
+    # 보유 종목 코드 리스트
+    owned_codes = set()
+    owned_stock_dict = {}
+    
+    if portfolio_stocks:
+        if isinstance(portfolio_stocks, dict):
+            # 딕셔너리 형식 (code: {name, quantity, ...})
+            for code, stock_info in portfolio_stocks.items():
+                code_str = str(code)
+                owned_codes.add(code_str)
+                if isinstance(stock_info, dict) and 'name' in stock_info:
+                    owned_stock_dict[code_str] = str(stock_info['name'])
+                else:
+                    owned_stock_dict[code_str] = str(stock_info)
+        else:
+            # 리스트 형식 (배열)
+            for stock in portfolio_stocks:
+                if isinstance(stock, dict) and 'code' in stock:
+                    code = str(stock['code'])  # 코드를 문자열로 변환
+                    owned_codes.add(code)
+                    owned_stock_dict[code] = str(stock.get('name', '미상'))
+    
+    # 종목 선택 UI
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.markdown("#### 종목 선택")
+        
+        # 보유 종목과 미보유 종목 구분
+        owned_options = []
+        unowned_options = []
+        
+        if owned_stock_dict:
+            for code, name in sorted(owned_stock_dict.items()):
+                owned_options.append(f"📌 {name} ({code})")
+        
+        # 미보유 종목 (KOSPI 목록에서)
+        for code, name in sorted(kospi_list.items()):
+            if code not in owned_codes:
+                unowned_options.append(f"{name} ({code})")
+        
+        # 콤보박스 선택
+        all_options = owned_options + unowned_options
+        
+        if all_options:
+            selected_stock = st.selectbox(
+                "검색 또는 선택",
+                options=all_options,
+                index=0 if owned_options else (1 if unowned_options else 0),
+                placeholder="종목을 선택하세요..."
+            )
+            
+            # 선택된 종목에서 코드와 이름 추출
+            if selected_stock.startswith("📌"):
+                # 보유 종목
+                parts = selected_stock.replace("📌 ", "").rsplit(" (", 1)
+                stock_name = parts[0].strip()
+                stock_code = parts[1].rstrip(")")
+                is_owned = True
+            else:
+                # 미보유 종목
+                parts = selected_stock.rsplit(" (", 1)
+                stock_name = parts[0].strip()
+                stock_code = parts[1].rstrip(")")
+                is_owned = False
+            
+            # 보유 여부 표시
+            if is_owned:
+                st.success(f"✅ 보유 중인 종목: {stock_name} ({stock_code})")
+            else:
+                st.info(f"포트폴리오에 미포함: {stock_name} ({stock_code})")
+        else:
+            st.warning("😕 사용 가능한 종목이 없습니다. KOSPI 데이터를 로드해주세요.")
+            stock_code = ""
+            stock_name = ""
+            is_owned = False
+    
+    with col2:
+        st.markdown("#### 보유 여부")
+        st.metric("보유 종목", len(owned_codes))
+        st.metric("미보유 종목", len(unowned_options))
+    
+    st.divider()
+    
+    # 재무 지표 입력
+    st.markdown("### 📈 재무 지표 입력")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("#### 수익성")
+        roe = st.number_input("ROE (%)", min_value=-100.0, max_value=100.0, value=15.0, step=0.5, help="자기자본이익률")
+        
+    with col2:
+        st.markdown("#### 안정성")
+        debt_ratio = st.number_input("부채비율 (%)", min_value=0.0, max_value=500.0, value=100.0, step=10.0, help="총부채/자기자본 비율")
+        
+    with col3:
+        st.markdown("#### 효율성")
+        operating_margin = st.number_input("영업마진 (%)", min_value=-100.0, max_value=100.0, value=15.0, step=0.5, help="営业利润margin")
+        fcf_positive = st.checkbox("FCF > 0", value=True, help="자유현금흐름 양수 여부")
+    
+    st.divider()
+    
+    # 밸류에이션 지표
+    st.markdown("### 💰 밸류에이션 지표")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("#### 현재 지표")
+        current_per = st.number_input("현재 PER", min_value=0.0, max_value=100.0, value=15.0, step=0.5, help="Price-to-Earnings Ratio")
+        current_pbr = st.number_input("현재 PBR", min_value=0.0, max_value=10.0, value=1.0, step=0.1, help="Price-to-Book Ratio")
+    
+    with col2:
+        st.markdown("#### 산업 평균")
+        industry_per = st.number_input("산업 PER 평균", min_value=0.0, max_value=100.0, value=18.0, step=0.5, help="업종 평균 PER")
+        industry_pbr = st.number_input("산업 PBR 평균", min_value=0.0, max_value=10.0, value=1.2, step=0.1, help="업종 평균 PBR")
+    
+    with col3:
+        st.markdown("#### 참고 정보")
+        st.info("PER/PBR이 산업평균보다 낮을수록 저평가된 상태입니다.")
+    
+    st.divider()
+    
+    # 성장성 및 기술적 지표
+    st.markdown("### 📈 성장성 및 기술 지표")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("#### 성장성")
+        revenue_growth = st.number_input("3년 매출 CAGR (%)", min_value=-50.0, max_value=100.0, value=20.0, step=1.0)
+        income_growth = st.number_input("3년 순이익 CAGR (%)", min_value=-50.0, max_value=100.0, value=20.0, step=1.0)
+    
+    with col2:
+        st.markdown("#### 기술적 지표")
+        trend_slope = st.number_input("200일 추세 (%)", min_value=-50.0, max_value=50.0, value=5.0, step=0.5, help="200일 동안의 가격 변화율")
+        above_ma60 = st.checkbox("현재가 > MA60", value=True)
+        one_year_return = st.number_input("1년 수익률 (%)", min_value=-100.0, max_value=200.0, value=25.0, step=1.0)
+    
+    with col3:
+        st.markdown("#### 산업 분석")
+        industry_tailwind = st.slider("산업 태풍 (선택)", min_value=0, max_value=100, value=50, help="산업의 성장 잠재력 0-100")
+        include_industry = st.checkbox("산업 태풍 포함", value=True)
+    
+    st.divider()
+    
+    # 평가 실행
+    if st.button("🚀 종합 점수 계산", use_container_width=True, type="primary"):
+        with st.spinner("평가 중..."):
+            # 재무 지표 딕셔너리
+            financial_dict = {
+                'roe': roe,
+                'debt_ratio': debt_ratio,
+                'operating_margin': operating_margin,
+                'free_cash_flow': 1 if fcf_positive else -1
+            }
+            
+            # 성장성 이력 (예상값 기반)
+            # 간단한 계산: CAGR로 역산
+            base_revenue = 1000
+            base_income = 100
+            revenue_history = [base_revenue]
+            income_history = [base_income]
+            
+            for _ in range(3):
+                revenue_history.append(revenue_history[-1] * (1 + revenue_growth/100))
+                income_history.append(income_history[-1] * (1 + income_growth/100))
+            
+            financial_history = {
+                'revenue_history': revenue_history,
+                'net_income_history': income_history
+            }
+            
+            # 가격 데이터 (모멘텀 계산용)
+            import pandas as pd
+            import numpy as np
+            
+            # 간단한 가격 시계열 생성 (평가용)
+            dates = pd.date_range('2023-01-01', periods=300)
+            
+            # 추세 반영
+            trend_factor = 1 + (trend_slope / 100 / 200)  # 200일에 trend_slope% 변화
+            base_price = 100
+            if above_ma60:
+                # MA60 위: 현재가가 더 높음
+                prices = [base_price * (trend_factor ** i) * (1 + 0.02)  for i in range(300)]
+            else:
+                # MA60 아래
+                prices = [base_price * (trend_factor ** i) * 0.98 for i in range(300)]
+            
+            price_df = pd.DataFrame({
+                'close': prices
+            }, index=dates)
+            
+            # 최종 점수 계산
+            result = engine.calculate_final_score(
+                financial_dict=financial_dict,
+                current_per=current_per,
+                industry_per=industry_per,
+                current_pbr=current_pbr,
+                industry_pbr=industry_pbr,
+                financial_history=financial_history,
+                price_df=price_df,
+                industry_tailwind_score=industry_tailwind if include_industry else None,
+                verbose=False
+            )
+        
+        # 결과 표시
+        st.divider()
+        st.subheader(f"📊 {stock_code} {stock_name} - 평가 결과")
+        
+        # KPI 메트릭
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("최종 점수", result['final_score'], "/100")
+        
+        with col2:
+            grade_emoji = {"S": "🌟", "A": "⭐", "B": "⚡", "C": "⚠️", "D": "🔴"}
+            st.metric("투자 등급", f"{grade_emoji.get(result['investment_grade'], '❓')} {result['investment_grade']}")
+        
+        with col3:
+            st.metric("신뢰도", f"{result['confidence_level']}%")
+        
+        with col4:
+            grade_desc = {
+                "S": "강력매수",
+                "A": "매수",
+                "B": "보유",
+                "C": "약한매도",
+                "D": "강력매도"
+            }
+            st.metric("평가", grade_desc.get(result['investment_grade'], "검토필요"))
+        
+        st.divider()
+        
+        # 세부 점수 분석
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 📈 점수 분석")
+            
+            # 점수 바차트
+            import plotly.graph_objects as go
+            components = list(result['score_breakdown'].keys())
+            scores = list(result['score_breakdown'].values())
+            weights = [f"{result['component_weights'].get(c, 0)*100:.0f}%" for c in components]
+            
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                y=components,
+                x=scores,
+                orientation='h',
+                marker=dict(
+                    color=scores,
+                    colorscale='RdYlGn',
+                    showscale=True,
+                    colorbar=dict(title="점수")
+                ),
+                text=[f"{s}/100" for s in scores],
+                textposition='auto',
+                hovertemplate='<b>%{y}</b><br>점수: %{x}/100<extra></extra>'
+            ))
+            
+            fig.update_layout(
+                height=300,
+                showlegend=False,
+                xaxis_title="점수",
+                title="세부 점수 분석"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            st.markdown("### 🎯 가중치 분석")
+            
+            # 가중치 파이 차트
+            fig = go.Figure(data=[go.Pie(
+                labels=components,
+                values=[result['component_weights'].get(c, 0)*100 for c in components],
+                textinfo="label+percent",
+                hovertemplate="<b>%{label}</b><br>가중치: %{percent}<extra></extra>"
+            )])
+            
+            fig.update_layout(
+                height=300,
+                title="평가 요소별 가중치"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        st.divider()
+        
+        # 투자 관점
+        st.markdown("### 📝 투자 관점")
+        st.info(result['investment_thesis'])
+
+
+def page_stock_scoring_data_load(engine):
+    """데이터 로드 방식 (추가 구현 가능)"""
+    st.subheader("📊 데이터 로드 방식")
+    st.info("💡 이 기능은 향후 실제 주식 데이터와 연동하여 자동으로 계산됩니다.")
+    st.write("현재는 수동 입력 방식을 사용해주세요.")
+
+
+def page_ai_analysis():
+    """
+    🤖 AI 투자 분석 페이지
+    OpenAI API를 이용한 고성능 AI 투자 분석 (토큰 캐싱으로 효율화)
+    """
+    # HAS_AI_ANALYZER 플래그 확인
+    if not HAS_AI_ANALYZER:
+        st.error("""
+        ❌ **AI 투자 분석 모듈이 설치되지 않았습니다.**
+        
+        다음 명령어로 필요한 패키지를 설치해주세요:
+        ```bash
+        pip install openai>=0.27.0
+        ```
+        
+        그 후 Streamlit 앱을 다시 시작해주세요.
+        """)
+        return
+    
+    st.title("🤖 AI 투자 분석")
+    
+    st.markdown("""
+    ### 🚀 고성능 AI 분석 시스템
+    - **기초 분석**: 재무지표 기반 가치평가
+    - **기술 분석**: 차트 패턴 및 기술지표 분석
+    - **종합 추천**: AI가 모든 정보를 종합한 투자 추천
+    - **토큰 절약**: 동일한 분석은 캐시하여 비용 최소화
+    """)
+    
+    # API 키 확인 (securely)
+    api_key = None
+    
+    # 1. 환경변수에서 먼저 확인
+    api_key = os.getenv("OPENAI_API_KEY")
+    
+    # 2. streamlit secrets 확인 (안전하게)
+    if not api_key:
+        try:
+            if hasattr(st, 'secrets') and st.secrets:
+                api_key = st.secrets.get("openai_api_key")
+        except Exception:
+            pass  # secrets 파일이 없으면 무시
+    
+    if not api_key:
+        st.error("""
+        ❌ **OpenAI API 키가 없습니다.**
+        
+        설정 방법:
+        1. .streamlit/secrets.toml 파일에 추가:
+           ```
+           openai_api_key = "sk-..."
+           ```
+        2. 또는 환경변수 설정:
+           ```
+           set OPENAI_API_KEY=sk-...
+           ```
+        """)
+        return
+    
+    # AI 분석기 초기화
+    try:
+        analyzer = AIInvestmentAnalyzer(api_key)
+    except Exception as e:
+        st.error(f"❌ AI 분석기 초기화 실패: {e}")
+        return
+    
+    # BUY 신호 종목 로드
+    @st.cache_data(ttl=1800)
+    def load_buy_signal_stocks():
+        """메인 대시보드와 동일한 방식으로 BUY 신호가 있는 종목들을 로드"""
+        try:
+            from app.data import load_stock_data, load_kospi_list
+            from app.signals import build_signals
+            
+            # 데이터 로드
+            df = load_stock_data("data")
+            kospi = load_kospi_list("data")
+            
+            if df is None or df.empty:
+                return []
+            
+            # 메인 대시보드와 동일한 신호 생성 파라미터
+            signals = build_signals(
+                df,
+                turnover_window=10,          # 기본값
+                turnover_multiplier=3.0,     # 기본값
+                momentum_window=20,
+                momentum_threshold_pct=5.0,
+                vol_window=20,
+                vol_multiplier=2.0,
+                mr_window=20,
+                mr_z=2.0,
+                enabled_algos=["Turnover Spike"],  # 메인 대시보드와 동일
+                combine_mode="ANY"
+            )
+            
+            # KOSPI 정보 병합
+            if not kospi.empty:
+                signals = signals.merge(kospi, on="code", how="left")
+            
+            # 최신 날짜 신호만 확인
+            if len(signals) == 0 or 'date' not in signals.columns:
+                return []
+            
+            # 최신 거래일 데이터 가져오기
+            latest_date = signals['date'].max()
+            latest_signals = signals[(signals['date'] == latest_date) & (signals['signal'] == 'BUY')].copy()
+            
+            if latest_signals.empty:
+                return []
+            
+            # 거래량 스파이크 비율로 정렬
+            if 'spike_ratio' in latest_signals.columns:
+                latest_signals = latest_signals.sort_values('spike_ratio', ascending=False)
+            
+            # (코드, 이름) 튜플 반환
+            buy_stocks = []
+            for _, row in latest_signals.iterrows():
+                code = str(row.get('code', '')).strip()
+                name = str(row.get('name', '')).strip()
+                if code and name:
+                    buy_stocks.append((code, name))
+            
+            return buy_stocks
+        
+        except Exception as e:
+            st.warning(f"⚠️ BUY 신호 종목 로드 실패: {str(e)}")
+            import traceback
+            print(f"Debug: {traceback.format_exc()}")
+            return []
+    
+    # 종목 선택
+    st.markdown("### 📊 분석할 종목 선택")
+    
+    # BUY 신호 종목 로드
+    buy_stocks = load_buy_signal_stocks()
+    
+    # KOSPI 200 전체 종목도 로드 (BUY 신호가 없을 때 대비)
+    @st.cache_data(ttl=3600)
+    def load_all_kospi_stocks():
+        try:
+            from crawling_kospi import CrawlingKospi
+            crawler = CrawlingKospi()
+            kospi_dict = crawler.GetKospi200()
+            return sorted([(code, name) for code, name in kospi_dict.items()], key=lambda x: x[1])
+        except:
+            return []
+    
+    all_stocks = load_all_kospi_stocks()
+    
+    # session_state에서 선택된 종목 초기화
+    if 'ai_stock_code' not in st.session_state:
+        st.session_state.ai_stock_code = "005930"
+    if 'ai_stock_name' not in st.session_state:
+        st.session_state.ai_stock_name = "삼성전자"
+    if 'ai_last_selected_code' not in st.session_state:
+        st.session_state.ai_last_selected_code = "005930"
+    
+    # 탭으로 분할: 추천 종목 vs 전체 종목 vs 직접 입력
+    if buy_stocks:
+        tab1, tab2, tab3 = st.tabs(["🎯 BUY 추천 종목 (" + str(len(buy_stocks)) + "개)", "📋 전체 KOSPI 200", "📝 직접 입력"])
+    else:
+        tab1, tab2, tab3 = st.tabs(["🎯 BUY 추천 종목 (없음)", "📋 전체 KOSPI 200", "📝 직접 입력"])
+    
+    with tab1:
+        if buy_stocks:
+            st.success(f"✅ **{len(buy_stocks)}개의 BUY 신호 종목 발견**")
+            
+            # 현재 선택된 종목의 인덱스 찾기
+            try:
+                current_index = next(
+                    (i for i, stock in enumerate(buy_stocks) 
+                     if stock[0] == st.session_state.ai_stock_code), 
+                    0
+                )
+            except:
+                current_index = 0
+            
+            # 종목 선택 combobox
+            selected_stock = st.selectbox(
+                "BUY 추천 종목 선택",
+                options=buy_stocks,
+                format_func=lambda x: f"{x[1]} ({x[0]})",
+                index=current_index,
+                key="ai_buy_stock_select_temp"
+            )
+            
+            if selected_stock and selected_stock[0] != st.session_state.ai_stock_code:
+                st.session_state.ai_stock_code = selected_stock[0]
+                st.session_state.ai_stock_name = selected_stock[1]
+                st.session_state.ai_last_selected_code = selected_stock[0]
+                st.rerun()
+            
+            st.info(f"선택된 종목: **{st.session_state.ai_stock_name} ({st.session_state.ai_stock_code})**")
+        
+        else:
+            st.warning("⚠️ 현재 BUY 신호가 있는 종목이 없습니다.")
+            st.info("💡 **전체 KOSPI 200** 탭에서 다른 종목을 선택하거나, **직접 입력** 탭에서 수동으로 입력하세요.")
+    
+    with tab2:
+        st.info("📊 KOSPI 200 전체 종목 목록에서 선택")
+        
+        if all_stocks:
+            # 현재 선택된 종목의 인덱스 찾기
+            try:
+                current_index = next(
+                    (i for i, stock in enumerate(all_stocks) 
+                     if stock[0] == st.session_state.ai_stock_code), 
+                    0
+                )
+            except:
+                current_index = 0
+            
+            selected_stock = st.selectbox(
+                "종목 선택",
+                options=all_stocks,
+                format_func=lambda x: f"{x[1]} ({x[0]})",
+                index=current_index,
+                key="ai_all_stock_select_temp"
+            )
+            
+            if selected_stock and selected_stock[0] != st.session_state.ai_stock_code:
+                st.session_state.ai_stock_code = selected_stock[0]
+                st.session_state.ai_stock_name = selected_stock[1]
+                st.session_state.ai_last_selected_code = selected_stock[0]
+                st.rerun()
+            
+            st.info(f"선택된 종목: **{st.session_state.ai_stock_name} ({st.session_state.ai_stock_code})**")
+        else:
+            st.error("❌ KOSPI 200 종목을 로드할 수 없습니다.")
+    
+    with tab3:
+        st.info("📝 종목 코드와 이름을 직접 입력하세요")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            code_input = st.text_input(
+                "종목 코드", 
+                value=st.session_state.ai_stock_code, 
+                placeholder="예: 005930",
+                key="ai_stock_code_input_temp"
+            )
+            if code_input and code_input != st.session_state.ai_stock_code:
+                st.session_state.ai_stock_code = code_input
+                st.session_state.ai_last_selected_code = code_input
+                st.rerun()
+        
+        with col2:
+            name_input = st.text_input(
+                "종목명", 
+                value=st.session_state.ai_stock_name, 
+                placeholder="예: 삼성전자",
+                key="ai_stock_name_input_temp"
+            )
+            if name_input and name_input != st.session_state.ai_stock_name:
+                st.session_state.ai_stock_name = name_input
+                st.rerun()
+    
+    # 선택된 종목의 재무 및 기술 데이터 자동 로드
+    @st.cache_data(ttl=3600)
+    def load_stock_financial_data(code: str):
+        """선택된 종목의 재무 데이터 로드"""
+        try:
+            from app.data import load_stock_data, load_finance_data
+            import numpy as np
+            
+            # 주가 데이터 로드
+            stock_data = load_stock_data("data")
+            finance_data = load_finance_data("data")
+            
+            # 기본값 설정
+            result = {
+                "per": 15.0, "pbr": 1.8, "roe": 12.5, 
+                "eps": 5000, "bps": 40000, "dividend_yield": 2.5,
+                "current_price": 70000, "ma20": 68000, "ma60": 67000, "rsi": 55
+            }
+            
+            # 주가 데이터에서 기술 지표 계산
+            if isinstance(stock_data, dict) and code in stock_data:
+                df = stock_data[code]
+                if df is not None and len(df) > 0:
+                    df = df.sort_values('date')
+                    latest = df.iloc[-1]
+                    
+                    # 현재가
+                    result["current_price"] = float(latest['close']) if 'close' in latest else result["current_price"]
+                    
+                    # 20일/60일 이동평균 계산
+                    if len(df) >= 20:
+                        result["ma20"] = float(df['close'].tail(20).mean())
+                    if len(df) >= 60:
+                        result["ma60"] = float(df['close'].tail(60).mean())
+                    
+                    # RSI 계산 (14일)
+                    if len(df) >= 15:
+                        delta = df['close'].diff()
+                        gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+                        loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
+                        rs = gain / loss
+                        rsi = 100 - (100 / (1 + rs))
+                        result["rsi"] = int(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else 55
+            
+            # 재무 데이터에서 PER, PBR, ROE, EPS, BPS, 배당수익률 로드
+            if isinstance(finance_data, dict) and code in finance_data:
+                fin = finance_data[code]
+                if isinstance(fin, dict):
+                    result["per"] = float(fin.get("per", 15.0)) if fin.get("per") else 15.0
+                    result["pbr"] = float(fin.get("pbr", 1.8)) if fin.get("pbr") else 1.8
+                    result["roe"] = float(fin.get("roe", 12.5)) if fin.get("roe") else 12.5
+                    result["eps"] = float(fin.get("eps", 5000)) if fin.get("eps") else 5000
+                    result["bps"] = float(fin.get("bps", 40000)) if fin.get("bps") else 40000
+                    result["dividend_yield"] = float(fin.get("dividend_yield", 2.5)) if fin.get("dividend_yield") else 2.5
+            
+            return result
+        
+        except Exception as e:
+            print(f"⚠️ 재무 데이터 로드 실패: {e}")
+            return {
+                "per": 15.0, "pbr": 1.8, "roe": 12.5, 
+                "eps": 5000, "bps": 40000, "dividend_yield": 2.5,
+                "current_price": 70000, "ma20": 68000, "ma60": 67000, "rsi": 55
+            }
+    
+    # 현재 선택된 종목의 데이터 로드 (캐시 키에 코드 포함)
+    selected_data = load_stock_financial_data(st.session_state.ai_stock_code)
+    
+    # 현재 선택된 종목 정보 표시
+    st.markdown("---")
+    st.info(f"📌 **분석할 종목**: {st.session_state.ai_stock_name} ({st.session_state.ai_stock_code})")
+    st.markdown("---")
+    
+    # 재무 데이터 입력
+    st.markdown("### 💰 재무 데이터")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        per = st.number_input("PER (배)", value=selected_data["per"], min_value=0.0)
+    
+    with col2:
+        pbr = st.number_input("PBR (배)", value=selected_data["pbr"], min_value=0.0)
+    
+    with col3:
+        roe = st.number_input("ROE (%)", value=selected_data["roe"], min_value=0.0)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        eps = st.number_input("EPS (원)", value=int(selected_data["eps"]), min_value=0)
+    
+    with col2:
+        bps = st.number_input("BPS (원)", value=int(selected_data["bps"]), min_value=0)
+    
+    with col3:
+        dividend_yield = st.number_input("배당수익률 (%)", value=selected_data["dividend_yield"], min_value=0.0)
+    
+    # 기술 데이터 입력
+    st.markdown("### 📈 기술 지표")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        current_price = st.number_input("현재가 (원)", value=int(selected_data["current_price"]), min_value=0)
+    
+    with col2:
+        ma20 = st.number_input("20일 이동평균 (원)", value=int(selected_data["ma20"]), min_value=0)
+    
+    with col3:
+        ma60 = st.number_input("60일 이동평균 (원)", value=int(selected_data["ma60"]), min_value=0)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        rsi = st.slider("RSI (14)", min_value=0, max_value=100, value=selected_data["rsi"])
+    
+    with col2:
+        macd_value = st.selectbox("MACD", ["양호", "약세", "강세"])
+    
+    with col3:
+        sentiment_score = st.slider("시장 심리 점수", min_value=0, max_value=100, value=50)
+    
+    # 분석 실행
+    if st.button("🔍 AI 분석 시작", type="primary", use_container_width=True):
+        with st.spinner("🤖 AI가 종목을 분석 중입니다 (캐시 활용으로 토큰 절약)..."):
+            # 재무 데이터 구성
+            financial_data = {
+                "PER": per,
+                "PBR": pbr,
+                "ROE": roe,
+                "EPS": eps,
+                "BPS": bps,
+                "배당수익률": dividend_yield
+            }
+            
+            # 기술 데이터 구성
+            price_data = {
+                "현재가": current_price,
+                "20일_이동평균": ma20,
+                "60일_이동평균": ma60,
+                "RSI": rsi,
+                "MACD": macd_value
+            }
+            
+            try:
+                # 기초 분석
+                st.markdown("### 📊 기초 분석 결과")
+                try:
+                    fundamental = analyzer.analyze_fundamental(st.session_state.ai_stock_code, st.session_state.ai_stock_name, financial_data)
+                    
+                    if 'error' in fundamental:
+                        st.error(f"기초 분석 실패: {fundamental['error']}")
+                        with st.expander("상세 정보"):
+                            st.info(f"API 응답: {fundamental.get('api_response', 'N/A')}")
+                    else:
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("평가", fundamental.get('rating', 'N/A'))
+                        
+                        with col2:
+                            st.metric("점수", f"{fundamental.get('score', 0)}/100")
+                        
+                        with col3:
+                            st.metric("토큰 사용", fundamental.get('token_usage', 'N/A'))
+                        
+                        st.markdown(f"**결론**: {fundamental.get('conclusion', 'N/A')}")
+                        
+                        if 'strengths' in fundamental:
+                            st.markdown(f"**장점**: {', '.join(fundamental['strengths'])}")
+                        
+                        if 'weaknesses' in fundamental:
+                            st.markdown(f"**단점**: {', '.join(fundamental['weaknesses'])}")
+                except Exception as e:
+                    st.error(f"❌ 기초 분석 실행 중 오류: {str(e)}")
+                    with st.expander("상세 오류"):
+                        st.code(traceback.format_exc())
+                
+                st.markdown("---")
+                
+                # 기술 분석
+                st.markdown("### 📈 기술 분석 결과")
+                try:
+                    technical = analyzer.analyze_technical(st.session_state.ai_stock_code, st.session_state.ai_stock_name, price_data)
+                    
+                    if 'error' in technical:
+                        st.error(f"기술 분석 실패: {technical['error']}")
+                        with st.expander("상세 정보"):
+                            st.info(f"API 응답: {technical.get('api_response', 'N/A')}")
+                    else:
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("신호", technical.get('signal', 'N/A'))
+                        
+                        with col2:
+                            st.metric("점수", f"{technical.get('score', 0)}/100")
+                        
+                        with col3:
+                            st.metric("트렌드", technical.get('trend', 'N/A'))
+                        
+                        st.markdown(f"**목표가**: {technical.get('target_price', 'N/A'):,}원")
+                        st.markdown(f"**위험도**: {technical.get('risk_level', 'N/A')}")
+                except Exception as e:
+                    st.error(f"❌ 기술 분석 실행 중 오류: {str(e)}")
+                    with st.expander("상세 오류"):
+                        st.code(traceback.format_exc())
+                
+                st.markdown("---")
+                
+                # 종합 추천
+                st.markdown("### 🎯 종합 투자 추천")
+                try:
+                    recommendation = analyzer.generate_recommendation(
+                        st.session_state.ai_stock_code, st.session_state.ai_stock_name, 
+                        fundamental, technical, 
+                        sentiment_score
+                    )
+                    
+                    if 'error' in recommendation:
+                        st.error(f"추천 생성 실패: {recommendation['error']}")
+                        with st.expander("상세 정보"):
+                            st.info(f"API 응답: {recommendation.get('api_response', 'N/A')}")
+                    else:
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            st.metric("추천", recommendation.get('overall_rating', 'N/A'))
+                        
+                        with col2:
+                            st.metric("종합점수", f"{recommendation.get('overall_score', 0)}/100")
+                        
+                        with col3:
+                            st.metric("투자기간", recommendation.get('investment_horizon', 'N/A'))
+                        
+                        with col4:
+                            st.metric("토큰 절약", "✅" if recommendation.get('from_cache', False) else "❌")
+                        
+                        st.markdown(f"**최종 의견**: {recommendation.get('recommendation', 'N/A')}")
+                        
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.markdown(f"**단기전망**: {recommendation.get('short_term_outlook', 'N/A')}")
+                        
+                        with col2:
+                            st.markdown(f"**중기전망**: {recommendation.get('medium_term_outlook', 'N/A')}")
+                        
+                        with col3:
+                            st.markdown(f"**장기전망**: {recommendation.get('long_term_outlook', 'N/A')}")
+                        
+                        if 'key_risks' in recommendation:
+                            st.warning(f"**주의사항**: {', '.join(recommendation['key_risks'])}")
+                except Exception as e:
+                    st.error(f"❌ 종합 추천 생성 중 오류: {str(e)}")
+                    with st.expander("상세 오류"):
+                        st.code(traceback.format_exc())
+                
+                # 캐시 통계
+                st.markdown("---")
+                st.markdown("### 💾 캐시 통계 (토큰 절약)")
+                
+                try:
+                    cache_stats = analyzer.get_cache_stats()
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric("캐시된 분석", cache_stats['cache_count'])
+                    
+                    with col2:
+                        st.metric("캐시 용량", f"{cache_stats['total_size_mb']} MB")
+                    
+                    with col3:
+                        st.metric("유효 기간", f"{cache_stats['cache_expiry_days']}일")
+                    
+                    with col4:
+                        st.metric("정리된 캐시", cache_stats['expired_removed'])
+                except Exception as e:
+                    st.warning(f"⚠️ 캐시 통계 조회 실패: {str(e)}")
+            
+            except Exception as e:
+                st.error(f"❌ 분석 중 예상치 못한 오류 발생:")
+                with st.expander("🔍 상세 오류 정보"):
+                    st.code(traceback.format_exc())
+                    st.error(f"에러 메시지: {str(e)}")
 
 
 def page_portfolio():
@@ -1708,10 +2657,8 @@ def run_phase4_app():
         page_portfolio()
     elif page == "settings":
         page_settings()
-    elif page == "long_term":
-        page_long_term_investment()
-    elif page == "industry_trend":
-        page_industry_trends()
+    elif page == "stock_scoring":
+        page_stock_scoring()
     elif page == "analysis":
         # 종목분석 페이지
         from app.ui import render_stock_analysis_page
