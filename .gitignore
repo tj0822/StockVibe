@@ -27,6 +27,9 @@ env/
 kakao_token.json
 kakao_config.json
 
+# Streamlit secrets
+.streamlit/secrets.toml
+
 # OS
 .DS_Store
 Thumbs.db
