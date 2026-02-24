@@ -2424,7 +2424,54 @@ def run_app(current_tab: str = "📊 시그널") -> None:
     elif current_tab == "🎯 시뮬레이션":
         st.subheader("🎯 백테스트 시뮬레이션")
         
-        # 파라미터 조정 섹션
+        # 시뮬레이션 모드 선택 (먼저 선택)
+        st.markdown("### 🎯 시뮬레이션 모드 선택")
+        simulation_mode = st.radio(
+            "분석 방식을 선택하세요",
+            options=["📊 기본 시뮬레이션", "🔬 종목별 일괄 테스트", "📅 연도별 성과 분석"],
+            horizontal=True,
+            help="기본: 전체 신호 분석 | 종목별: 각 종목별 알고리즘 비교 | 연도별: 시황변화에 무관한 종목 찾기"
+        )
+        
+        st.divider()
+        
+        # 연도별 성과분석을 제외한 모드에서만 분석 기간 설정 표시
+        if simulation_mode != "📅 연도별 성과 분석":
+            # 날짜 범위 설정
+            with st.expander("📅 분석 기간 설정", expanded=True):
+                st.caption("시뮬레이션을 실행할 기간을 선택하세요")
+                
+                col_date1, col_date2 = st.columns(2)
+                
+                # 기본값: 최근 1년
+                from datetime import datetime, timedelta
+                today = datetime.now().date()
+                one_year_ago = today - timedelta(days=365)
+                
+                with col_date1:
+                    start_date = st.date_input(
+                        "시작일자",
+                        value=one_year_ago,
+                        help="시뮬레이션을 시작할 날짜"
+                    )
+                
+                with col_date2:
+                    end_date = st.date_input(
+                        "종료일자",
+                        value=today,
+                        help="시뮬레이션을 종료할 날짜"
+                    )
+                
+                # 기간 검증
+                if start_date >= end_date:
+                    st.error("⚠️ 시작일자는 종료일자보다 빨라야 합니다")
+                else:
+                    days_diff = (end_date - start_date).days
+                    st.success(f"✅ 분석 기간: {days_diff}일 ({start_date} ~ {end_date})")
+            
+            st.divider()
+        
+        # 파라미터 조정 섹션 (모든 모드에서 필요)
         with st.expander("⚙️ 거래량 분석 파라미터 설정", expanded=True):
             st.caption("파라미터를 조정하고 백테스트를 실행하세요")
             
@@ -2470,16 +2517,76 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             with col_info3:
                 st.metric("🔴 손절 기준", f"{loss_threshold:.1f}%")
         
-        # 데이터 로딩 (시뮬레이션 탭 전용)
+        st.divider()
+        
+        # 데이터 로딩
         with st.spinner("📊 데이터 로딩 중..."):
             df = load_stock_data(params["data_dir"])
             kospi = load_kospi_list(params["data_dir"])
             kospi_index = load_kospi_index(params["data_dir"])
+            
+            if simulation_mode != "📅 연도별 성과 분석":
+                # 선택된 날짜 범위로 전체 데이터 필터링
+                df['date'] = pd.to_datetime(df['date'])
+                start_date_dt = pd.to_datetime(start_date)
+                end_date_dt = pd.to_datetime(end_date)
+                df_filtered = df[(df['date'] >= start_date_dt) & (df['date'] <= end_date_dt)]
+                
+                if df_filtered.empty:
+                    st.error(f"⚠️ 선택한 기간({start_date} ~ {end_date})에 데이터가 없습니다.")
+                    return
+            else:
+                # 연도별 성과분석은 전체 historical data 사용
+                df['date'] = pd.to_datetime(df['date'])
+                df_filtered = df  # 전체 데이터 사용
+        
+        st.divider()
+        
+        # 모드별 시뮬레이션 실행
+        if simulation_mode == "📊 기본 시뮬레이션":
+            # 시뮬레이션 실행 버튼
+            col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
+            with col_btn1:
+                run_simulation = st.button("🚀 시뮬레이션 하기", use_container_width=True, type="primary", key="basic_sim_btn")
+            with col_btn2:
+                reset_params = st.button("🔄 초기화", use_container_width=True, key="reset_btn")
+            
+            if reset_params:
+                st.session_state.clear()
+                st.rerun()
+            
+            if not run_simulation:
+                st.info("⚙️ 파라미터를 설정하고 '🚀 시뮬레이션 하기' 버튼을 클릭하세요.")
+                return
+            
+            st.subheader(f"📊 백테스트 결과 ({start_date} ~ {end_date})")
+            st.caption(f"분석 기간: {(end_date - start_date).days}일 동안 시뮬레이션")
+            
+            # 시그널 생성 (시뮬레이션 탭 전용) - 조정된 파라미터 사용
+            with st.spinner("🔍 시그널 분석 중..."):
+                signals = build_signals(
+                    df_filtered,
+                    int(rolling_days),
+                    float(volume_threshold),
+                    20,
+                    5.0,
+                    20,
+                    2.0,
+                    20,
+                    2.0,
+                    ["Turnover Spike"],
+                    "ANY",
+                )
+                signals = signals.merge(kospi, on="code", how="left")
 
-        # 시그널 생성 (시뮬레이션 탭 전용) - 조정된 파라미터 사용
-        with st.spinner("🔍 시그널 분석 중..."):
-            signals = build_signals(
-                df,
+                if "spike_ratio" in signals.columns:
+                    signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
+                else:
+                    signals = signals.sort_values(["date"], ascending=[False])
+                signals = apply_signal_filters(signals, params["signal_filter"])
+            
+            strategy_signals = build_signals(
+                df_filtered,
                 int(rolling_days),
                 float(volume_threshold),
                 20,
@@ -2491,68 +2598,40 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 ["Turnover Spike"],
                 "ANY",
             )
-            signals = signals.merge(kospi, on="code", how="left")
+            strategy_signals = strategy_signals.merge(kospi, on="code", how="left")
 
-            if "spike_ratio" in signals.columns:
-                signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
-            else:
-                signals = signals.sort_values(["date"], ascending=[False])
-            signals = apply_signal_filters(signals, params["signal_filter"])
-
-        selected_date = select_date(signals)
-        if selected_date is None:
-            st.warning("⚠️ 조건에 맞는 시그널이 없습니다.")
-            return
-
-        st.divider()
-        st.subheader("📊 백테스트 결과")
-        strategy_signals = build_signals(
-            df,
-            int(rolling_days),
-            float(volume_threshold),
-            20,
-            5.0,
-            20,
-            2.0,
-            20,
-            2.0,
-            ["Turnover Spike"],
-            "ANY",
-        )
-        strategy_signals = strategy_signals.merge(kospi, on="code", how="left")
-
-        equity_df, trades_df = run_turnover_strategy_backtest(
-            df,
-            strategy_signals,
-            kospi_index,
-            selected_date,
-            top_n=2,
-            initial_cash=params["initial_cash"],
-            max_daily_buys=params["max_daily_buys"],
-            buy_unit=params["buy_unit"],
-            add_buy_threshold_pct=float(loss_threshold),
-        )
-        render_backtest_curve(equity_df, kospi_index, selected_date)
-        if not equity_df.empty:
-            equity_df = equity_df.copy()
-            for col in ["cash", "market_value", "equity"]:
-                equity_df[col] = equity_df[col].fillna(0).astype(float).floordiv(1).astype(int)
-            st.line_chart(equity_df.set_index("date")["equity"])
-            st.dataframe(
-                equity_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "date": st.column_config.DateColumn("날짜"),
-                    "cash": st.column_config.NumberColumn("현금", format="%,.0f"),
-                    "market_value": st.column_config.NumberColumn("평가금액", format="%,.0f"),
-                    "equity": st.column_config.NumberColumn("총자산", format="%,.0f"),
-                    "positions": st.column_config.NumberColumn("보유 종목수"),
-                },
+            equity_df, trades_df = run_turnover_strategy_backtest(
+                df_filtered,
+                strategy_signals,
+                kospi_index,
+                start_date_dt,
+                top_n=2,
+                initial_cash=params["initial_cash"],
+                max_daily_buys=params["max_daily_buys"],
+                buy_unit=params["buy_unit"],
+                add_buy_threshold_pct=float(loss_threshold),
             )
-        if not trades_df.empty:
-            st.divider()
-            st.subheader("💼 거래 내역")
+            render_backtest_curve(equity_df, kospi_index, start_date_dt)
+            if not equity_df.empty:
+                equity_df = equity_df.copy()
+                for col in ["cash", "market_value", "equity"]:
+                    equity_df[col] = equity_df[col].fillna(0).astype(float).floordiv(1).astype(int)
+                st.line_chart(equity_df.set_index("date")["equity"])
+                st.dataframe(
+                    equity_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "date": st.column_config.DateColumn("날짜"),
+                        "cash": st.column_config.NumberColumn("현금", format="%,.0f"),
+                        "market_value": st.column_config.NumberColumn("평가금액", format="%,.0f"),
+                        "equity": st.column_config.NumberColumn("총자산", format="%,.0f"),
+                        "positions": st.column_config.NumberColumn("보유 종목수"),
+                    },
+                )
+            if not trades_df.empty:
+                st.divider()
+                st.subheader("💼 거래 내역")
             trades_df = trades_df.copy()
             
             # 승률 계산 (매도 거래만 대상)
@@ -2632,6 +2711,569 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                     "equity": st.column_config.NumberColumn("총자산", format="%,.0f"),
                 },
             )
+        
+        elif simulation_mode == "🔬 종목별 일괄 테스트":
+            st.subheader("🔬 종목별 알고리즘 테스트")
+            
+            # 테스트할 종목 선택
+            with st.expander("📌 테스트 종목 선택", expanded=True):
+                test_mode = st.radio(
+                    "테스트 방식",
+                    options=["전체 KOSPI 종목", "상위 N개 종목", "선택적 종목"],
+                    horizontal=True
+                )
+                
+                test_stock_codes = []
+    
+                # KOSPI 목록 로드
+                temp_kospi = kospi  # 이미 로드됨
+                
+                if test_mode == "전체 KOSPI 종목":
+                    test_stock_codes = [str(code) for code in (list(temp_kospi.keys()) if isinstance(temp_kospi, dict) else temp_kospi['code'].unique().tolist())]
+                    st.success(f"✅ {len(test_stock_codes)}개 종목 테스트 예정")
+                    st.caption(f"샘플: {', '.join(test_stock_codes[:5])}")
+                
+                elif test_mode == "상위 N개 종목":
+                    top_n = st.slider("상위 N개", min_value=5, max_value=50, value=20, step=5)
+                    if isinstance(temp_kospi, dict):
+                        test_stock_codes = [str(code) for code in list(temp_kospi.keys())[:top_n]]
+                    else:
+                        test_stock_codes = [str(code) for code in temp_kospi['code'].head(top_n).tolist()]
+                    st.success(f"✅ 상위 {top_n}개 종목 테스트")
+                    st.caption(f"샘플: {', '.join(test_stock_codes[:5])}")
+                
+                else:  # 선택적 종목
+                    if isinstance(temp_kospi, dict):
+                        stock_labels = [f"{code} - {name}" for code, name in temp_kospi.items()]
+                    else:
+                        stock_labels = [f"{str(code)} - {name}" for code, name in zip(temp_kospi.get('code', []), temp_kospi.get('name', []))]
+                    
+                    selected_labels = st.multiselect(
+                        "테스트할 종목 선택",
+                        options=stock_labels,
+                        max_selections=30
+                    )
+                    test_stock_codes = [label.split(" - ")[0].strip() for label in selected_labels]
+                    st.success(f"✅ {len(test_stock_codes)}개 종목 선택됨")
+                
+                # 선택된 종목과 df_filtered의 데이터 교집합 확인
+                if test_stock_codes:
+                    available_stocks = df_filtered['code'].astype(str).unique().tolist()
+                    overlapping = [code for code in test_stock_codes if code in available_stocks]
+                    st.info(f"📊 데이터 검증: {len(overlapping)}/{len(test_stock_codes)} 종목에 데이터 있음")
+                    
+                    if len(overlapping) < len(test_stock_codes):
+                        missing = [code for code in test_stock_codes if code not in available_stocks]
+                        st.warning(f"⚠️ 데이터 없는 종목: {', '.join(missing[:5])}")
+                    
+                    test_stock_codes = overlapping  # 데이터가 있는 종목만 테스트
+            
+            st.divider()
+            
+            # 일괄 테스트 실행 버튼
+            col_btn1, col_btn2 = st.columns([1, 1])
+            with col_btn1:
+                run_batch_test = st.button("🚀 일괄 테스트 실행", use_container_width=True, type="primary", key="batch_test_btn")
+            with col_btn2:
+                reset_params = st.button("🔄 초기화", use_container_width=True, key="reset_btn2")
+            
+            if reset_params:
+                st.session_state.clear()
+                st.rerun()
+            
+            if not run_batch_test or len(test_stock_codes) == 0:
+                st.info("📌 테스트할 종목을 선택하고 '🚀 일괄 테스트 실행' 버튼을 클릭하세요.")
+                return
+            
+            st.divider()
+            
+            st.subheader("🔬 종목별 알고리즘 성과 분석")
+            st.caption(f"기간: {start_date} ~ {end_date} | 테스트 종목: {len(test_stock_codes)}개")
+            
+            # 일괄 백테스트 실행
+            from app.backtest_analyzer import run_batch_backtest
+            
+            with st.spinner("🔬 종목별 테스트 진행 중..."):
+                batch_results = run_batch_backtest(
+                    df_filtered,
+                    test_stock_codes,
+                    int(rolling_days),
+                    float(volume_threshold),
+                    float(loss_threshold),
+                    start_date,
+                    end_date,
+                    build_signals,
+                    run_turnover_strategy_backtest,
+                    kospi_index,
+                    kospi_list=kospi,
+                    initial_cash=params["initial_cash"],
+                    max_daily_buys=params["max_daily_buys"],
+                    buy_unit=params["buy_unit"],
+                )
+            
+            if not batch_results.empty:
+                st.success(f"✅ {len(batch_results)}개 종목 분석 완료")
+                
+                st.divider()
+                
+                # 테스트 설정 요약
+                st.subheader("⚙️ 테스트 설정")
+                summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
+                with summary_col1:
+                    st.metric("📅 분석 기간", f"{(end_date - start_date).days}일")
+                with summary_col2:
+                    st.metric("📊 급등 기준", f"{volume_threshold:.1f}배")
+                with summary_col3:
+                    st.metric("💰 초기 자본금", f"{params['initial_cash']:,.0f}원")
+                with summary_col4:
+                    st.metric("🔴 손절 임계값", f"{loss_threshold:.1f}%")
+                
+                st.divider()
+                st.subheader("📊 종목별 성과 비교")
+                
+                # 필터링 옵션
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    min_trades = st.slider("최소 거래수", min_value=0, max_value=20, value=3)
+                
+                with col2:
+                    sort_by = st.selectbox(
+                        "정렬 기준",
+                        options=["total_return_pct", "win_rate", "profit_loss_ratio"],
+                        format_func=lambda x: {
+                            "total_return_pct": "📈 총 수익률",
+                            "win_rate": "🎯 승률",
+                            "profit_loss_ratio": "💰 손익비"
+                        }[x]
+                    )
+                
+                with col3:
+                    top_n = st.slider("상위 N개 표시", min_value=5, max_value=50, value=20)
+                
+                # 결과 필터링 및 정렬
+                filtered_results = batch_results[batch_results['total_trades'] >= min_trades].copy()
+                
+                if not filtered_results.empty:
+                    if sort_by in filtered_results.columns:
+                        filtered_results = filtered_results.sort_values(sort_by, ascending=False)
+                    
+                    top_results = filtered_results.head(top_n)
+                    
+                    # 상위 3개 강조 표시
+                    st.markdown("### 🏆 Top 3 성과 종목")
+                    
+                    top_3 = top_results.head(3)
+                    for idx, (_, row) in enumerate(top_3.iterrows(), 1):
+                        medal = ["🥇", "🥈", "🥉"][idx - 1]
+                        
+                        col_medal, col_info = st.columns([0.5, 4.5])
+                        
+                        with col_medal:
+                            st.metric("", f"{medal} #{idx}")
+                        
+                        with col_info:
+                            # 수익률에 따라 색상 결정
+                            return_color = "🟢" if row['total_return_pct'] >= 0 else "🔴"
+                            
+                            col_name, col_return, col_trades, col_win = st.columns(4)
+                            
+                            with col_name:
+                                st.write(f"**{row['name']}** ({row['code']})")
+                            
+                            with col_return:
+                                st.write(f"{return_color} 수익률: **{row['total_return_pct']:+.2f}%**")
+                            
+                            with col_trades:
+                                st.write(f"📊 매매: **{int(row['total_trades'])}회** ({int(row['win_trades'])}승/{int(row['lose_trades'])}패)")
+                            
+                            with col_win:
+                                st.write(f"🎯 승률: **{row['win_rate']:.1f}%** | 손익비: **{row['profit_loss_ratio']:.2f}**")
+                    
+                    st.divider()
+                    
+                    # 상세 결과 표 (컬럼 선택)
+                    st.markdown("### 📋 상세 결과")
+                    
+                    # 메트릭 설명
+                    with st.expander("📖 지표 설명", expanded=False):
+                        col_exp1, col_exp2 = st.columns(2)
+                        
+                        with col_exp1:
+                            st.write("**총 수익률 (total_return_pct)**")
+                            st.caption("초기 자본금 대비 최종 자산의 총 수익률\n예: 초기 5,000만원 → 최종 5,126만원 → +2.52%")
+                            st.write("")
+                            st.write("**승률 (win_rate)**")
+                            st.caption("매도한 거래 중 수익을 본 거래의 비율\n예: 10회 매도 중 7회 수익 → 70%")
+                            st.write("")
+                            st.write("**최대낙폭 (max_drawdown)**")
+                            st.caption("시뮬레이션 기간 중 최고점 대비 최저점의 낙폭")
+                        
+                        with col_exp2:
+                            st.write("**평균 수익률 (avg_return)**")
+                            st.caption("**개별 거래(매수가격 대비)의 평균 수익률**\n예: 매수 10,000원 → 평균 10,050원 매도 → +0.5%\n주의: 전체 자산 대비 수익률이 아닙니다")
+                            st.write("")
+                            st.write("**손익비 (profit_loss_ratio)**")
+                            st.caption("평균 수익 / 평균 손실의 비율\n예: 평균수익 +2% / 평균손실 -1% → 2.0")
+                            st.write("")
+                            st.write("**거래수 (total_trades)**")
+                            st.caption("시뮬레이션 기간 동안의 총 매매 횟수\n승거래 + 패배래 = 총 거래")
+                    
+                    display_cols = ['code', 'name', 'total_return_pct', 'total_trades', 'win_trades', 
+                                   'lose_trades', 'win_rate', 'avg_return', 'profit_loss_ratio', 'max_drawdown']
+                    available_cols = [col for col in display_cols if col in top_results.columns]
+                    
+                    # 데이터 포맷팅
+                    display_df = top_results[available_cols].copy()
+                    
+                    # 백분율과 소수점 포맷팅
+                    if 'total_return_pct' in display_df.columns:
+                        display_df['total_return_pct'] = display_df['total_return_pct'].apply(lambda x: f"{x:+.2f}%")
+                    if 'win_rate' in display_df.columns:
+                        display_df['win_rate'] = display_df['win_rate'].apply(lambda x: f"{x:.1f}%")
+                    if 'avg_return' in display_df.columns:
+                        display_df['avg_return'] = display_df['avg_return'].apply(lambda x: f"{x:+.2f}%")
+                    if 'max_drawdown' in display_df.columns:
+                        display_df['max_drawdown'] = display_df['max_drawdown'].apply(lambda x: f"{x:.2f}%")
+                    if 'profit_loss_ratio' in display_df.columns:
+                        display_df['profit_loss_ratio'] = display_df['profit_loss_ratio'].apply(lambda x: f"{x:.2f}")
+                    
+                    # 정수 포맷팅
+                    if 'total_trades' in display_df.columns:
+                        display_df['total_trades'] = display_df['total_trades'].astype(int)
+                    if 'win_trades' in display_df.columns:
+                        display_df['win_trades'] = display_df['win_trades'].astype(int)
+                    if 'lose_trades' in display_df.columns:
+                        display_df['lose_trades'] = display_df['lose_trades'].astype(int)
+                    
+                    st.dataframe(
+                        display_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    
+                    st.divider()
+                    st.subheader("📈 성과 분포")
+                    
+                    # 통계 정보
+                    stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
+                    
+                    with stats_col1:
+                        avg_return = filtered_results['total_return_pct'].mean()
+                        return_color = "🟢" if avg_return >= 0 else "🔴"
+                        st.metric(f"{return_color} 평균 수익률", f"{avg_return:+.2f}%")
+                    
+                    with stats_col2:
+                        avg_win_rate = filtered_results['win_rate'].mean()
+                        st.metric("🎯 평균 승률", f"{avg_win_rate:.1f}%")
+                    
+                    with stats_col3:
+                        avg_ratio = filtered_results['profit_loss_ratio'].mean()
+                        st.metric("💰 평균 손익비", f"{avg_ratio:.2f}")
+                    
+                    with stats_col4:
+                        avg_dd = filtered_results['max_drawdown'].mean()
+                        st.metric("📉 평균 최대낙폭", f"{avg_dd:.2f}%")
+                    
+                    # 성과 차트
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("#### 📊 상위 15개 종목 수익률 분포")
+                        chart_data = filtered_results.set_index('name')['total_return_pct'].head(15)
+                        st.bar_chart(chart_data)
+                    
+                    with col2:
+                        st.markdown("#### 📊 상위 15개 종목 승률 분포")
+                        chart_data = filtered_results.set_index('name')['win_rate'].head(15)
+                        st.bar_chart(chart_data)
+                    
+                    st.divider()
+                    st.subheader("🏆 추천 종목 (조건 필터링)")
+                    
+                    # 추천 조건을 expander에 넣음
+                    with st.expander("🔧 필터 조건 설정", expanded=True):
+                        rec_col1, rec_col2, rec_col3, rec_col4 = st.columns(4)
+                        
+                        with rec_col1:
+                            min_return = st.number_input("최소 수익률 (%)", value=5.0, step=0.5)
+                        
+                        with rec_col2:
+                            min_win_rate = st.number_input("최소 승률 (%)", value=40.0, step=5.0)
+                        
+                        with rec_col3:
+                            min_ratio = st.number_input("최소 손익비", value=0.5, step=0.1)
+                        
+                        with rec_col4:
+                            max_drawdown = st.number_input("최대 낙폭 (%)", value=-20.0, step=-5.0)
+                    
+                    # 조건 적용
+                    recommendations = filtered_results[
+                        (filtered_results['total_return_pct'] >= min_return) &
+                        (filtered_results['win_rate'] >= min_win_rate) &
+                        (filtered_results['profit_loss_ratio'] >= min_ratio) &
+                        (filtered_results['max_drawdown'] >= max_drawdown)
+                    ].copy()
+                    
+                    if not recommendations.empty:
+                        st.success(f"✅ 추천 종목: {len(recommendations)}개 (필터 조건 만족)")
+                        
+                        # 추천 종목 상세 정보
+                        rec_df = recommendations[['code', 'name', 'total_return_pct', 'total_trades', 'win_rate', 'profit_loss_ratio', 'max_drawdown']].copy()
+                        
+                        rec_df['total_return_pct'] = rec_df['total_return_pct'].apply(lambda x: f"{x:+.2f}%")
+                        rec_df['win_rate'] = rec_df['win_rate'].apply(lambda x: f"{x:.1f}%")
+                        rec_df['profit_loss_ratio'] = rec_df['profit_loss_ratio'].apply(lambda x: f"{x:.2f}")
+                        rec_df['max_drawdown'] = rec_df['max_drawdown'].apply(lambda x: f"{x:.2f}%")
+                        rec_df['total_trades'] = rec_df['total_trades'].astype(int)
+                        
+                        st.dataframe(
+                            rec_df,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    else:
+                        st.warning("⚠️ 설정한 조건에 맞는 종목이 없습니다. 필터 조건을 완화해보세요.")
+
+                else:
+                    st.warning(f"⚠️ 최소 거래수 {min_trades}개 이상인 종목이 없습니다.")
+            else:
+                st.error("❌ 테스트할 데이터가 부족합니다.")
+        
+        elif simulation_mode == "📅 연도별 성과 분석":
+            st.subheader("📅 연도별 알고리즘 성과 분석")
+            st.caption("시황 변화에 무관하게 일관되게 성과를 내는 종목 찾기")
+            
+            # 분석 종목 선택
+            with st.expander("📌 분석 종목 선택", expanded=True):
+                st.caption("단일 종목 또는 모든 종목에 대해 2010년부터 현재까지 연도별로 분석합니다")
+                
+                # 분석 범위 선택
+                analysis_scope = st.radio(
+                    "분석 범위",
+                    options=["📌 단일 종목", "📊 모든 종목"],
+                    horizontal=True,
+                    help="단일: 선택한 종목만 | 모든 종목: 가격 데이터가 있는 모든 종목"
+                )
+                
+                # KOSPI 목록에서 종목 선택
+                if not isinstance(kospi, pd.DataFrame):
+                    st.error("❌ KOSPI 목록을 불러올 수 없습니다.")
+                    return
+                
+                if analysis_scope == "📌 단일 종목":
+                    stock_options = [f"{code} - {name}" for code, name in zip(kospi['code'], kospi['name'])]
+                    selected_stock = st.selectbox(
+                        "분석할 종목",
+                        options=stock_options,
+                        key="yearly_stock_select"
+                    )
+                    selected_code = selected_stock.split(" - ")[0].strip()
+                    selected_name = selected_stock.split(" - ")[1].strip()
+                    selected_codes = [selected_code]
+                else:  # 모든 종목
+                    st.info("📊 가격 데이터가 있는 모든 종목을 분석합니다")
+                    selected_codes = kospi['code'].astype(str).tolist()
+                    st.write(f"분석할 종목 수: **{len(selected_codes)}개**")
+                
+                # 연도 범위 선택
+                col_start_year, col_end_year = st.columns(2)
+                with col_start_year:
+                    start_year = st.number_input("시작 연도", min_value=2010, max_value=2026, value=2010)
+                with col_end_year:
+                    end_year = st.number_input("종료 연도", min_value=2010, max_value=2026, value=2026)
+                
+                if start_year > end_year:
+                    st.error("❌ 시작 연도가 종료 연도보다 클 수 없습니다.")
+                    return
+            
+            st.divider()
+            
+            # 연도별 분석 실행 버튼
+            col_btn1, col_btn2 = st.columns([1, 1])
+            with col_btn1:
+                run_yearly_test = st.button("🚀 연도별 분석 실행", use_container_width=True, type="primary")
+            with col_btn2:
+                reset_yearly = st.button("🔄 초기화", use_container_width=True)
+            
+            if reset_yearly:
+                st.session_state.clear()
+                st.rerun()
+            
+            if not run_yearly_test:
+                st.info("📌 분석할 종목을 선택하고 '🚀 연도별 분석 실행' 버튼을 클릭하세요.")
+                return
+            
+            st.divider()
+            
+            # 연도별 백테스트 실행
+            if analysis_scope == "📌 단일 종목":
+                from app.yearly_backtest import run_yearly_backtest, analyze_consistency
+                
+                with st.spinner(f"📅 {selected_name} 연도별 분석 진행 중..."):
+                    yearly_results = run_yearly_backtest(
+                        df,
+                        selected_code,
+                        selected_name,
+                        int(rolling_days),
+                        float(volume_threshold),
+                        float(loss_threshold),
+                        build_signals,
+                        run_turnover_strategy_backtest,
+                        kospi_index,
+                        initial_cash=params["initial_cash"],
+                        max_daily_buys=params["max_daily_buys"],
+                        buy_unit=params["buy_unit"],
+                        start_year=int(start_year),
+                        end_year=int(end_year),
+                    )
+            else:  # 모든 종목
+                from app.yearly_backtest import run_yearly_backtest_batch, summarize_all_stocks_consistency
+                
+                with st.spinner(f"📅 {len(selected_codes)}개 종목 연도별 분석 진행 중... (시간이 걸릴 수 있습니다)"):
+                    yearly_results = run_yearly_backtest_batch(
+                        df,
+                        selected_codes,
+                        int(rolling_days),
+                        float(volume_threshold),
+                        float(loss_threshold),
+                        build_signals,
+                        run_turnover_strategy_backtest,
+                        kospi_index,
+                        kospi_list=kospi,
+                        initial_cash=params["initial_cash"],
+                        max_daily_buys=params["max_daily_buys"],
+                        buy_unit=params["buy_unit"],
+                        start_year=int(start_year),
+                        end_year=int(end_year),
+                    )
+                
+                # 종목별 일관성 요약 계산
+                if not yearly_results.empty:
+                    consistency_summary = summarize_all_stocks_consistency(yearly_results)
+            
+            if not yearly_results.empty:
+                if analysis_scope == "📌 단일 종목":
+                    # 단일 종목 결과 표시
+                    st.success(f"✅ {len(yearly_results)}개 연도 분석 완료")
+                    
+                    st.divider()
+                    
+                    # 일관성 분석
+                    from app.yearly_backtest import analyze_consistency
+                    consistency = analyze_consistency(yearly_results)
+                    
+                    st.subheader("📊 성과 일관성 분석")
+                    
+                    cons_col1, cons_col2, cons_col3, cons_col4 = st.columns(4)
+                    
+                    with cons_col1:
+                        pos_years = consistency.get('positive_years', 0)
+                        total = consistency.get('total_years', 0)
+                        success_rate = (pos_years / total * 100) if total > 0 else 0
+                        st.metric("✅ 수익 연도", f"{pos_years}/{total}년 ({success_rate:.0f}%)")
+                    
+                    with cons_col2:
+                        avg_ret = consistency.get('avg_return_pct', 0)
+                        std_ret = consistency.get('std_return_pct', 0)
+                        color = "🟢" if avg_ret >= 0 else "🔴"
+                        st.metric(f"{color} 평균 연수익률", f"{avg_ret:+.2f}%", f"표준편차: {std_ret:.2f}%")
+                    
+                    with cons_col3:
+                        min_ret = consistency.get('min_return_pct', 0)
+                        max_ret = consistency.get('max_return_pct', 0)
+                        st.metric("📈 수익률 범위", f"{min_ret:+.2f}% ~ {max_ret:+.2f}%")
+                    
+                    with cons_col4:
+                        win_rate_avg = consistency.get('win_rate_avg', 0)
+                        win_rate_std = consistency.get('win_rate_std', 0)
+                        st.metric("🎯 평균 승률", f"{win_rate_avg:.1f}%", f"표준편차: {win_rate_std:.1f}%")
+                
+                else:  # 모든 종목
+                    # 모든 종목 결과 표시
+                    st.success(f"✅ {yearly_results['code'].nunique()}개 종목의 {len(yearly_results)}개 연도별 분석 완료")
+                    
+                    st.divider()
+                    st.subheader("🏆 종목별 성과 순위")
+                    
+                    # 종목별 일관성 요약
+                    ranking_cols = ['code', 'name', 'test_years', 'positive_years', 'success_rate', 'avg_return_pct', 'std_return_pct', 'avg_win_rate']
+                    available_ranking_cols = [col for col in ranking_cols if col in consistency_summary.columns]
+                    
+                    ranking_df = consistency_summary[available_ranking_cols].copy()
+                    
+                    # 포맷팅
+                    if 'success_rate' in ranking_df.columns:
+                        ranking_df['success_rate'] = ranking_df['success_rate'].apply(lambda x: f"{x:.0f}%")
+                    if 'avg_return_pct' in ranking_df.columns:
+                        ranking_df['avg_return_pct'] = ranking_df['avg_return_pct'].apply(lambda x: f"{x:+.2f}%")
+                    if 'std_return_pct' in ranking_df.columns:
+                        ranking_df['std_return_pct'] = ranking_df['std_return_pct'].apply(lambda x: f"{x:.2f}%")
+                    if 'avg_win_rate' in ranking_df.columns:
+                        ranking_df['avg_win_rate'] = ranking_df['avg_win_rate'].apply(lambda x: f"{x:.1f}%")
+                    
+                    st.dataframe(
+                        ranking_df.head(30),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    
+                    # CSV 다운로드
+                    csv_data = consistency_summary.to_csv(index=False)
+                    st.download_button(
+                        label="📥 종목별 성과 순위 다운로드 (CSV)",
+                        data=csv_data,
+                        file_name="yearly_performance_ranking.csv",
+                        mime="text/csv",
+                        key="download_ranking"
+                    )
+                
+                st.divider()
+                
+                if analysis_scope == "📌 단일 종목":
+                    # 연도별 상세 결과 (단일 종목에만 표시)
+                    st.subheader("📋 연도별 상세 결과")
+                    
+                    display_cols = ['year', 'total_return_pct', 'total_trades', 'win_trades', 'lose_trades', 
+                                   'win_rate', 'avg_return', 'profit_loss_ratio', 'max_drawdown']
+                    available_cols = [col for col in display_cols if col in yearly_results.columns]
+                    
+                    display_df = yearly_results[available_cols].copy()
+                    
+                    # 포맷팅
+                    if 'total_return_pct' in display_df.columns:
+                        display_df['total_return_pct'] = display_df['total_return_pct'].apply(lambda x: f"{x:+.2f}%")
+                    if 'win_rate' in display_df.columns:
+                        display_df['win_rate'] = display_df['win_rate'].apply(lambda x: f"{x:.1f}%")
+                    if 'avg_return' in display_df.columns:
+                        display_df['avg_return'] = display_df['avg_return'].apply(lambda x: f"{x:+.2f}%")
+                    if 'max_drawdown' in display_df.columns:
+                        display_df['max_drawdown'] = display_df['max_drawdown'].apply(lambda x: f"{x:.2f}%")
+                    if 'profit_loss_ratio' in display_df.columns:
+                        display_df['profit_loss_ratio'] = display_df['profit_loss_ratio'].apply(lambda x: f"{x:.2f}")
+                    if 'total_trades' in display_df.columns:
+                        display_df['total_trades'] = display_df['total_trades'].astype(int)
+                    
+                    st.dataframe(
+                        display_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                    
+                    st.divider()
+                    
+                    # 연도별 수익률 차트
+                    st.subheader("📈 연도별 수익률 추이")
+                    
+                    chart_df = yearly_results[['year', 'total_return_pct']].set_index('year')
+                    st.bar_chart(chart_df)
+                    
+                    st.subheader("📊 연도별 승률 추이")
+                    
+                    chart_df2 = yearly_results[['year', 'win_rate']].set_index('year')
+                    st.bar_chart(chart_df2)
+            else:
+                st.error("❌ 분석할 수 있는 데이터가 없습니다.")
 
     elif current_tab == "⚙️ 최적화":
         # 데이터 로딩 (최적화 탭 전용)

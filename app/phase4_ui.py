@@ -634,6 +634,34 @@ def page_stock_scoring_manual(engine):
             stock_code = ""
             stock_name = ""
             is_owned = False
+        
+        # 선택된 종목 데이터를 session_state에 저장
+        if 'selected_stock_code' not in st.session_state or st.session_state['selected_stock_code'] != stock_code:
+            st.session_state['selected_stock_code'] = stock_code
+            st.session_state['selected_stock_name'] = stock_name
+            
+            # 선택된 종목의 재무 데이터 로드
+            try:
+                from app.data import load_finance_data
+                finance_df = load_finance_data("data")
+                
+                # 종목 코드로 필터링 (문자열로 정규화)
+                stock_code_str = str(stock_code)
+                stock_finance = finance_df[finance_df['code'].astype(str) == stock_code_str]
+                
+                # 최신 데이터만 사용
+                if not stock_finance.empty:
+                    latest_data = stock_finance.iloc[-1]
+                    per = latest_data.get('per', None)
+                    pbr = latest_data.get('pbr', None)
+                    st.session_state['default_per'] = float(per) if per is not None and str(per) != 'nan' else 15.0
+                    st.session_state['default_pbr'] = float(pbr) if pbr is not None and str(pbr) != 'nan' else 1.0
+                else:
+                    st.session_state['default_per'] = 15.0
+                    st.session_state['default_pbr'] = 1.0
+            except Exception as e:
+                st.session_state['default_per'] = 15.0
+                st.session_state['default_pbr'] = 1.0
     
     with col2:
         st.markdown("#### 보유 여부")
@@ -667,13 +695,18 @@ def page_stock_scoring_manual(engine):
     
     with col1:
         st.markdown("#### 현재 지표")
-        current_per = st.number_input("현재 PER", min_value=0.0, max_value=100.0, value=15.0, step=0.5, help="Price-to-Earnings Ratio")
-        current_pbr = st.number_input("현재 PBR", min_value=0.0, max_value=10.0, value=1.0, step=0.1, help="Price-to-Book Ratio")
+        default_per = st.session_state.get('default_per', 15.0)
+        default_pbr = st.session_state.get('default_pbr', 1.0)
+        # max_value를 동적으로 설정 (로드된 값보다 크게)
+        max_per = max(200.0, default_per * 1.5)
+        max_pbr = max(10.0, default_pbr * 2.0)
+        current_per = st.number_input("현재 PER", min_value=0.0, max_value=max_per, value=default_per, step=0.5, help="Price-to-Earnings Ratio")
+        current_pbr = st.number_input("현재 PBR", min_value=0.0, max_value=max_pbr, value=default_pbr, step=0.1, help="Price-to-Book Ratio")
     
     with col2:
         st.markdown("#### 산업 평균")
-        industry_per = st.number_input("산업 PER 평균", min_value=0.0, max_value=100.0, value=18.0, step=0.5, help="업종 평균 PER")
-        industry_pbr = st.number_input("산업 PBR 평균", min_value=0.0, max_value=10.0, value=1.2, step=0.1, help="업종 평균 PBR")
+        industry_per = st.number_input("산업 PER 평균", min_value=0.0, max_value=200.0, value=18.0, step=0.5, help="업종 평균 PER")
+        industry_pbr = st.number_input("산업 PBR 평균", min_value=0.0, max_value=15.0, value=1.2, step=0.1, help="업종 평균 PBR")
     
     with col3:
         st.markdown("#### 참고 정보")

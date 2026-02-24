@@ -152,5 +152,12 @@
     "avg_price": 0,
     "purchase_date": "2026-02-23",
     "last_updated": "2026-02-23 11:56:05"
+  },
+  "069620": {
+    "name": "대웅제약",
+    "quantity": 1,
+    "avg_price": 0,
+    "purchase_date": "2026-02-24",
+    "last_updated": "2026-02-24 17:42:08"
   }
 }
