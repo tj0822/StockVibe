@@ -3,7 +3,30 @@
 기업의 재무 건전성과 수익성을 평가하는 함수들
 """
 
-def calculate_quality_score(financial_dict):
+# ============================================================================
+# Default Weights for Ablation Testing
+# ============================================================================
+
+DEFAULT_WEIGHTS = {
+    'quality': 0.25,           # 재무 건전성: 25%
+    'valuation': 0.25,         # 상대 밸류에이션: 25%
+    'growth': 0.20,            # 성장성: 20%
+    'momentum': 0.20,          # 모멘텀: 20%
+    'industry_tailwind': 0.10   # 산업 태풍: 10%
+}
+
+
+def get_default_weights():
+    """
+    기본 가중치 반환 (ablation testing용)
+    
+    Returns:
+        dict: {'quality': 0.25, 'valuation': 0.25, ...}
+    """
+    return DEFAULT_WEIGHTS.copy()
+
+
+
     """
     기업의 재무 건전성 및 수익성 점수를 계산 (0-100)
     
@@ -615,15 +638,38 @@ class StockScoringEngine:
     최종 투자 등급 및 점수를 산출
     """
     
-    def __init__(self):
-        """초기화"""
-        self.weights = {
-            'quality': 0.25,      # 재무 건전성: 25%
-            'valuation': 0.25,    # 상대 밸류에이션: 25%
-            'growth': 0.20,       # 성장성: 20%
-            'momentum': 0.20,     # 모멘텀: 20%
-            'industry_tailwind': 0.10  # 산업 태풍: 10% (추가 옵션)
-        }
+    def __init__(self, weights=None):
+        """
+        초기화
+        
+        Args:
+            weights (dict, optional): 커스텀 가중치. None이면 기본값 사용
+                예: {'quality': 0.3, 'valuation': 0.3, 'growth': 0.2, 'momentum': 0.2, 'industry_tailwind': 0.0}
+                합이 1.0이 아니면 자동 정규화됨
+        """
+        if weights is None:
+            self.weights = get_default_weights()
+        else:
+            # 커스텀 가중치 설정
+            self.weights = weights.copy()
+            # 가중치 정규화 (0이 아닌 가중치만 고려)
+            non_zero_weights = {k: v for k, v in self.weights.items() if v > 0}
+            if non_zero_weights:
+                total_weight = sum(non_zero_weights.values())
+                self.weights = {k: v / total_weight if v > 0 else 0 for k, v in self.weights.items()}
+    
+    def set_weights(self, weights):
+        """
+        가중치 변경 (ablation testing용)
+        
+        Args:
+            weights (dict): 새로운 가중치
+        """
+        self.__init__(weights)
+    
+    def get_weights(self):
+        """현재 사용 중인 가중치 반환"""
+        return self.weights.copy()
     
     def calculate_final_score(self, 
                              financial_dict=None,

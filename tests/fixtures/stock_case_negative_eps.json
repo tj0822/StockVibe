@@ -1,0 +1,29 @@
+{
+  "description": "Negative EPS case: Company with negative growth and cash flow",
+  "stock_name": "Struggling Company",
+  "code": "XXXX00",
+  "financial_dict": {
+    "roe": 3.0,
+    "debt_ratio": 120.0,
+    "operating_margin": -2.0,
+    "free_cash_flow": -500000000
+  },
+  "current_per": 35.0,
+  "industry_per": 20.0,
+  "current_pbr": 3.0,
+  "industry_pbr": 1.5,
+  "financial_history": {
+    "revenue_history": [1000000000, 950000000, 902500000, 857375000],
+    "net_income_history": [100000000, 50000000, 20000000, -10000000]
+  },
+  "expected_outcome": {
+    "final_score_range": [10, 30],
+    "confidence_min": 70,
+    "breakdown_requirement": {
+      "quality": [0, 20],
+      "valuation": [0, 20],
+      "growth": [0, 10],
+      "momentum": "should_be_computed"
+    }
+  }
+}

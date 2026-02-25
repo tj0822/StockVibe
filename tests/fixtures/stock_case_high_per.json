@@ -1,0 +1,30 @@
+{
+  "description": "High PER case: Expensive valuation despite decent fundamentals",
+  "stock_name": "Expensive Growth Stock",
+  "code": "YYYY11",
+  "financial_dict": {
+    "roe": 18.0,
+    "debt_ratio": 30.0,
+    "operating_margin": 15.0,
+    "free_cash_flow": 1500000000
+  },
+  "current_per": 80.0,
+  "industry_per": 20.0,
+  "current_pbr": 5.0,
+  "industry_pbr": 1.5,
+  "financial_history": {
+    "revenue_history": [1000000000, 1500000000, 2250000000, 3375000000],
+    "net_income_history": [100000000, 150000000, 225000000, 337500000]
+  },
+  "expected_outcome": {
+    "final_score_range": [40, 60],
+    "confidence_min": 70,
+    "breakdown_requirement": {
+      "quality": [75, 90],
+      "valuation": [10, 30],
+      "growth": [80, 95],
+      "momentum": "should_be_computed"
+    },
+    "interpretation": "Good quality and growth, but overvaluation depresses overall score"
+  }
+}

@@ -1441,59 +1441,76 @@ def page_ai_analysis():
                     st.error(f"에러 메시지: {str(e)}")
 
 
-def page_portfolio():
-    """포트폴리오 관리 페이지 - 개선 버전"""
-    st.title("💼 포트폴리오 관리")
-    
+def _render_trading_history_panel(code: str):
+    """선택된 종목의 거래 이력 표시"""
     portfolio_mgr = PortfolioManager()
+    trades = portfolio_mgr.get_trading_history(code)
+    
+    if not trades:
+        st.info("거래 이력이 없습니다.")
+        return
+    
+    st.subheader(f"📋 거래 이력")
+    
+    # 거래 이력 테이블
+    history_items = []
+    for trade in trades:
+        trade_type = "매수" if trade['type'] == 'BUY' else "매도"
+        return_info = ""
+        
+        if trade['type'] == 'SELL' and trade.get('return_pct') is not None:
+            return_pct = trade['return_pct']
+            if return_pct >= 0:
+                return_info = f"📈 +{return_pct:.2f}%"
+            else:
+                return_info = f"📉 {return_pct:.2f}%"
+        
+        history_items.append({
+            '날짜': trade['date'],
+            '구분': trade_type,
+            '수량': f"{trade['quantity']}주",
+            '가격': f"₩{trade['price']:,}원",
+            '수익률': return_info if return_info else "진행 중"
+        })
+    
+    df_history = pd.DataFrame(history_items)
+    st.dataframe(df_history, use_container_width=True, hide_index=True)
+    
+    # 포트폴리오 통계
+    portfolio = portfolio_mgr.load_portfolio()
+    if code in portfolio:
+        stock_info = portfolio[code]
+        
+        st.markdown("---")
+        st.subheader("📊 거래 통계")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("현재 보유수량", f"{stock_info.get('quantity', 0)}주")
+        
+        with col2:
+            st.metric("평균 매수가", f"₩{stock_info.get('avg_price', 0):,.0f}원")
+        
+        with col3:
+            # 거래 횟수
+            total_trades = len(trades)
+            st.metric("거래 횟수", f"{total_trades}회")
+        
+        with col4:
+            # 총 거래대금
+            total_amount = sum(t['quantity'] * t['price'] for t in trades)
+            st.metric("총 거래대금", f"₩{total_amount:,.0f}원")
+
+
+def _render_portfolio_current(kospi_dict, price_df, finance_df):
+    """포트폴리오 현황 렌더링 헬퍼 함수"""
+    portfolio_mgr = PortfolioManager()
+    portfolio = portfolio_mgr.load_portfolio()
     
     # 세션 상태 초기화
     if 'selected_portfolio_code' not in st.session_state:
         st.session_state.selected_portfolio_code = None
-    
-    # KOSPI 200 데이터 로드 함수 (캐싱)
-    @st.cache_data(ttl=3600)
-    def load_kospi_stocks():
-        try:
-            crawler = CrawlingKospi()
-            kospi_dict = crawler.GetKospi200()
-            return kospi_dict
-        except:
-            return {}
-    
-    # 주가 데이터 로드 (캐싱)
-    @st.cache_data(ttl=1800)
-    def load_stock_prices():
-        try:
-            from app.data import load_stock_data
-            return load_stock_data("data")
-        except:
-            return pd.DataFrame()
-    
-    # 재무 데이터 로드 (캐싱)
-    @st.cache_data(ttl=1800)
-    def load_finance_info():
-        try:
-            from app.data import load_finance_data
-            return load_finance_data("data")
-        except:
-            return pd.DataFrame()
-    
-    # 뉴스 로드 (캐싱)
-    @st.cache_data(ttl=1800)
-    def load_portfolio_news(stock_code):
-        try:
-            from naver_news_crawler import NaverNewsCrawler
-            crawler = NaverNewsCrawler()
-            return crawler.get_recent_news(stock_code, max_news=5)
-        except Exception as e:
-            return pd.DataFrame()
-    
-    # 데이터 로드
-    kospi_dict = load_kospi_stocks()
-    price_df = load_stock_prices()
-    finance_df = load_finance_info()
-    portfolio = portfolio_mgr.load_portfolio()
     
     if not portfolio:
         st.info("보유 종목이 없습니다. 아래에서 종목을 추가해주세요.")
@@ -1501,7 +1518,7 @@ def page_portfolio():
         st.subheader("➕ 종목 추가")
         if kospi_dict:
             available_stocks = {code: name for code, name in kospi_dict.items()}
-            stock_options = ["선택하세요..."] + [f"{name} ({code})" 
+            stock_options =["선택하세요..."] + [f"{name} ({code})" 
                             for code, name in sorted(available_stocks.items(), key=lambda x: x[1])]
             
             selected = st.selectbox("종목 선택", options=stock_options, label_visibility="collapsed")
@@ -1516,6 +1533,88 @@ def page_portfolio():
                     st.success(f"✅ {stock_name} 추가됨")
                     st.rerun()
     else:
+        # 보유 종목 요약 정보 표시
+        st.subheader("📈 보유 종목 현황")
+        
+        # 현재가 정보 생성
+        current_prices = {}
+        if not price_df.empty:
+            for code in portfolio.keys():
+                code_str = str(code)
+                stock_data = price_df[price_df['code'].astype(str) == code_str].sort_values('date')
+                if len(stock_data) > 0:
+                    current_prices[code] = stock_data.iloc[-1]['close']
+        
+        # 보유 종목 요약 조회
+        holding_summary = portfolio_mgr.get_holding_summary(current_prices)
+        
+        if not holding_summary.empty:
+            # 수익률별 색상 표시
+            def highlight_profit_rate(val):
+                if val == 'N/A':
+                    return 'color: gray'
+                try:
+                    num_val = float(val) if isinstance(val, str) else val
+                    if num_val > 0:
+                        return 'color: red'  # 한국은 수익은 빨강
+                    elif num_val < 0:
+                        return 'color: blue'  # 손실은 파랑
+                    else:
+                        return 'color: gray'
+                except:
+                    return ''
+            
+            # 컬럼명 예쁘게
+            display_cols = ['종목명', '매수일자', '평균매수가격', '현재가격', '보유수량', '현재수익률(%)']
+            display_df = holding_summary[display_cols].copy()
+            
+            # 평균매수가격 포맷팅 (₩ 기호)
+            display_df['평균매수가격'] = display_df['평균매수가격'].apply(
+                lambda x: f"₩{int(x):,}" if pd.notna(x) else 'N/A'
+            )
+            
+            # 현재가격 포맷팅 (₩ 기호)
+            display_df['현재가격'] = display_df['현재가격'].apply(
+                lambda x: f"₩{int(x):,}" if pd.notna(x) else 'N/A'
+            )
+            
+            # 현재수익률을 포맷팅 (소수점 2자리)
+            display_df['현재수익률(%)'] = display_df['현재수익률(%)'].apply(
+                lambda x: f"{float(x):+.2f}%" if x != 'N/A' else 'N/A'
+            )
+            
+            # DataFrame 스타일링
+            styled_df = display_df.style.applymap(
+                lambda x: highlight_profit_rate(x),
+                subset=['현재수익률(%)']
+            )
+            
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            
+            # 요약 통계
+            col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+            
+            with col_stat1:
+                st.metric("보유 종목 수", len(holding_summary))
+            
+            with col_stat2:
+                avg_profit = holding_summary[holding_summary['현재수익률(%)'] != 'N/A']['현재수익률(%)'].apply(
+                    lambda x: float(x) if isinstance(x, (int, float)) else 0
+                ).mean()
+                st.metric("평균 수익률", f"{avg_profit:+.2f}%")
+            
+            with col_stat3:
+                profit_count = len(holding_summary[holding_summary['현재수익률(%)'] != 'N/A'][
+                    holding_summary['현재수익률(%)'].apply(lambda x: float(x) > 0 if isinstance(x, (int, float)) else False)
+                ])
+                st.metric("수익 종목 수", profit_count)
+            
+            with col_stat4:
+                total_buy_count = holding_summary['매수횟수'].sum()
+                st.metric("총 매수 횟수", total_buy_count)
+        
+        st.divider()
+        
         # 3열 레이아웃
         col_left, col_middle, col_right = st.columns([1.2, 1.5, 1.3])
         
@@ -1535,14 +1634,55 @@ def page_portfolio():
                 key=lambda x: (not is_english_stock(x[1]['name']), x[1]['name'])
             )
             
+            # 각 종목의 현재 가격과 등락률 계산
+            stock_prices = {}
+            stock_changes = {}
+            
+            if not price_df.empty:
+                for code, info in sorted_portfolio:
+                    code_str = str(code)
+                    stock_data = price_df[price_df['code'].astype(str) == code_str].sort_values('date')
+                    
+                    if len(stock_data) >= 2:
+                        # 최신 가격
+                        latest_close = stock_data.iloc[-1]['close']
+                        stock_prices[code] = latest_close
+                        
+                        # 전날 종가
+                        prev_close = stock_data.iloc[-2]['close']
+                        
+                        # 등락률 계산
+                        change_pct = ((latest_close - prev_close) / prev_close * 100) if prev_close != 0 else 0
+                        stock_changes[code] = change_pct
+                    elif len(stock_data) >= 1:
+                        stock_prices[code] = stock_data.iloc[-1]['close']
+                        stock_changes[code] = 0
+            
             # 종목 선택 버튼들
             for code, info in sorted_portfolio:
-                is_selected = code == st.session_state.selected_portfolio_code
-                btn_color = "🟢" if is_selected else "⚪"
+                # 상승/하락 아이콘 결정
+                if code in stock_changes:
+                    change = stock_changes[code]
+                    change_icon = "📈" if change >= 0 else "📉"
+                else:
+                    change_icon = ""  # 데이터 없으면 공백
+                
+                # 현재 가격과 등락률 표시
+                price_info = ""
+                if code in stock_prices:
+                    price = stock_prices[code]
+                    change = stock_changes.get(code, 0)
+                    
+                    if change >= 0:
+                        color = "🔴"
+                    else:
+                        color = "🔵"
+                    
+                    price_info = f"\n₩{price:,.0f} {color} {change:+.2f}%"
                 
                 col_select, col_del = st.columns([4, 1])
                 with col_select:
-                    if st.button(f"{btn_color} {info['name']}\n({code})", 
+                    if st.button(f"{change_icon} {info['name']} ({code}){price_info}", 
                                 key=f"select_{code}",
                                 use_container_width=True):
                         st.session_state.selected_portfolio_code = code
@@ -1631,6 +1771,10 @@ def page_portfolio():
                         st.warning("주가 데이터가 없습니다.")
                 else:
                     st.warning("주가 데이터를 불러올 수 없습니다.")
+                
+                # 거래 이력 표시
+                st.markdown("---")
+                _render_trading_history_panel(selected_code)
             else:
                 st.info("왼쪽에서 종목을 선택하면 차트가 표시됩니다.")
         
@@ -1679,6 +1823,15 @@ def page_portfolio():
                 # 뉴스 섹션
                 st.markdown("**📰 최근 뉴스**")
                 
+                @st.cache_data(ttl=1800)
+                def load_portfolio_news(stock_code):
+                    try:
+                        from naver_news_crawler import NaverNewsCrawler
+                        crawler = NaverNewsCrawler()
+                        return crawler.get_recent_news(stock_code, max_news=5)
+                    except Exception as e:
+                        return pd.DataFrame()
+                
                 news_df = load_portfolio_news(selected_code)
                 
                 if not news_df.empty:
@@ -1712,6 +1865,506 @@ def page_portfolio():
                     st.info("최근 뉴스가 없습니다.")
             else:
                 st.info("왼쪽에서 종목을 선택하면\n상세 정보가 표시됩니다.")
+
+
+def page_portfolio():
+    """포트폴리오 관리 페이지 - 개선 버전"""
+    st.title("💼 포트폴리오 관리")
+    
+    portfolio_mgr = PortfolioManager()
+    
+    # 세션 상태 초기화
+    if 'confirm_clear_step' not in st.session_state:
+        st.session_state.confirm_clear_step = 0
+    
+    # 포트폴리오 초기화 영역
+    with st.expander("⚙️ 포트폴리오 관리 설정", expanded=False):
+        st.markdown("#### 💥 포트폴리오 전체 초기화")
+        st.warning("모든 종목, 거래 이력, 포트폴리오 데이터가 삭제됩니다.\n**이 작업은 되돌릴 수 없습니다!**")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**상태: 준비 완료**")
+            if st.button("[INIT] 포트폴리오 초기화", use_container_width=True, help="모든 거래 이력 삭제"):
+                # 직접 초기화 실행
+                try:
+                    portfolio_mgr.clear_portfolio()
+                    # 캐시 비우기
+                    st.cache_data.clear()
+                    # 세션 상태 초기화
+                    st.session_state.selected_portfolio_code = None
+                    if 'parsed_trades' in st.session_state:
+                        del st.session_state.parsed_trades
+                    st.success("✅ 포트폴리오가 초기화되었습니다!")
+                    st.info("페이지를 새로고침하면 빈 포트폴리오로 시작됩니다. (F5 또는 브라우저 새로고침)")
+                except Exception as e:
+                    st.error(f"초기화 실패: {str(e)}")
+        
+        with col2:
+            st.markdown("**참고 사항**")
+            st.caption("""
+            • data/portfolio.json 파일이 비워집니다
+            • 모든 거래 기록이 삭제됩니다
+            • 페이지를 새로고침해야 반영됩니다
+            • 되돌릴 수 없습니다
+            """)
+    
+    # 세션 상태 초기화
+    if 'selected_portfolio_code' not in st.session_state:
+        st.session_state.selected_portfolio_code = None
+    if 'parsed_trades' not in st.session_state:
+        st.session_state.parsed_trades = None
+    if 'trades_applied' not in st.session_state:
+        st.session_state.trades_applied = False
+    
+    # 상단 탭: 포트폴리오 현황 / 거래 분석 / 거래 이력 입력
+    main_tab1, main_tab2, main_tab3 = st.tabs(["📊 포트폴리오 현황", "📈 거래 분석", "📝 거래 이력 입력"])
+    
+    with main_tab1:
+        # 거래 이력 반영 후 캐시 자동 새로고침
+        if st.session_state.get('trades_applied', False):
+            st.cache_data.clear()
+            st.session_state.trades_applied = False
+            st.info("✅ 포트폴리오가 업데이트되었습니다!")
+        
+        # 데이터 로드 함수들
+        @st.cache_data(ttl=3600)
+        def load_kospi_stocks():
+            try:
+                from crawling_kospi import CrawlingKospi
+                crawler = CrawlingKospi()
+                return crawler.get_all_kospi_data().set_index('code')['name'].to_dict()
+            except:
+                return {}
+        
+        @st.cache_data(ttl=3600)
+        def load_stock_prices():
+            try:
+                return load_stock_data("data")
+            except:
+                return pd.DataFrame()
+        
+        @st.cache_data(ttl=3600)
+        def load_finance_info():
+            try:
+                from app.data import load_finance_data
+                return load_finance_data("data")
+            except:
+                return pd.DataFrame()
+        
+        # 데이터 로드
+        kospi_dict = load_kospi_stocks()
+        price_df = load_stock_prices()
+        finance_df = load_finance_info()
+        
+        # 빠른 초기화 버튼
+        col_portf1, col_portf2 = st.columns([2, 1])
+        with col_portf2:
+            if st.button("[INIT] 초기화", use_container_width=True, key="btn_init_portfolio", help="포트폴리오 전체 초기화"):
+                st.session_state.show_init_confirm_portfolio = True
+        
+        # 확인 팝업 (포트폴리오 탭)
+        if st.session_state.get('show_init_confirm_portfolio', False):
+            st.warning("⚠️ 경고: 모든 거래 데이터가 영구적으로 삭제됩니다!")
+            col_yes2, col_no2 = st.columns(2)
+            
+            with col_yes2:
+                if st.button("🔴 확인 - 삭제", use_container_width=True, key="portfolio_init_yes"):
+                    portfolio_mgr.full_reset()
+                    st.cache_data.clear()
+                    st.session_state.show_init_confirm_portfolio = False
+                    st.success("✅ 완전 초기화 완료! 모든 데이터가 삭제되었습니다.")
+                    import time
+                    time.sleep(2)
+                    st.rerun()
+            
+            with col_no2:
+                if st.button("❌ 취소", use_container_width=True, key="portfolio_init_no"):
+                    st.session_state.show_init_confirm_portfolio = False
+                    st.rerun()
+        
+        st.divider()
+        
+        # 포트폴리오 현황 렌더링
+        _render_portfolio_current(kospi_dict, price_df, finance_df)
+    
+    with main_tab2:
+        st.subheader("📈 거래 분석 & 통계")
+        st.caption("거래 이력에 기반한 수익률 분석을 확인합니다.")
+        
+        # 거래 이력 반영 후 캐시 자동 새로고침
+        if st.session_state.get('trades_applied', False):
+            st.cache_data.clear()
+            st.session_state.trades_applied = False
+            st.info("✅ 거래 분석이 업데이트되었습니다!")
+        
+        # 빠른 초기화 버튼
+        col_refresh, col_init = st.columns([3, 1])
+        with col_refresh:
+            if st.button("[REFRESH] 데이터 새로고침", use_container_width=True):
+                st.cache_data.clear()
+                st.success("✅ 캐시가 비워졌습니다. 페이지를 새로고침하세요.")
+        
+        with col_init:
+            if st.button("[INIT] 전체 초기화", use_container_width=True, help="포트폴리오 데이터를 초기화합니다"):
+                st.session_state.show_init_confirm = True
+        
+        # 확인 팝업 (초기화 확인)
+        if st.session_state.get('show_init_confirm', False):
+            st.warning("⚠️ 경고: 모든 거래 데이터가 영구적으로 삭제됩니다!")
+            col_yes, col_no = st.columns(2)
+            
+            with col_yes:
+                if st.button("🔴 확인 - 삭제", use_container_width=True, key="init_confirm"):
+                    portfolio_mgr.full_reset()
+                    st.cache_data.clear()
+                    st.session_state.show_init_confirm = False
+                    st.session_state.trades_applied = True
+                    st.success("✅ 완전 초기화 완료! 모든 데이터가 삭제되었습니다.")
+                    import time
+                    time.sleep(2)
+                    st.rerun()
+            
+            with col_no:
+                if st.button("❌ 취소", use_container_width=True, key="init_cancel"):
+                    st.session_state.show_init_confirm = False
+                    st.rerun()
+        
+        st.divider()
+        
+        # 분석 데이터 계산
+        trade_analysis = portfolio_mgr.calculate_trade_analysis()
+        
+        if trade_analysis['total_trades'] == 0:
+            st.info("📊 거래 이력이 없습니다. 거래를 입력하면 분석을 볼 수 있습니다.")
+        else:
+            # 상단: 주요 통계 지표 (4개 컬럼)
+            st.markdown("### 📊 수익률 요약")
+            metric_cols = st.columns(4)
+            
+            with metric_cols[0]:
+                st.metric(
+                    "총 거래 수",
+                    f"{trade_analysis['total_trades']}건",
+                    f"매수 {trade_analysis['buy_count']} / 매도 {trade_analysis['sell_count']}"
+                )
+            
+            with metric_cols[1]:
+                st.metric(
+                    "승률",
+                    f"{trade_analysis['win_rate']:.1f}%",
+                    f"{trade_analysis['winning_trades']}승 {trade_analysis['losing_trades']}패",
+                    delta_color="inverse" if trade_analysis['win_rate'] >= 50 else "off"
+                )
+            
+            with metric_cols[2]:
+                color = "off" if trade_analysis['avg_win_pct'] >= 0 else "inverse"
+                st.metric(
+                    "평균 수익률",
+                    f"{trade_analysis['avg_win_pct']:+.2f}%",
+                    "수익" if trade_analysis['avg_win_pct'] > 0 else "손실",
+                    delta_color=color
+                )
+            
+            with metric_cols[3]:
+                total_pnl = trade_analysis['total_realized_pnl']
+                st.metric(
+                    "총 실현 손익",
+                    f"₩{total_pnl:,.0f}",
+                    "수익" if total_pnl > 0 else "손실",
+                    delta_color="off" if total_pnl >= 0 else "inverse"
+                )
+            
+            st.divider()
+            
+            # 중단: 거래별 상세 통계
+            st.markdown("### 📋 거래별 상세 분석")
+            stat_cols = st.columns(3)
+            
+            with stat_cols[0]:
+                st.info(f"""
+                **총 수익률**
+                
+                {trade_analysis['total_return_pct']:+.2f}%
+                
+                ---
+                **최고 수익**: {trade_analysis['best_trade_pct']:+.2f}%
+                
+                **최악 손실**: {trade_analysis['worst_trade_pct']:+.2f}%
+                """)
+            
+            with stat_cols[1]:
+                st.success(f"""
+                **수익 거래**
+                
+                건수: {trade_analysis['winning_trades']}건
+                
+                평균: {trade_analysis['avg_win_pct']:+.2f}%
+                
+                ---
+                **손실 거래**
+                
+                건수: {trade_analysis['losing_trades']}건
+                """) if trade_analysis['winning_trades'] > 0 else st.warning("수익 거래 없음")
+            
+            with stat_cols[2]:
+                if trade_analysis['losing_trades'] > 0:
+                    st.warning(f"""
+                    **손실 거래 분석**
+                    
+                    건수: {trade_analysis['losing_trades']}건
+                    
+                    평균: {trade_analysis['avg_loss_pct']:+.2f}%
+                    
+                    ---
+                    **손익분기점**
+                    
+                    {trade_analysis['break_even_trades']}건
+                    """)
+                else:
+                    st.success("손실 거래 없음! 🎉")
+            
+            st.divider()
+            
+            # 거래 이력 테이블
+            st.markdown("### 📰 매도 거래 상세")
+            
+            sell_trades = trade_analysis['all_sell_trades']
+            if sell_trades:
+                trade_df = pd.DataFrame(sell_trades)
+                
+                # 거래일시별로 오름차순 정렬
+                trade_df = trade_df.sort_values('date')
+                
+                # 컬럼 포맷팅
+                display_df = trade_df.copy()
+                display_df['date'] = pd.to_datetime(display_df['date']).dt.strftime('%Y-%m-%d %H:%M')
+                display_df['code'] = display_df['code']
+                display_df['name'] = display_df['name']
+                display_df['quantity'] = display_df['quantity'].astype(int)
+                display_df['avg_buy_price'] = display_df['avg_buy_price'].apply(lambda x: f"₩{x:,.0f}")
+                display_df['price'] = display_df['price'].apply(lambda x: f"₩{x:,.0f}")
+                display_df['pnl'] = display_df['pnl'].apply(lambda x: f"₩{x:,.0f}")
+                
+                # 수익률 색상 표시
+                def format_return(val):
+                    if val > 0:
+                        return f"🟢 {val:+.2f}%"
+                    elif val < 0:
+                        return f"🔴 {val:+.2f}%"
+                    else:
+                        return f"⚪ {val:.2f}%"
+                
+                display_df['return_pct'] = display_df['return_pct'].apply(format_return)
+                
+                # 테이블 출력 (선택 컬럼만)
+                display_df = display_df[['date', 'code', 'name', 'quantity', 'avg_buy_price', 'price', 'pnl', 'return_pct']]
+                display_df.columns = ['거래일시', '종목코드', '종목명', '수량', '평균매입가', '매도가', '수익금액', '수익률']
+                
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("매도 거래가 없습니다.")
+    
+    with main_tab3:
+        st.subheader("📝 거래 이력 입력 (키움증권 체결알림 복붙)")
+        st.caption("키움증권 거래 알림 메시지를 복사해서 붙여넣으면 자동으로 파싱하여 포트폴리오에 반영합니다.")
+        
+        # 빠른 초기화 버튼
+        col_clear1, col_clear2, col_clear3 = st.columns([2, 2, 2])
+        with col_clear1:
+            st.info("💡 **팁**: 데이터 오류가 있으면 [INIT]으로 초기화할 수 있습니다")
+        with col_clear3:
+            if st.button("[INIT] 초기화", use_container_width=True, help="포트폴리오 전체 초기화", key="init_trading_input"):
+                st.session_state.show_init_confirm_trading = True
+        
+        # 확인 팝업 (거래 이력 입력 탭)
+        if st.session_state.get('show_init_confirm_trading', False):
+            st.warning("⚠️ 경고: 모든 거래 데이터가 영구적으로 삭제됩니다!")
+            col_yes3, col_no3 = st.columns(2)
+            
+            with col_yes3:
+                if st.button("🔴 확인 - 삭제", use_container_width=True, key="trading_init_yes"):
+                    portfolio_mgr.full_reset()
+                    st.cache_data.clear()
+                    st.session_state.show_init_confirm_trading = False
+                    st.success("✅ 완전 초기화 완료! 모든 데이터가 삭제되었습니다.")
+                    import time
+                    time.sleep(2)
+                    st.rerun()
+            
+            with col_no3:
+                if st.button("❌ 취소", use_container_width=True, key="trading_init_no"):
+                    st.session_state.show_init_confirm_trading = False
+                    st.rerun()
+        
+        st.divider()
+        
+        # 날짜 선택 (거래 이력의 거래 날짜)
+        trade_date = st.date_input(
+            "거래 날짜 지정 (모든 거래에 적용됩니다)",
+            value=None,
+            help="시간은 체결알림에서 자동으로 추출되고, 날짜는 여기서 지정합니다."
+        )
+        
+        # 거래 이력 입력 예시 표시
+        with st.expander("📋 입력 형식 예시", expanded=False):
+            st.code("""[키움증권 체결알림] [오전 8:00] [키움]체결통보
+한미사이언스
+매수40주
+평균단가51,700원
+
+[키움증권 체결알림] [오전 9:11] [키움]체결통보
+한미사이언스
+매수15주
+평균단가49,150원
+
+[키움증권 체결알림] [오전 9:17] [키움]체결통보
+대웅제약
+매도10주
+평균단가185,100원""", language="text")
+        
+        # 거래 이력 텍스트 입력
+        trading_text = st.text_area(
+            "거래 이력 입력",
+            value=st.session_state.get('trading_input_text', ''),
+            placeholder="키움증권 체결알림을 복사해서 붙여넣으세요...",
+            height=200,
+            label_visibility="collapsed",
+            key="trading_input_area"
+        )
+        
+        # 현재 입력 텍스트를 세션 상태에 저장
+        st.session_state.trading_input_text = trading_text
+        
+        if st.button("[OK] 거래 이력 반영", type="primary", use_container_width=True):
+            print("[UI] 거래 이력 파싱 버튼 클릭됨")
+            if trading_text.strip():
+                # 거래 날짜 설정
+                if trade_date:
+                    trade_date_str = trade_date.strftime("%Y-%m-%d")
+                else:
+                    trade_date_str = None
+                
+                # 거래 이력 파싱 (날짜 포함)
+                trades = portfolio_mgr.parse_trading_history_text(trading_text, default_date=trade_date_str)
+                print(f"[UI] 파싱 결과: {trades}")
+                
+                # session_state에 저장 (다음 버튼에서 사용)
+                st.session_state.parsed_trades = trades
+                st.session_state.show_confirmation = True
+                
+                if trades:
+                    # 결과 표시
+                    st.divider()
+                    st.subheader("[OK] 파싱 결과")
+                    
+                    # 파싱된 거래 목록 표시
+                    trade_summary = []
+                    for trade in trades:
+                        trade_summary.append({
+                            '종목': trade['name'],
+                            '구분': '매수' if trade['action'] == 'BUY' else '매도',
+                            '수량': f"{trade['quantity']}주",
+                            '가격': f"₩{trade['price']:,}원" if trade['price'] else "없음"
+                        })
+                    
+                    st.dataframe(pd.DataFrame(trade_summary), use_container_width=True, hide_index=True)
+                else:
+                    st.error("❌ 거래 정보를 파싱할 수 없습니다. 형식을 확인하고 다시 시도해주세요.")
+            else:
+                st.warning("⚠️ 거래 이력 텍스트를 입력해주세요.")
+        
+        # 확인 창 표시
+        if st.session_state.get('show_confirmation', False) and st.session_state.get('parsed_trades', None):
+            trades = st.session_state.parsed_trades
+            
+            # 포트폴리오에 반영할 종목 선택
+            st.markdown("---")
+            st.subheader("🔧 포트폴리오 반영 설정")
+            
+            # 현재 포트폴리오 종목 매핑
+            current_portfolio = portfolio_mgr.load_portfolio()
+            name_to_code = {info['name']: code for code, info in current_portfolio.items()}
+            
+            # 거래에 포함된 종목
+            unique_names = set(trade['name'] for trade in trades)
+            
+            # 현재 포트폴리오 상태 표시
+            st.info("📊 거래 전 포트폴리오 상태:")
+            before_df = []
+            for name in sorted(unique_names):
+                in_portfolio = "✅ 있음" if name in name_to_code else "❌ 없음"
+                before_df.append({
+                    '종목': name,
+                    '상태': in_portfolio
+                })
+            if before_df:
+                st.dataframe(pd.DataFrame(before_df), use_container_width=True, hide_index=True)
+            
+            # 재확인 버튼
+            if st.button("✅ 포트폴리오에 반영하기", type="primary", use_container_width=True):
+                        print("[UI] 반영 버튼 클릭됨")
+                        results = portfolio_mgr.apply_trading_history(trades)
+                        print(f"[UI] 적용 결과: {results}")
+                        
+                        # 결과 표시
+                        st.divider()
+                        st.subheader("✅ 반영 결과")
+                        
+                        for name, message in results.items():
+                            if "✅" in message:
+                                st.success(message)
+                            elif "⚠️" in message:
+                                st.info(message)
+                            else:
+                                st.error(message)
+                        
+                        # 강제로 캐시 초기화
+                        st.cache_data.clear()
+                        
+                        # 세션 상태 업데이트 (다른 탭이 감지하도록)
+                        st.session_state.trades_applied = True
+                        
+                        # 약간의 지연 후 업데이트된 포트폴리오 표시
+                        import time
+                        time.sleep(0.5)
+                        
+                        # 업데이트된 포트폴리오 표시
+                        st.divider()
+                        st.subheader("📊 거래 후 포트폴리오 상태:")
+                        
+                        # 파일에서 직접 새로 로드 (캐시 우회)
+                        import json
+                        import os
+                        with open('data/portfolio.json', 'r', encoding='utf-8') as f:
+                            updated_portfolio = json.load(f)
+                        
+                        updated_name_to_code = {info['name']: code for code, info in updated_portfolio.items()}
+                        
+                        print(f"[UI] 업데이트된 포트폴리오: {list(updated_name_to_code.keys())}")
+                        
+                        after_df = []
+                        for name in sorted(unique_names):
+                            in_portfolio = "✅ 있음" if name in updated_name_to_code else "❌ 없음"
+                            after_df.append({
+                                '종목': name,
+                                '상태': in_portfolio
+                            })
+                        if after_df:
+                            st.dataframe(pd.DataFrame(after_df), use_container_width=True, hide_index=True)
+                        
+                        # 거래 입력 로그 저장
+                        portfolio_mgr.save_trading_input_log(trading_text, trades, results)
+                        
+                        # 입력 필드 초기화
+                        st.session_state.trading_input_text = ""
+                        st.session_state.show_confirmation = False
+                        st.session_state.parsed_trades = None
+                        
+                        st.balloons()
+                        st.success("✅ 포트폴리오가 업데이트되었습니다!")
+                        st.info("💾 거래 입력 이력이 저장되었습니다. (data/trading_input_log.json)")
 
 
 def page_alerts():

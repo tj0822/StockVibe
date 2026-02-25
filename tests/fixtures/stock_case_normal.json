@@ -1,0 +1,29 @@
+{
+  "description": "Normal case: Realistic financial inputs with all metrics present",
+  "stock_name": "Samsung Electronics",
+  "code": "005930",
+  "financial_dict": {
+    "roe": 15.5,
+    "debt_ratio": 45.0,
+    "operating_margin": 12.3,
+    "free_cash_flow": 1000000000
+  },
+  "current_per": 12.5,
+  "industry_per": 15.0,
+  "current_pbr": 1.2,
+  "industry_pbr": 1.5,
+  "financial_history": {
+    "revenue_history": [1000000000, 1350000000, 1822500000, 2460375000],
+    "net_income_history": [100000000, 135000000, 182250000, 246037500]
+  },
+  "expected_outcome": {
+    "final_score_range": [70, 85],
+    "confidence_min": 80,
+    "breakdown_requirement": {
+      "quality": [60, 80],
+      "valuation": [65, 80],
+      "growth": [70, 85],
+      "momentum": "should_be_computed"
+    }
+  }
+}

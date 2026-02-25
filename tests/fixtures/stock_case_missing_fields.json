@@ -1,0 +1,27 @@
+{
+  "description": "Missing fields case: Some financial metrics unavailable",
+  "stock_name": "Incomplete Data Company",
+  "code": "ZZZZ22",
+  "financial_dict": {
+    "roe": 12.0,
+    "debt_ratio": null,
+    "operating_margin": 10.0,
+    "free_cash_flow": 800000000
+  },
+  "current_per": 14.0,
+  "industry_per": 16.0,
+  "current_pbr": null,
+  "industry_pbr": 1.5,
+  "financial_history": null,
+  "expected_outcome": {
+    "final_score_range": [40, 70],
+    "confidence_min": 40,
+    "breakdown_requirement": {
+      "quality": [50, 70],
+      "valuation": "should_handle_missing_pbr",
+      "growth": "will_be_skipped_missing_history",
+      "momentum": "requires_price_df"
+    },
+    "interpretation": "Should handle missing fields gracefully with lower confidence"
+  }
+}

@@ -1,163 +1,521 @@
 {
-  "323410": {
-    "name": "카카오뱅크",
-    "quantity": 76,
-    "avg_price": 26200,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:12:45"
+  "003550": {
+    "name": "LG",
+    "quantity": 1,
+    "avg_price": 82455.10204081633,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 24,
+        "price": 84700.0,
+        "date": "2025-12-17 09:01:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 25,
+        "price": 80300.0,
+        "date": "2025-12-29 09:40:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 24,
+        "price": 89900.0,
+        "date": "2026-01-20 13:51:00",
+        "return_pct": 9.03,
+        "avg_buy_price": 82455.0
+      },
+      {
+        "type": "SELL",
+        "quantity": 24,
+        "price": 89900.0,
+        "date": "2026-01-20 13:51:00",
+        "return_pct": 9.03,
+        "avg_buy_price": 82455.0
+      }
+    ],
+    "purchase_date": "2025-12-17 09:01:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "090430": {
     "name": "아모레퍼시픽",
-    "quantity": 16,
-    "avg_price": 129044,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:13:14"
-  },
-  "138040": {
-    "name": "메리츠금융지주",
-    "quantity": 17,
-    "avg_price": 118600,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:13:36"
-  },
-  "280360": {
-    "name": "롯데웰푸드",
-    "quantity": 17,
-    "avg_price": 119100,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:14:00"
-  },
-  "023530": {
-    "name": "롯데쇼핑",
-    "quantity": 23,
-    "avg_price": 86604,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:14:19"
+    "quantity": 32,
+    "avg_price": 128572.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 16,
+        "price": 128100.0,
+        "date": "2026-01-05 08:01:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 16,
+        "price": 129044.0,
+        "date": "2026-01-23 09:08:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-01-05 08:01:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "034020": {
     "name": "두산에너빌리티",
-    "quantity": 24,
-    "avg_price": 86200,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:14:38"
-  },
-  "003490": {
-    "name": "대한항공",
-    "quantity": 86,
-    "avg_price": 23394,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:14:55"
-  },
-  "001440": {
-    "name": "대한전선",
-    "quantity": 74,
-    "avg_price": 27050,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:15:12"
+    "quantity": 63,
+    "avg_price": 88106.3492063492,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 24,
+        "price": 86200.0,
+        "date": "2026-01-06 08:13:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 10,
+        "price": 90800.0,
+        "date": "2026-01-23 09:01:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 7,
+        "price": 90500.0,
+        "date": "2026-01-23 09:02:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 11,
+        "price": 88200.0,
+        "date": "2026-02-06 08:21:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 11,
+        "price": 88200.0,
+        "date": "2026-02-06 08:22:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-01-06 08:13:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "047040": {
     "name": "대우건설",
     "quantity": 435,
-    "avg_price": 4590,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:15:32"
+    "avg_price": 4590.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 435,
+        "price": 4590.0,
+        "date": "2026-01-19 08:07:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-01-19 08:07:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
-  "006280": {
-    "name": "녹십자",
-    "quantity": 12,
-    "avg_price": 164204,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:15:51"
+  "003490": {
+    "name": "대한항공",
+    "quantity": 86,
+    "avg_price": 23394.314868804664,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 82,
+        "price": 24550.0,
+        "date": "2026-01-19 08:07:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 86,
+        "price": 23400.0,
+        "date": "2026-01-29 09:39:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 175,
+        "price": 22850.0,
+        "date": "2026-02-02 10:45:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 171,
+        "price": 24150.0,
+        "date": "2026-02-05 09:31:00",
+        "return_pct": 3.23,
+        "avg_buy_price": 23394.0
+      },
+      {
+        "type": "SELL",
+        "quantity": 86,
+        "price": 24100.0,
+        "date": "2026-02-05 09:31:00",
+        "return_pct": 3.02,
+        "avg_buy_price": 23394.0
+      }
+    ],
+    "purchase_date": "2026-01-19 08:07:00",
+    "last_updated": "2026-02-25 23:30:40"
+  },
+  "001440": {
+    "name": "대한전선",
+    "quantity": 74,
+    "avg_price": 27050.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 74,
+        "price": 27050.0,
+        "date": "2026-01-21 08:01:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-01-21 08:01:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "017670": {
     "name": "SK텔레콤",
     "quantity": 29,
-    "avg_price": 69600,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:16:30"
+    "avg_price": 69600.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 29,
+        "price": 69600.0,
+        "date": "2026-01-28 08:14:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-01-28 08:14:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
-  "003550": {
-    "name": "LG",
-    "quantity": 25,
-    "avg_price": 82455,
-    "purchase_date": "2026-02-06",
-    "last_updated": "2026-02-06 23:16:47"
+  "006280": {
+    "name": "녹십자",
+    "quantity": 12,
+    "avg_price": 164204.34782608695,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 12,
+        "price": 173000.0,
+        "date": "2026-01-28 08:15:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 12,
+        "price": 164400.0,
+        "date": "2026-01-30 10:47:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 22,
+        "price": 159300.0,
+        "date": "2026-02-02 11:58:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 23,
+        "price": 168000.0,
+        "date": "2026-02-05 09:30:00",
+        "return_pct": 2.31,
+        "avg_buy_price": 164204.0
+      },
+      {
+        "type": "SELL",
+        "quantity": 11,
+        "price": 167827.0,
+        "date": "2026-02-05 09:31:00",
+        "return_pct": 2.21,
+        "avg_buy_price": 164204.0
+      }
+    ],
+    "purchase_date": "2026-01-28 08:15:00",
+    "last_updated": "2026-02-25 23:30:40"
+  },
+  "023530": {
+    "name": "롯데쇼핑",
+    "quantity": 23,
+    "avg_price": 86604.34782608696,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 24,
+        "price": 84500.0,
+        "date": "2026-02-02 10:43:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 22,
+        "price": 88900.0,
+        "date": "2026-02-04 08:47:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 23,
+        "price": 96900.0,
+        "date": "2026-02-05 09:34:00",
+        "return_pct": 11.89,
+        "avg_buy_price": 86604.0
+      }
+    ],
+    "purchase_date": "2026-02-02 10:43:00",
+    "last_updated": "2026-02-25 23:30:40"
+  },
+  "280360": {
+    "name": "롯데웰푸드",
+    "quantity": 17,
+    "avg_price": 119100.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 17,
+        "price": 119100.0,
+        "date": "2026-02-03 08:04:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-03 08:04:00",
+    "last_updated": "2026-02-25 23:30:40"
+  },
+  "323410": {
+    "name": "카카오뱅크",
+    "quantity": 76,
+    "avg_price": 26200.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 76,
+        "price": 26200.0,
+        "date": "2026-02-06 08:14:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-06 08:14:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "105560": {
     "name": "KB금융",
     "quantity": 13,
-    "avg_price": 150100,
-    "purchase_date": "2026-02-09",
-    "last_updated": "2026-02-09 21:41:06"
+    "avg_price": 150100.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 13,
+        "price": 150100.0,
+        "date": "2026-02-09 08:00:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-09 08:00:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "251270": {
     "name": "넷마블",
     "quantity": 36,
-    "avg_price": 56000,
-    "purchase_date": "2026-02-09",
-    "last_updated": "2026-02-09 21:46:01"
+    "avg_price": 56000.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 36,
+        "price": 56000.0,
+        "date": "2026-02-09 08:01:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-09 08:01:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "073240": {
     "name": "금호타이어",
     "quantity": 286,
-    "avg_price": 7000,
-    "purchase_date": "2026-02-11",
-    "last_updated": "2026-02-11 22:12:16"
-  },
-  "002790": {
-    "name": "아모레퍼시픽홀딩스",
-    "quantity": 58,
-    "avg_price": 34950,
-    "purchase_date": "2026-02-11",
-    "last_updated": "2026-02-11 22:14:16"
+    "avg_price": 7000.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 286,
+        "price": 7000.0,
+        "date": "2026-02-10 08:00:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-10 08:00:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "066570": {
     "name": "LG전자",
-    "quantity": 1,
-    "avg_price": 0,
-    "purchase_date": "2026-02-12",
-    "last_updated": "2026-02-12 21:22:31"
+    "quantity": 34,
+    "avg_price": 121355.22388059701,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 16,
+        "price": 127800.0,
+        "date": "2026-02-12 08:21:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 17,
+        "price": 121200.0,
+        "date": "2026-02-12 09:24:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 34,
+        "price": 118400.0,
+        "date": "2026-02-13 08:30:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 33,
+        "price": 122000.0,
+        "date": "2026-02-19 11:28:00",
+        "return_pct": 0.53,
+        "avg_buy_price": 121355.0
+      }
+    ],
+    "purchase_date": "2026-02-12 08:21:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "282330": {
     "name": "BGF리테일",
-    "quantity": 1,
-    "avg_price": 0,
-    "purchase_date": "2026-02-12",
-    "last_updated": "2026-02-12 21:22:35"
+    "quantity": 15,
+    "avg_price": 138400.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 15,
+        "price": 138400.0,
+        "date": "2026-02-12 08:21:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-12 08:21:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "003240": {
     "name": "태광산업",
-    "quantity": 1,
-    "avg_price": 0,
-    "purchase_date": "2026-02-13",
-    "last_updated": "2026-02-13 22:57:20"
+    "quantity": 4,
+    "avg_price": 1124000.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 2,
+        "price": 1155000.0,
+        "date": "2026-02-13 08:23:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 2,
+        "price": 1093000.0,
+        "date": "2026-02-13 09:37:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-13 08:23:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "007340": {
     "name": "DN오토모티브",
-    "quantity": 1,
-    "avg_price": 0,
-    "purchase_date": "2026-02-13",
-    "last_updated": "2026-02-13 22:57:23"
+    "quantity": 130,
+    "avg_price": 30772.30769230769,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 63,
+        "price": 31700.0,
+        "date": "2026-02-13 08:24:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 67,
+        "price": 29900.0,
+        "date": "2026-02-24 09:22:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-13 08:24:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "009240": {
     "name": "한샘",
-    "quantity": 1,
-    "avg_price": 0,
-    "purchase_date": "2026-02-19",
-    "last_updated": "2026-02-19 14:19:05"
+    "quantity": 41,
+    "avg_price": 48650.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 35,
+        "price": 48650.0,
+        "date": "2026-02-19 08:23:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 6,
+        "price": 48650.0,
+        "date": "2026-02-19 08:48:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-19 08:23:00",
+    "last_updated": "2026-02-25 23:30:40"
+  },
+  "112610": {
+    "name": "씨에스윈드",
+    "quantity": 82,
+    "avg_price": 49088.04878048781,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 40,
+        "price": 50388.0,
+        "date": "2026-02-20 08:00:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 42,
+        "price": 47850.0,
+        "date": "2026-02-20 09:01:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-20 08:00:00",
+    "last_updated": "2026-02-25 23:30:40"
   },
   "034220": {
     "name": "LG디스플레이",
-    "quantity": 1,
-    "avg_price": 0,
-    "purchase_date": "2026-02-23",
-    "last_updated": "2026-02-23 11:56:05"
-  },
-  "069620": {
-    "name": "대웅제약",
-    "quantity": 1,
-    "avg_price": 0,
-    "purchase_date": "2026-02-24",
-    "last_updated": "2026-02-24 17:42:08"
+    "quantity": 150,
+    "avg_price": 13400.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 150,
+        "price": 13400.0,
+        "date": "2026-02-23 09:00:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-23 09:00:00",
+    "last_updated": "2026-02-25 23:30:40"
   }
 }
