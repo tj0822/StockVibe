@@ -1631,9 +1631,15 @@ class PortfolioManager:
                     results[name] = f"[WARN] {name} - 경고: 가격이 없음 ({action} {quantity}주)"
                 continue
             
+            # 중복 거래 체크
+            code = unique_stocks[name]
+            is_duplicate = self._is_duplicate_trade(code, action, quantity, price, trade_date)
+            if is_duplicate:
+                results[name] = f"[INFO] {name} - 중복 거래입니다. 건너뜀 ({action} {quantity}주 @ {price:,.0f}원, {trade_date})"
+                print(f"[DEBUG] 중복 거래 감지 및 스킵: {name} {action} {quantity}주 {trade_date}")
+                continue
+            
             try:
-                code = unique_stocks[name]
-                
                 # add_trade 메서드를 사용하여 거래 기록
                 result = self.add_trade(
                     code=code,
@@ -1658,6 +1664,48 @@ class PortfolioManager:
                 traceback.print_exc()
         
         return results
+    
+    def _is_duplicate_trade(self, code: str, trade_type: str, quantity: float, price: float, trade_date: str) -> bool:
+        """
+        이미 포트폴리오에 기록된 동일한 거래가 있는지 확인
+        
+        Args:
+            code: 종목 코드
+            trade_type: BUY 또는 SELL
+            quantity: 수량
+            price: 가격
+            trade_date: 거래 날짜 (YYYY-MM-DD HH:MM:SS 형식)
+        
+        Returns:
+            중복 거래이면 True, 아니면 False
+        """
+        portfolio = self.load_portfolio()
+        
+        if code not in portfolio:
+            return False
+        
+        existing_trades = portfolio[code].get('trades', [])
+        
+        for existing_trade in existing_trades:
+            # 다음 모든 조건이 일치하면 중복
+            if (existing_trade.get('type') == trade_type and
+                existing_trade.get('quantity') == quantity and
+                existing_trade.get('price') == price and
+                existing_trade.get('date') == trade_date):
+                return True
+        
+        # 삭제된 종목 이력에서도 확인
+        trading_history = self.load_trading_history()
+        if code in trading_history:
+            existing_trades = trading_history[code].get('trades', [])
+            for existing_trade in existing_trades:
+                if (existing_trade.get('type') == trade_type and
+                    existing_trade.get('quantity') == quantity and
+                    existing_trade.get('price') == price and
+                    existing_trade.get('date') == trade_date):
+                    return True
+        
+        return False
     
     def get_all_trades(self) -> List[Dict]:
         """
@@ -1886,3 +1934,90 @@ class PortfolioManager:
                 })
         
         return pd.DataFrame(summaries)
+    
+    def simulate_daily_trading_constraints(self, 
+                                          trades_list: List[Dict],
+                                          max_buy_stocks_per_day: int = 5,
+                                          transaction_unit: int = 2000000) -> Dict:
+        """
+        일일 거래 제약 조건을 적용한 시뮬레이션
+        
+        Args:
+            trades_list: 거래 목록 [{code, name, type, price, quantity, date}, ...]
+            max_buy_stocks_per_day: 하루 최대 매수 종목 수 (기본값: 5)
+            transaction_unit: 거래금액 단위 (기본값: 2,000,000원)
+        
+        Returns:
+            {
+                'executed_trades': [실행된 거래들],
+                'skipped_trades': [제약조건으로 인해 스킵된 거래들],
+                'simulation_stats': {
+                    'total_trades': 입력된 거래 수,
+                    'executed_count': 실행된 거래 수,
+                    'skipped_count': 스킵된 거래 수,
+                    'max_daily_stock_limit_exceeded': 일일 한도 초과 횟수,
+                    'transaction_unit_constraint_violated': 거래금액 제약 위반 횟수
+                }
+            }
+        """
+        from collections import defaultdict
+        
+        executed_trades = []
+        skipped_trades = []
+        
+        # 날짜별로 거래를 그룹화
+        trades_by_date = defaultdict(list)
+        for trade in trades_list:
+            date = trade.get('date', '')[:10]  # YYYY-MM-DD 형식
+            trades_by_date[date].append(trade)
+        
+        # 날짜별로 제약조건 적용
+        max_daily_stock_limit_exceeded = 0
+        transaction_unit_constraint_violated = 0
+        
+        for date in sorted(trades_by_date.keys()):
+            daily_trades = trades_by_date[date]
+            buy_trades_today = []
+            
+            for trade in daily_trades:
+                trade_type = trade.get('type', '').upper()
+                trade_amount = trade.get('quantity', 0) * trade.get('price', 0)
+                
+                # BUY 거래에만 제약 조건 적용
+                if trade_type == 'BUY':
+                    # 1. 거래금액 단위 체크
+                    if trade_amount % transaction_unit != 0:
+                        transaction_unit_constraint_violated += 1
+                        skipped_trades.append({
+                            **trade,
+                            'skip_reason': f'거래금액이 {transaction_unit:,}원의 배수가 아닙니다. (실제: {trade_amount:,.0f}원)'
+                        })
+                        continue
+                    
+                    # 2. 하루 최대 매수 종목 제한 체크
+                    if len(buy_trades_today) >= max_buy_stocks_per_day:
+                        max_daily_stock_limit_exceeded += 1
+                        skipped_trades.append({
+                            **trade,
+                            'skip_reason': f'하루 최대 매수 종목을 초과했습니다. ({len(buy_trades_today)}/{max_buy_stocks_per_day})'
+                        })
+                        continue
+                    
+                    buy_trades_today.append(trade)
+                    executed_trades.append({**trade, 'status': 'executed'})
+                
+                # SELL 거래는 제약조건 없음
+                elif trade_type == 'SELL':
+                    executed_trades.append({**trade, 'status': 'executed'})
+        
+        return {
+            'executed_trades': executed_trades,
+            'skipped_trades': skipped_trades,
+            'simulation_stats': {
+                'total_trades': len(trades_list),
+                'executed_count': len(executed_trades),
+                'skipped_count': len(skipped_trades),
+                'max_daily_stock_limit_exceeded': max_daily_stock_limit_exceeded,
+                'transaction_unit_constraint_violated': transaction_unit_constraint_violated
+            }
+        }

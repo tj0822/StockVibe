@@ -697,9 +697,24 @@
         "date": "2026-02-02 12:43:00",
         "return_pct": -5.56,
         "avg_buy_price": 23400.0
+      },
+      {
+        "type": "BUY",
+        "quantity": 76,
+        "price": 26200.0,
+        "date": "2026-02-06 08:14:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 76,
+        "price": 28100.0,
+        "date": "2026-02-26 09:39:00",
+        "return_pct": 7.25,
+        "avg_buy_price": 26200.0
       }
     ],
-    "deleted_date": "2026-02-25 23:30:40"
+    "deleted_date": "2026-02-26 22:15:11"
   },
   "042700": {
     "name": "한미반도체",
@@ -1098,5 +1113,353 @@
       }
     ],
     "deleted_date": "2026-02-25 23:32:00"
+  },
+  "280360": {
+    "name": "롯데웰푸드",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 17,
+        "price": 119100.0,
+        "date": "2026-02-03 08:04:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 17,
+        "price": 129000.0,
+        "date": "2026-02-26 09:39:00",
+        "return_pct": 8.31,
+        "avg_buy_price": 119100.0
+      }
+    ],
+    "deleted_date": "2026-02-26 22:12:21"
+  },
+  "105560": {
+    "name": "KB금융",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 13,
+        "price": 150100.0,
+        "date": "2026-02-09 08:00:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 13,
+        "price": 164600.0,
+        "date": "2026-02-26 09:39:00",
+        "return_pct": 9.66,
+        "avg_buy_price": 150100.0
+      }
+    ],
+    "deleted_date": "2026-02-26 22:12:21"
+  },
+  "017670": {
+    "name": "SK텔레콤",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 29,
+        "price": 69600.0,
+        "date": "2026-01-28 08:14:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 29,
+        "price": 80900.0,
+        "date": "2026-02-26 09:40:00",
+        "return_pct": 16.24,
+        "avg_buy_price": 69600.0
+      }
+    ],
+    "deleted_date": "2026-02-26 22:12:21"
+  },
+  "073240": {
+    "name": "금호타이어",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 286,
+        "price": 7000.0,
+        "date": "2026-02-10 08:00:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 286,
+        "price": 7053.0,
+        "date": "2026-02-26 09:40:00",
+        "return_pct": 0.76,
+        "avg_buy_price": 7000.0
+      }
+    ],
+    "deleted_date": "2026-02-26 22:12:21"
+  },
+  "023530": {
+    "name": "롯데쇼핑",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 24,
+        "price": 84500.0,
+        "date": "2026-02-02 10:43:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 22,
+        "price": 88900.0,
+        "date": "2026-02-04 08:47:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 23,
+        "price": 96900.0,
+        "date": "2026-02-05 09:34:00",
+        "return_pct": 11.89,
+        "avg_buy_price": 86604.0
+      },
+      {
+        "type": "SELL",
+        "quantity": 23,
+        "price": 108643.0,
+        "date": "2026-02-26 09:40:00",
+        "return_pct": 25.45,
+        "avg_buy_price": 86604.0
+      }
+    ],
+    "deleted_date": "2026-02-26 22:12:21"
+  },
+  "003490": {
+    "name": "대한항공",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 82,
+        "price": 24550.0,
+        "date": "2026-01-19 08:07:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 86,
+        "price": 23400.0,
+        "date": "2026-01-29 09:39:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 175,
+        "price": 22850.0,
+        "date": "2026-02-02 10:45:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 171,
+        "price": 24150.0,
+        "date": "2026-02-05 09:31:00",
+        "return_pct": 3.23,
+        "avg_buy_price": 23394.0
+      },
+      {
+        "type": "SELL",
+        "quantity": 86,
+        "price": 24100.0,
+        "date": "2026-02-05 09:31:00",
+        "return_pct": 3.02,
+        "avg_buy_price": 23394.0
+      },
+      {
+        "type": "SELL",
+        "quantity": 86,
+        "price": 28200.0,
+        "date": "2026-02-26 09:41:00",
+        "return_pct": 20.54,
+        "avg_buy_price": 23394.0
+      }
+    ],
+    "deleted_date": "2026-02-26 22:12:21"
+  },
+  "009240": {
+    "name": "한샘",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 35,
+        "price": 48650.0,
+        "date": "2026-02-19 08:23:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 6,
+        "price": 48650.0,
+        "date": "2026-02-19 08:48:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 41,
+        "price": 50800.0,
+        "date": "2026-02-26 09:41:00",
+        "return_pct": 4.42,
+        "avg_buy_price": 48650.0
+      }
+    ],
+    "deleted_date": "2026-02-26 22:12:21"
+  },
+  "007340": {
+    "name": "DN오토모티브",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 63,
+        "price": 31700.0,
+        "date": "2026-02-13 08:24:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 67,
+        "price": 29900.0,
+        "date": "2026-02-24 09:22:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 130,
+        "price": 29250.0,
+        "date": "2026-02-26 09:09:00",
+        "return_pct": -4.95,
+        "avg_buy_price": 30772.0
+      }
+    ],
+    "deleted_date": "2026-02-26 22:15:11"
+  },
+  "003240": {
+    "name": "태광산업",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 2,
+        "price": 1155000.0,
+        "date": "2026-02-13 08:23:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 2,
+        "price": 1093000.0,
+        "date": "2026-02-13 09:37:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 4,
+        "price": 1451000.0,
+        "date": "2026-02-26 09:35:00",
+        "return_pct": 29.09,
+        "avg_buy_price": 1124000.0
+      }
+    ],
+    "deleted_date": "2026-02-26 22:15:11"
+  },
+  "090430": {
+    "name": "아모레퍼시픽",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 16,
+        "price": 128100.0,
+        "date": "2026-01-05 08:01:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 16,
+        "price": 129044.0,
+        "date": "2026-01-23 09:08:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 16,
+        "price": 155300.0,
+        "date": "2026-02-26 09:41:00",
+        "return_pct": 20.79,
+        "avg_buy_price": 128572.0
+      },
+      {
+        "type": "SELL",
+        "quantity": 16,
+        "price": 155300.0,
+        "date": "2026-02-26 09:41:00",
+        "return_pct": 20.79,
+        "avg_buy_price": 128572.0
+      }
+    ],
+    "deleted_date": "2026-02-26 22:15:11"
+  },
+  "034020": {
+    "name": "두산에너빌리티",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 24,
+        "price": 86200.0,
+        "date": "2026-01-06 08:13:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 10,
+        "price": 90800.0,
+        "date": "2026-01-23 09:01:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 7,
+        "price": 90500.0,
+        "date": "2026-01-23 09:02:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 11,
+        "price": 88200.0,
+        "date": "2026-02-06 08:21:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 11,
+        "price": 88200.0,
+        "date": "2026-02-06 08:22:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 24,
+        "price": 103500.0,
+        "date": "2026-02-26 09:41:00",
+        "return_pct": 17.47,
+        "avg_buy_price": 88106.0
+      },
+      {
+        "type": "SELL",
+        "quantity": 24,
+        "price": 103500.0,
+        "date": "2026-02-26 09:41:00",
+        "return_pct": 17.47,
+        "avg_buy_price": 88106.0
+      }
+    ],
+    "deleted_date": "2026-02-26 22:16:35"
   }
 }

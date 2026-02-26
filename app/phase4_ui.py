@@ -1918,8 +1918,8 @@ def page_portfolio():
     if 'trades_applied' not in st.session_state:
         st.session_state.trades_applied = False
     
-    # 상단 탭: 포트폴리오 현황 / 거래 분석 / 거래 이력 입력
-    main_tab1, main_tab2, main_tab3 = st.tabs(["📊 포트폴리오 현황", "📈 거래 분석", "📝 거래 이력 입력"])
+    # 상단 탭: 포트폴리오 현황 / 거래 분석 / 거래 이력 입력 / 시뮬레이션
+    main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs(["📊 포트폴리오 현황", "📈 거래 분석", "📝 거래 이력 입력", "🎯 시뮬레이션"])
     
     with main_tab1:
         # 거래 이력 반영 후 캐시 자동 새로고침
@@ -2365,6 +2365,210 @@ def page_portfolio():
                         st.balloons()
                         st.success("✅ 포트폴리오가 업데이트되었습니다!")
                         st.info("💾 거래 입력 이력이 저장되었습니다. (data/trading_input_log.json)")
+
+    with main_tab4:
+        st.subheader("🎯 거래 제약 조건 시뮬레이션")
+        st.caption("하루 최대 매수 종목 수와 거래금액 단위를 설정하여 시뮬레이션을 실행합니다.")
+        
+        st.divider()
+        
+        # 시뮬레이션 파라미터 설정
+        st.markdown("### ⚙️ 시뮬레이션 파라미터")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            max_buy_stocks = st.slider(
+                "하루 최대 매수 종목 수",
+                min_value=1,
+                max_value=10,
+                value=5,
+                help="하루에 최대 몇 종목까지 매수할 수 있는지 설정합니다."
+            )
+        
+        with col2:
+            transaction_unit_option = st.selectbox(
+                "거래금액 단위",
+                [1000000, 2000000, 3000000, 5000000],
+                format_func=lambda x: f"₩{x:,}원" if x >= 1000000 else f"₩{x:,}원"
+            )
+        
+        st.divider()
+        
+        # 시뮬레이션 설명
+        with st.expander("📖 시뮬레이션 설명", expanded=False):
+            st.markdown(f"""
+            **파라미터 설명:**
+            
+            1. **하루 최대 매수 종목 수** (현재: {max_buy_stocks}개)
+               - 매 거래일마다 최대 {max_buy_stocks}종목까지만 매수 가능
+               - 거래 순서대로 처리되며, 한도를 초과하면 초과분은 스킵됩니다
+               - SELL(매도) 거래는 이 제약에 영향을 받지 않습니다
+            
+            2. **거래금액 단위** (현재: ₩{transaction_unit_option:,}원)
+               - 모든 매수 거래의 금액이 {transaction_unit_option:,}원의 배수여야 합니다
+               - 예: 거래금액 단위가 200만원이면
+                 - ✅ 200만원, 400만원, 600만원 (OK)
+                 - ❌ 250만원, 350만원 (SKIP)
+            
+            **시뮬레이션 결과:**
+            - 실행된 거래: 제약 조건을 만족하여 포트폴리오에 반영되는 거래
+            - 스킵된 거래: 제약 조건을 위반하여 건너뛴 거래
+            """)
+        
+        st.divider()
+        
+        # 시뮬레이션 실행
+        st.markdown("### 🎯 시뮬레이션 실행")
+        
+        if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=True):
+            # 현재 포트폴리오의 모든 거래 조회
+            all_trades = portfolio_mgr.get_all_trades()
+            
+            if not all_trades:
+                st.warning("⚠️ 시뮬레이션할 거래 이력이 없습니다.")
+            else:
+                with st.spinner(f"🔄 시뮬레이션 실행 중... (제약: 하루 {max_buy_stocks}종목, 거래금액단위 ₩{transaction_unit_option:,}원)"):
+                    # 거래 데이터 변환 (필요한 필드만)
+                    trades_for_sim = []
+                    for trade in all_trades:
+                        trades_for_sim.append({
+                            'code': trade.get('code', ''),
+                            'name': trade.get('name', ''),
+                            'type': trade.get('type', 'BUY'),
+                            'price': trade.get('price', 0),
+                            'quantity': trade.get('quantity', 0),
+                            'date': trade.get('date', '')
+                        })
+                    
+                    # 시뮬레이션 실행
+                    sim_result = portfolio_mgr.simulate_daily_trading_constraints(
+                        trades_list=trades_for_sim,
+                        max_buy_stocks_per_day=max_buy_stocks,
+                        transaction_unit=transaction_unit_option
+                    )
+                    
+                    # 결과 저장 (UI에서 사용)
+                    st.session_state.simulation_result = sim_result
+                    
+                    st.success("✅ 시뮬레이션 완료!")
+        
+        st.divider()
+        
+        # 시뮬레이션 결과 표시
+        if 'simulation_result' in st.session_state:
+            sim_result = st.session_state.simulation_result
+            stats = sim_result['simulation_stats']
+            
+            st.markdown("### 📊 시뮬레이션 결과")
+            
+            # 통계 표시
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric(
+                    "총 거래 수",
+                    f"{stats['total_trades']}건",
+                    f"입력 거래"
+                )
+            
+            with col2:
+                st.metric(
+                    "실행된 거래",
+                    f"{stats['executed_count']}건",
+                    f"+{stats['executed_count']}",
+                    delta_color="off"
+                )
+            
+            with col3:
+                st.metric(
+                    "스킵된 거래",
+                    f"{stats['skipped_count']}건",
+                    f"-{stats['skipped_count']}",
+                    delta_color="inverse"
+                )
+            
+            with col4:
+                execution_rate = (stats['executed_count'] / stats['total_trades'] * 100) if stats['total_trades'] > 0 else 0
+                st.metric(
+                    "실행률",
+                    f"{execution_rate:.1f}%",
+                    f"{stats['executed_count']}/{stats['total_trades']}"
+                )
+            
+            st.divider()
+            
+            # 상세 통계
+            st.markdown("### 📈 제약조건별 위반 현황")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.info(f"""
+                **일일 한도 초과**
+                
+                {stats['max_daily_stock_limit_exceeded']}건
+                
+                ---
+                하루 {max_buy_stocks}개 종목 한도를 초과한 거래
+                """)
+            
+            with col2:
+                st.warning(f"""
+                **거래금액 제약 위반**
+                
+                {stats['transaction_unit_constraint_violated']}건
+                
+                ---
+                거래금액이 ₩{transaction_unit_option:,}의 배수가 아닌 거래
+                """)
+            
+            st.divider()
+            
+            # 탭: 실행된 거래 vs 스킵된 거래
+            sim_tab1, sim_tab2 = st.tabs(["✅ 실행된 거래", "❌ 스킵된 거래"])
+            
+            with sim_tab1:
+                if sim_result['executed_trades']:
+                    executed_df = pd.DataFrame(sim_result['executed_trades'])
+                    
+                    # 표시할 컬럼 선택
+                    display_cols = ['date', 'name', 'type', 'quantity', 'price']
+                    if all(col in executed_df.columns for col in display_cols):
+                        executed_df = executed_df[display_cols].copy()
+                        executed_df.columns = ['거래일시', '종목명', '구분', '수량', '가격']
+                        executed_df['구분'] = executed_df['구분'].apply(lambda x: '매수' if x == 'BUY' else '매도')
+                        executed_df['가격'] = executed_df['가격'].apply(lambda x: f"₩{x:,.0f}원")
+                        executed_df['수량'] = executed_df['수량'].apply(lambda x: f"{x:,.0f}주")
+                        
+                        st.dataframe(executed_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.dataframe(executed_df, use_container_width=True)
+                    
+                    st.success(f"✅ {len(sim_result['executed_trades'])}건의 거래가 제약 조건을 만족합니다.")
+                else:
+                    st.info("실행된 거래가 없습니다.")
+            
+            with sim_tab2:
+                if sim_result['skipped_trades']:
+                    skipped_df = pd.DataFrame(sim_result['skipped_trades'])
+                    
+                    # 표시할 컬럼 선택
+                    display_cols = ['date', 'name', 'type', 'quantity', 'price', 'skip_reason']
+                    if all(col in skipped_df.columns for col in display_cols):
+                        skipped_df = skipped_df[display_cols].copy()
+                        skipped_df.columns = ['거래일시', '종목명', '구분', '수량', '가격', '스킵 사유']
+                        skipped_df['구분'] = skipped_df['구분'].apply(lambda x: '매수' if x == 'BUY' else '매도')
+                        skipped_df['가격'] = skipped_df['가격'].apply(lambda x: f"₩{x:,.0f}원" if x else "-")
+                        skipped_df['수량'] = skipped_df['수량'].apply(lambda x: f"{x:,.0f}주" if x else "-")
+                        
+                        st.dataframe(skipped_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.dataframe(skipped_df, use_container_width=True)
+                    
+                    st.warning(f"⚠️ {len(sim_result['skipped_trades'])}건의 거래가 제약 조건을 위반하여 건너뛰었습니다.")
+                else:
+                    st.info("스킵된 거래가 없습니다.")
 
 
 def page_alerts():
