@@ -2137,6 +2137,28 @@ def page_portfolio():
                 # 거래일시별로 오름차순 정렬
                 trade_df = trade_df.sort_values('date')
                 
+                # 중복 거래 제거 (코드, 날짜, 수량, 가격이 모두 같은 경우)
+                # 먼저 중복 판정용으로 소수점 이하 버림
+                duplicate_cols = ['code', 'date', 'quantity']
+                trade_df['_price_rounded'] = trade_df['price'].apply(lambda x: int(x))
+                trade_df['_check_cols'] = (
+                    trade_df['code'].astype(str) + '|' + 
+                    trade_df['date'].astype(str) + '|' + 
+                    trade_df['quantity'].astype(str) + '|' + 
+                    trade_df['_price_rounded'].astype(str)
+                )
+                
+                # 첫 번째 occurrence만 유지 (drop_duplicates)
+                initial_count = len(trade_df)
+                trade_df = trade_df.drop_duplicates(subset=['_check_cols'], keep='first')
+                duplicate_count = initial_count - len(trade_df)
+                
+                if duplicate_count > 0:
+                    st.info(f"⚠️ 중복된 거래 {duplicate_count}건을 제거했습니다.")
+                
+                # 임시 컬럼 제거
+                trade_df = trade_df.drop(columns=['_price_rounded', '_check_cols'])
+                
                 # 컬럼 포맷팅
                 display_df = trade_df.copy()
                 display_df['date'] = pd.to_datetime(display_df['date']).dt.strftime('%Y-%m-%d %H:%M')
