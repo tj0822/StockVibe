@@ -1461,5 +1461,54 @@
       }
     ],
     "deleted_date": "2026-02-26 22:16:35"
+  },
+  "034220": {
+    "name": "LG디스플레이",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 150,
+        "price": 13400.0,
+        "date": "2026-02-23 09:00:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 150,
+        "price": 14810.0,
+        "date": "2026-02-27 09:32:00",
+        "return_pct": 10.52,
+        "avg_buy_price": 13400.0
+      }
+    ],
+    "deleted_date": "2026-02-27 19:55:31"
+  },
+  "112610": {
+    "name": "씨에스윈드",
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 40,
+        "price": 50388.0,
+        "date": "2026-02-20 08:00:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 42,
+        "price": 47850.0,
+        "date": "2026-02-20 09:01:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 82,
+        "price": 51400.0,
+        "date": "2026-02-27 09:32:00",
+        "return_pct": 4.71,
+        "avg_buy_price": 49088.0
+      }
+    ],
+    "deleted_date": "2026-02-27 19:55:31"
   }
 }

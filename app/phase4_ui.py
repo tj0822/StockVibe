@@ -2259,134 +2259,77 @@ def page_portfolio():
         # 현재 입력 텍스트를 세션 상태에 저장
         st.session_state.trading_input_text = trading_text
         
-        if st.button("[OK] 거래 이력 반영", type="primary", use_container_width=True):
-            print("[UI] 거래 이력 파싱 버튼 클릭됨")
+        if st.button("[OK] 거래 이력 파싱 및 반영", type="primary", use_container_width=True):
+            print("[UI] 거래 이력 파싱 및 반영 버튼 클릭됨")
             if trading_text.strip():
-                # 거래 날짜 설정
-                if trade_date:
-                    trade_date_str = trade_date.strftime("%Y-%m-%d")
-                else:
-                    trade_date_str = None
-                
-                # 거래 이력 파싱 (날짜 포함)
-                trades = portfolio_mgr.parse_trading_history_text(trading_text, default_date=trade_date_str)
-                print(f"[UI] 파싱 결과: {trades}")
-                
-                # session_state에 저장 (다음 버튼에서 사용)
-                st.session_state.parsed_trades = trades
-                st.session_state.show_confirmation = True
-                
-                if trades:
-                    # 결과 표시
-                    st.divider()
-                    st.subheader("[OK] 파싱 결과")
-                    
-                    # 파싱된 거래 목록 표시
-                    trade_summary = []
-                    for trade in trades:
-                        trade_summary.append({
-                            '종목': trade['name'],
-                            '구분': '매수' if trade['action'] == 'BUY' else '매도',
-                            '수량': f"{trade['quantity']}주",
-                            '가격': f"₩{trade['price']:,}원" if trade['price'] else "없음"
-                        })
-                    
-                    st.dataframe(pd.DataFrame(trade_summary), use_container_width=True, hide_index=True)
-                else:
-                    st.error("❌ 거래 정보를 파싱할 수 없습니다. 형식을 확인하고 다시 시도해주세요.")
+                with st.spinner("🔄 거래 이력을 파싱하고 포트폴리오에 반영 중..."):
+                    try:
+                        # 거래 날짜 설정
+                        if trade_date:
+                            trade_date_str = trade_date.strftime("%Y-%m-%d")
+                        else:
+                            trade_date_str = None
+                        
+                        # 거래 이력 파싱 (날짜 포함)
+                        trades = portfolio_mgr.parse_trading_history_text(trading_text, default_date=trade_date_str)
+                        print(f"[UI] 파싱 결과: {trades}")
+                        
+                        if not trades:
+                            st.error("❌ 거래 정보를 파싱할 수 없습니다. 형식을 확인하고 다시 시도해주세요.")
+                        else:
+                            # 파싱된 거래 목록 표시
+                            st.subheader("📋 파싱된 거래 목록")
+                            trade_summary = []
+                            for trade in trades:
+                                trade_summary.append({
+                                    '종목': trade['name'],
+                                    '구분': '매수' if trade['action'] == 'BUY' else '매도',
+                                    '수량': f"{trade['quantity']}주",
+                                    '가격': f"₩{trade['price']:,}원" if trade['price'] else "없음"
+                                })
+                            
+                            st.dataframe(pd.DataFrame(trade_summary), use_container_width=True, hide_index=True)
+                            
+                            # 포트폴리오 반영
+                            print("[UI] 포트폴리오에 반영 시작")
+                            results = portfolio_mgr.apply_trading_history(trades)
+                            print(f"[UI] 적용 결과: {results}")
+                            
+                            # 결과 표시
+                            st.divider()
+                            st.subheader("✅ 반영 결과")
+                            
+                            for name, message in results.items():
+                                if "✅" in message or "OK" in message:
+                                    st.success(message)
+                                elif "⚠️" in message or "INFO" in message:
+                                    st.info(message)
+                                else:
+                                    st.error(message)
+                            
+                            # 거래 입력 로그 저장
+                            portfolio_mgr.save_trading_input_log(trading_text, trades, results)
+                            
+                            # 캐시 초기화 및 데이터 새로고침
+                            st.cache_data.clear()
+                            st.session_state.trades_applied = True
+                            
+                            # 입력 필드 초기화
+                            st.session_state.trading_input_text = ""
+                            
+                            # 성공 메시지
+                            st.divider()
+                            st.balloons()
+                            st.success("✅ 거래 이력이 포트폴리오에 반영되고 데이터가 새로고침되었습니다!")
+                            st.info("💾 거래 입력 이력이 저장되었습니다. (data/trading_input_log.json)")
+                            st.info("📊 포트폴리오 현황 탭으로 이동하여 변경 사항을 확인할 수 있습니다.")
+                            
+                    except Exception as e:
+                        st.error(f"❌ 오류 발생: {str(e)}")
+                        import traceback
+                        st.error(traceback.format_exc())
             else:
                 st.warning("⚠️ 거래 이력 텍스트를 입력해주세요.")
-        
-        # 확인 창 표시
-        if st.session_state.get('show_confirmation', False) and st.session_state.get('parsed_trades', None):
-            trades = st.session_state.parsed_trades
-            
-            # 포트폴리오에 반영할 종목 선택
-            st.markdown("---")
-            st.subheader("🔧 포트폴리오 반영 설정")
-            
-            # 현재 포트폴리오 종목 매핑
-            current_portfolio = portfolio_mgr.load_portfolio()
-            name_to_code = {info['name']: code for code, info in current_portfolio.items()}
-            
-            # 거래에 포함된 종목
-            unique_names = set(trade['name'] for trade in trades)
-            
-            # 현재 포트폴리오 상태 표시
-            st.info("📊 거래 전 포트폴리오 상태:")
-            before_df = []
-            for name in sorted(unique_names):
-                in_portfolio = "✅ 있음" if name in name_to_code else "❌ 없음"
-                before_df.append({
-                    '종목': name,
-                    '상태': in_portfolio
-                })
-            if before_df:
-                st.dataframe(pd.DataFrame(before_df), use_container_width=True, hide_index=True)
-            
-            # 재확인 버튼
-            if st.button("✅ 포트폴리오에 반영하기", type="primary", use_container_width=True):
-                        print("[UI] 반영 버튼 클릭됨")
-                        results = portfolio_mgr.apply_trading_history(trades)
-                        print(f"[UI] 적용 결과: {results}")
-                        
-                        # 결과 표시
-                        st.divider()
-                        st.subheader("✅ 반영 결과")
-                        
-                        for name, message in results.items():
-                            if "✅" in message:
-                                st.success(message)
-                            elif "⚠️" in message:
-                                st.info(message)
-                            else:
-                                st.error(message)
-                        
-                        # 강제로 캐시 초기화
-                        st.cache_data.clear()
-                        
-                        # 세션 상태 업데이트 (다른 탭이 감지하도록)
-                        st.session_state.trades_applied = True
-                        
-                        # 약간의 지연 후 업데이트된 포트폴리오 표시
-                        import time
-                        time.sleep(0.5)
-                        
-                        # 업데이트된 포트폴리오 표시
-                        st.divider()
-                        st.subheader("📊 거래 후 포트폴리오 상태:")
-                        
-                        # 파일에서 직접 새로 로드 (캐시 우회)
-                        import json
-                        import os
-                        with open('data/portfolio.json', 'r', encoding='utf-8') as f:
-                            updated_portfolio = json.load(f)
-                        
-                        updated_name_to_code = {info['name']: code for code, info in updated_portfolio.items()}
-                        
-                        print(f"[UI] 업데이트된 포트폴리오: {list(updated_name_to_code.keys())}")
-                        
-                        after_df = []
-                        for name in sorted(unique_names):
-                            in_portfolio = "✅ 있음" if name in updated_name_to_code else "❌ 없음"
-                            after_df.append({
-                                '종목': name,
-                                '상태': in_portfolio
-                            })
-                        if after_df:
-                            st.dataframe(pd.DataFrame(after_df), use_container_width=True, hide_index=True)
-                        
-                        # 거래 입력 로그 저장
-                        portfolio_mgr.save_trading_input_log(trading_text, trades, results)
-                        
-                        # 입력 필드 초기화
-                        st.session_state.trading_input_text = ""
-                        st.session_state.show_confirmation = False
-                        st.session_state.parsed_trades = None
-                        
-                        st.balloons()
-                        st.success("✅ 포트폴리오가 업데이트되었습니다!")
-                        st.info("💾 거래 입력 이력이 저장되었습니다. (data/trading_input_log.json)")
 
     with main_tab4:
         st.subheader("🎯 거래 제약 조건 시뮬레이션")

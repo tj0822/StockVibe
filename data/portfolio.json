@@ -125,8 +125,8 @@
   },
   "251270": {
     "name": "넷마블",
-    "quantity": 36,
-    "avg_price": 56000.0,
+    "quantity": 74,
+    "avg_price": 54459.45945945946,
     "trades": [
       {
         "type": "BUY",
@@ -134,10 +134,17 @@
         "price": 56000.0,
         "date": "2026-02-09 08:01:00",
         "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 38,
+        "price": 53000.0,
+        "date": "2026-02-27 09:22:00",
+        "return_pct": 0
       }
     ],
     "purchase_date": "2026-02-09 08:01:00",
-    "last_updated": "2026-02-25 23:30:40"
+    "last_updated": "2026-02-27 19:55:31"
   },
   "066570": {
     "name": "LG전자",
@@ -179,8 +186,8 @@
   },
   "282330": {
     "name": "BGF리테일",
-    "quantity": 30,
-    "avg_price": 134750.0,
+    "quantity": 61,
+    "avg_price": 131370.49180327868,
     "trades": [
       {
         "type": "BUY",
@@ -195,49 +202,17 @@
         "price": 131100.0,
         "date": "2026-02-26 09:16:00",
         "return_pct": 0
-      }
-    ],
-    "purchase_date": "2026-02-12 08:21:00",
-    "last_updated": "2026-02-26 22:15:11"
-  },
-  "112610": {
-    "name": "씨에스윈드",
-    "quantity": 82,
-    "avg_price": 49088.04878048781,
-    "trades": [
-      {
-        "type": "BUY",
-        "quantity": 40,
-        "price": 50388.0,
-        "date": "2026-02-20 08:00:00",
-        "return_pct": 0
       },
       {
         "type": "BUY",
-        "quantity": 42,
-        "price": 47850.0,
-        "date": "2026-02-20 09:01:00",
+        "quantity": 31,
+        "price": 128100.0,
+        "date": "2026-02-27 08:20:00",
         "return_pct": 0
       }
     ],
-    "purchase_date": "2026-02-20 08:00:00",
-    "last_updated": "2026-02-25 23:30:40"
-  },
-  "034220": {
-    "name": "LG디스플레이",
-    "quantity": 150,
-    "avg_price": 13400.0,
-    "trades": [
-      {
-        "type": "BUY",
-        "quantity": 150,
-        "price": 13400.0,
-        "date": "2026-02-23 09:00:00",
-        "return_pct": 0
-      }
-    ],
-    "purchase_date": "2026-02-23 09:00:00",
-    "last_updated": "2026-02-25 23:30:40"
+    "purchase_date": "2026-02-12 08:21:00",
+    "last_updated": "2026-02-27 19:55:31"
   },
   "307950": {
     "name": "현대오토에버",
@@ -261,5 +236,60 @@
     ],
     "purchase_date": "2026-02-26 09:45:00",
     "last_updated": "2026-02-26 22:15:11"
+  },
+  "011070": {
+    "name": "LG이노텍",
+    "quantity": 18,
+    "avg_price": 324750.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 9,
+        "price": 333000.0,
+        "date": "2026-02-27 08:03:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 9,
+        "price": 316500.0,
+        "date": "2026-02-27 10:06:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-27 08:03:00",
+    "last_updated": "2026-02-27 19:55:31"
+  },
+  "042700": {
+    "name": "한미반도체",
+    "quantity": 11,
+    "avg_price": 275000.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 11,
+        "price": 275000.0,
+        "date": "2026-02-27 09:03:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-27 09:03:00",
+    "last_updated": "2026-02-27 19:55:31"
+  },
+  "018260": {
+    "name": "삼성에스디에스",
+    "quantity": 16,
+    "avg_price": 191300.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 16,
+        "price": 191300.0,
+        "date": "2026-02-27 09:06:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-02-27 09:06:00",
+    "last_updated": "2026-02-27 19:55:31"
   }
 }
