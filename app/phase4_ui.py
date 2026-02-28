@@ -14,10 +14,11 @@ from app.comparison import ComparisonAnalyzer, SectorAnalyzer
 from app.export import DataExporter, ReportGenerator, ChartExporter
 from app.advanced_charts import CandlePatternRecognizer, CorrelationAnalyzer, VolumeAnalyzer
 from app.settings import UserSettings, ThemeManager, DisplaySettings
+from app.ui_components import render_kpi_row, render_header
 
 # 기존 모듈
 from crawling_kospi import CrawlingKospi
-from app.data import load_stock_data
+from app.data import load_stock_data, get_data_status
 from app.ui import run_app
 from long_term_analyzer import LongTermAnalyzer, create_investment_portfolio_recommendation
 
@@ -136,12 +137,11 @@ def render_sidebar_menu() -> tuple[str, str]:
         "⚙️ 설정": "settings"
     }
     
-    selected = st.sidebar.radio("메뉴", ["메인 대시보드", "종목분석", "📊 종목평가", "포트폴리오", "설정"])
+    selected = st.sidebar.radio("메뉴", ["메인 대시보드", "종목분석", "포트폴리오", "설정"])
     
     page_map = {
         "메인 대시보드": "main",
         "종목분석": "analysis",
-        "📊 종목평가": "stock_scoring",
         "포트폴리오": "portfolio",
         "설정": "settings"
     }
@@ -1445,62 +1445,23 @@ def _render_trading_history_panel(code: str):
     """선택된 종목의 거래 이력 표시"""
     portfolio_mgr = PortfolioManager()
     trades = portfolio_mgr.get_trading_history(code)
-    
+    portfolio = portfolio_mgr.load_portfolio()
+    stock_info = portfolio.get(code, {}) if isinstance(portfolio, dict) else {}
+
     if not trades:
         st.info("거래 이력이 없습니다.")
         return
-    
-    st.subheader(f"📋 거래 이력")
-    
-    # 거래 이력 테이블
-    history_items = []
-    for trade in trades:
-        trade_type = "매수" if trade['type'] == 'BUY' else "매도"
-        return_info = ""
-        
-        if trade['type'] == 'SELL' and trade.get('return_pct') is not None:
-            return_pct = trade['return_pct']
-            if return_pct >= 0:
-                return_info = f"📈 +{return_pct:.2f}%"
-            else:
-                return_info = f"📉 {return_pct:.2f}%"
-        
-        history_items.append({
-            '날짜': trade['date'],
-            '구분': trade_type,
-            '수량': f"{trade['quantity']}주",
-            '가격': f"₩{trade['price']:,}원",
-            '수익률': return_info if return_info else "진행 중"
-        })
-    
-    df_history = pd.DataFrame(history_items)
-    st.dataframe(df_history, use_container_width=True, hide_index=True)
-    
-    # 포트폴리오 통계
-    portfolio = portfolio_mgr.load_portfolio()
-    if code in portfolio:
-        stock_info = portfolio[code]
-        
-        st.markdown("---")
-        st.subheader("📊 거래 통계")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("현재 보유수량", f"{stock_info.get('quantity', 0)}주")
-        
-        with col2:
-            st.metric("평균 매수가", f"₩{stock_info.get('avg_price', 0):,.0f}원")
-        
-        with col3:
-            # 거래 횟수
-            total_trades = len(trades)
-            st.metric("거래 횟수", f"{total_trades}회")
-        
-        with col4:
-            # 총 거래대금
-            total_amount = sum(t['quantity'] * t['price'] for t in trades)
-            st.metric("총 거래대금", f"₩{total_amount:,.0f}원")
+
+    st.subheader("📊 거래 통계")
+    total_trades = len(trades)
+    total_amount = sum(t.get('quantity', 0) * t.get('price', 0) for t in trades)
+
+    render_kpi_row([
+        {"label": "현재 보유수량", "value": f"{stock_info.get('quantity', 0)}주"},
+        {"label": "평균 매수가", "value": f"₩{stock_info.get('avg_price', 0):,.0f}원"},
+        {"label": "거래 횟수", "value": f"{total_trades}회"},
+        {"label": "총 거래대금", "value": f"₩{total_amount:,.0f}원"},
+    ])
 
 
 def _render_portfolio_current(kospi_dict, price_df, finance_df):
@@ -1918,8 +1879,8 @@ def page_portfolio():
     if 'trades_applied' not in st.session_state:
         st.session_state.trades_applied = False
     
-    # 상단 탭: 포트폴리오 현황 / 거래 분석 / 거래 이력 입력 / 시뮬레이션
-    main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs(["📊 포트폴리오 현황", "📈 거래 분석", "📝 거래 이력 입력", "🎯 시뮬레이션"])
+    # 상단 탭: 포트폴리오 현황 / 거래 분석 / 거래 이력 입력
+    main_tab1, main_tab2, main_tab3 = st.tabs(["📊 포트폴리오 현황", "📈 거래 분석", "📝 거래 이력 입력"])
     
     with main_tab1:
         # 거래 이력 반영 후 캐시 자동 새로고침
@@ -2041,40 +2002,32 @@ def page_portfolio():
         else:
             # 상단: 주요 통계 지표 (4개 컬럼)
             st.markdown("### 📊 수익률 요약")
-            metric_cols = st.columns(4)
-            
-            with metric_cols[0]:
-                st.metric(
-                    "총 거래 수",
-                    f"{trade_analysis['total_trades']}건",
-                    f"매수 {trade_analysis['buy_count']} / 매도 {trade_analysis['sell_count']}"
-                )
-            
-            with metric_cols[1]:
-                st.metric(
-                    "승률",
-                    f"{trade_analysis['win_rate']:.1f}%",
-                    f"{trade_analysis['winning_trades']}승 {trade_analysis['losing_trades']}패",
-                    delta_color="inverse" if trade_analysis['win_rate'] >= 50 else "off"
-                )
-            
-            with metric_cols[2]:
-                color = "off" if trade_analysis['avg_win_pct'] >= 0 else "inverse"
-                st.metric(
-                    "평균 수익률",
-                    f"{trade_analysis['avg_win_pct']:+.2f}%",
-                    "수익" if trade_analysis['avg_win_pct'] > 0 else "손실",
-                    delta_color=color
-                )
-            
-            with metric_cols[3]:
-                total_pnl = trade_analysis['total_realized_pnl']
-                st.metric(
-                    "총 실현 손익",
-                    f"₩{total_pnl:,.0f}",
-                    "수익" if total_pnl > 0 else "손실",
-                    delta_color="off" if total_pnl >= 0 else "inverse"
-                )
+            total_pnl = trade_analysis['total_realized_pnl']
+            render_kpi_row([
+                {
+                    "label": "총 거래 수",
+                    "value": f"{trade_analysis['total_trades']}건",
+                    "delta": f"매수 {trade_analysis['buy_count']} / 매도 {trade_analysis['sell_count']}",
+                },
+                {
+                    "label": "승률",
+                    "value": f"{trade_analysis['win_rate']:.1f}%",
+                    "delta": f"{trade_analysis['winning_trades']}승 {trade_analysis['losing_trades']}패",
+                    "delta_color": "inverse" if trade_analysis['win_rate'] >= 50 else "off",
+                },
+                {
+                    "label": "평균 수익률",
+                    "value": f"{trade_analysis['avg_win_pct']:+.2f}%",
+                    "delta": "수익" if trade_analysis['avg_win_pct'] > 0 else "손실",
+                    "delta_color": "off" if trade_analysis['avg_win_pct'] >= 0 else "inverse",
+                },
+                {
+                    "label": "총 실현 손익",
+                    "value": f"₩{total_pnl:,.0f}",
+                    "delta": "수익" if total_pnl > 0 else "손실",
+                    "delta_color": "off" if total_pnl >= 0 else "inverse",
+                },
+            ])
             
             st.divider()
             
@@ -2330,211 +2283,6 @@ def page_portfolio():
                         st.error(traceback.format_exc())
             else:
                 st.warning("⚠️ 거래 이력 텍스트를 입력해주세요.")
-
-    with main_tab4:
-        st.subheader("🎯 거래 제약 조건 시뮬레이션")
-        st.caption("하루 최대 매수 종목 수와 거래금액 단위를 설정하여 시뮬레이션을 실행합니다.")
-        
-        st.divider()
-        
-        # 시뮬레이션 파라미터 설정
-        st.markdown("### ⚙️ 시뮬레이션 파라미터")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            max_buy_stocks = st.slider(
-                "하루 최대 매수 종목 수",
-                min_value=1,
-                max_value=10,
-                value=5,
-                help="하루에 최대 몇 종목까지 매수할 수 있는지 설정합니다."
-            )
-        
-        with col2:
-            transaction_unit_option = st.selectbox(
-                "거래금액 단위",
-                [1000000, 2000000, 3000000, 5000000],
-                format_func=lambda x: f"₩{x:,}원" if x >= 1000000 else f"₩{x:,}원"
-            )
-        
-        st.divider()
-        
-        # 시뮬레이션 설명
-        with st.expander("📖 시뮬레이션 설명", expanded=False):
-            st.markdown(f"""
-            **파라미터 설명:**
-            
-            1. **하루 최대 매수 종목 수** (현재: {max_buy_stocks}개)
-               - 매 거래일마다 최대 {max_buy_stocks}종목까지만 매수 가능
-               - 거래 순서대로 처리되며, 한도를 초과하면 초과분은 스킵됩니다
-               - SELL(매도) 거래는 이 제약에 영향을 받지 않습니다
-            
-            2. **거래금액 단위** (현재: ₩{transaction_unit_option:,}원)
-               - 모든 매수 거래의 금액이 {transaction_unit_option:,}원의 배수여야 합니다
-               - 예: 거래금액 단위가 200만원이면
-                 - ✅ 200만원, 400만원, 600만원 (OK)
-                 - ❌ 250만원, 350만원 (SKIP)
-            
-            **시뮬레이션 결과:**
-            - 실행된 거래: 제약 조건을 만족하여 포트폴리오에 반영되는 거래
-            - 스킵된 거래: 제약 조건을 위반하여 건너뛴 거래
-            """)
-        
-        st.divider()
-        
-        # 시뮬레이션 실행
-        st.markdown("### 🎯 시뮬레이션 실행")
-        
-        if st.button("🚀 시뮬레이션 실행", type="primary", use_container_width=True):
-            # 현재 포트폴리오의 모든 거래 조회
-            all_trades = portfolio_mgr.get_all_trades()
-            
-            if not all_trades:
-                st.warning("⚠️ 시뮬레이션할 거래 이력이 없습니다.")
-            else:
-                with st.spinner(f"🔄 시뮬레이션 실행 중... (제약: 하루 {max_buy_stocks}종목, 거래금액단위 ₩{transaction_unit_option:,}원)"):
-                    # 거래 데이터 변환 (필요한 필드만)
-                    trades_for_sim = []
-                    for trade in all_trades:
-                        trades_for_sim.append({
-                            'code': trade.get('code', ''),
-                            'name': trade.get('name', ''),
-                            'type': trade.get('type', 'BUY'),
-                            'price': trade.get('price', 0),
-                            'quantity': trade.get('quantity', 0),
-                            'date': trade.get('date', '')
-                        })
-                    
-                    # 시뮬레이션 실행
-                    sim_result = portfolio_mgr.simulate_daily_trading_constraints(
-                        trades_list=trades_for_sim,
-                        max_buy_stocks_per_day=max_buy_stocks,
-                        transaction_unit=transaction_unit_option
-                    )
-                    
-                    # 결과 저장 (UI에서 사용)
-                    st.session_state.simulation_result = sim_result
-                    
-                    st.success("✅ 시뮬레이션 완료!")
-        
-        st.divider()
-        
-        # 시뮬레이션 결과 표시
-        if 'simulation_result' in st.session_state:
-            sim_result = st.session_state.simulation_result
-            stats = sim_result['simulation_stats']
-            
-            st.markdown("### 📊 시뮬레이션 결과")
-            
-            # 통계 표시
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric(
-                    "총 거래 수",
-                    f"{stats['total_trades']}건",
-                    f"입력 거래"
-                )
-            
-            with col2:
-                st.metric(
-                    "실행된 거래",
-                    f"{stats['executed_count']}건",
-                    f"+{stats['executed_count']}",
-                    delta_color="off"
-                )
-            
-            with col3:
-                st.metric(
-                    "스킵된 거래",
-                    f"{stats['skipped_count']}건",
-                    f"-{stats['skipped_count']}",
-                    delta_color="inverse"
-                )
-            
-            with col4:
-                execution_rate = (stats['executed_count'] / stats['total_trades'] * 100) if stats['total_trades'] > 0 else 0
-                st.metric(
-                    "실행률",
-                    f"{execution_rate:.1f}%",
-                    f"{stats['executed_count']}/{stats['total_trades']}"
-                )
-            
-            st.divider()
-            
-            # 상세 통계
-            st.markdown("### 📈 제약조건별 위반 현황")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.info(f"""
-                **일일 한도 초과**
-                
-                {stats['max_daily_stock_limit_exceeded']}건
-                
-                ---
-                하루 {max_buy_stocks}개 종목 한도를 초과한 거래
-                """)
-            
-            with col2:
-                st.warning(f"""
-                **거래금액 제약 위반**
-                
-                {stats['transaction_unit_constraint_violated']}건
-                
-                ---
-                거래금액이 ₩{transaction_unit_option:,}의 배수가 아닌 거래
-                """)
-            
-            st.divider()
-            
-            # 탭: 실행된 거래 vs 스킵된 거래
-            sim_tab1, sim_tab2 = st.tabs(["✅ 실행된 거래", "❌ 스킵된 거래"])
-            
-            with sim_tab1:
-                if sim_result['executed_trades']:
-                    executed_df = pd.DataFrame(sim_result['executed_trades'])
-                    
-                    # 표시할 컬럼 선택
-                    display_cols = ['date', 'name', 'type', 'quantity', 'price']
-                    if all(col in executed_df.columns for col in display_cols):
-                        executed_df = executed_df[display_cols].copy()
-                        executed_df.columns = ['거래일시', '종목명', '구분', '수량', '가격']
-                        executed_df['구분'] = executed_df['구분'].apply(lambda x: '매수' if x == 'BUY' else '매도')
-                        executed_df['가격'] = executed_df['가격'].apply(lambda x: f"₩{x:,.0f}원")
-                        executed_df['수량'] = executed_df['수량'].apply(lambda x: f"{x:,.0f}주")
-                        
-                        st.dataframe(executed_df, use_container_width=True, hide_index=True)
-                    else:
-                        st.dataframe(executed_df, use_container_width=True)
-                    
-                    st.success(f"✅ {len(sim_result['executed_trades'])}건의 거래가 제약 조건을 만족합니다.")
-                else:
-                    st.info("실행된 거래가 없습니다.")
-            
-            with sim_tab2:
-                if sim_result['skipped_trades']:
-                    skipped_df = pd.DataFrame(sim_result['skipped_trades'])
-                    
-                    # 표시할 컬럼 선택
-                    display_cols = ['date', 'name', 'type', 'quantity', 'price', 'skip_reason']
-                    if all(col in skipped_df.columns for col in display_cols):
-                        skipped_df = skipped_df[display_cols].copy()
-                        skipped_df.columns = ['거래일시', '종목명', '구분', '수량', '가격', '스킵 사유']
-                        skipped_df['구분'] = skipped_df['구분'].apply(lambda x: '매수' if x == 'BUY' else '매도')
-                        skipped_df['가격'] = skipped_df['가격'].apply(lambda x: f"₩{x:,.0f}원" if x else "-")
-                        skipped_df['수량'] = skipped_df['수량'].apply(lambda x: f"{x:,.0f}주" if x else "-")
-                        
-                        st.dataframe(skipped_df, use_container_width=True, hide_index=True)
-                    else:
-                        st.dataframe(skipped_df, use_container_width=True)
-                    
-                    st.warning(f"⚠️ {len(sim_result['skipped_trades'])}건의 거래가 제약 조건을 위반하여 건너뛰었습니다.")
-                else:
-                    st.info("스킵된 거래가 없습니다.")
-
 
 def page_alerts():
     """알림 관리 페이지"""
@@ -3485,6 +3233,10 @@ def page_long_term_investment():
 # 메인 실행 함수
 def run_phase4_app():
     """Phase 4 앱 실행"""
+    if "last_run_ts" not in st.session_state:
+        st.session_state.last_run_ts = "-"
+    if "ai_cache_hit" not in st.session_state:
+        st.session_state.ai_cache_hit = "UNKNOWN"
     
     # 사이드바 메뉴
     page, selected_main_tab = render_sidebar_menu()
@@ -3506,14 +3258,33 @@ def run_phase4_app():
 
     if page != "main":
         selected_main_tab = st.session_state.get("active_tab", "📊 시그널")
+
+    page_name_map = {
+        "main": f"메인 대시보드 · {selected_main_tab}",
+        "analysis": "종목분석",
+        "portfolio": "포트폴리오",
+        "settings": "설정",
+    }
+
+    if page != "main":
+        data_status = get_data_status("data")
+        cache_state = st.session_state.get("ai_cache_hit", "UNKNOWN")
+        render_header(
+            page_name_map.get(page, "StockVibe"),
+            [
+                {"label": f"Price {data_status.get('price_ts', '-')}", "type": "info"},
+                {"label": f"Finance {data_status.get('finance_ts', '-')}", "type": "info"},
+                {"label": f"News {data_status.get('news_ts', '-')}", "type": "info"},
+                {"label": f"Cache {cache_state}", "type": "success" if cache_state == "HIT" else "warning"},
+                {"label": f"Last Run {st.session_state.get('last_run_ts', '-')}", "type": "success"},
+            ],
+        )
     
     # 페이지 라우팅
     if page == "portfolio":
         page_portfolio()
     elif page == "settings":
         page_settings()
-    elif page == "stock_scoring":
-        page_stock_scoring()
     elif page == "analysis":
         # 종목분석 페이지
         from app.ui import render_stock_analysis_page

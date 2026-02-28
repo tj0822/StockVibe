@@ -1,4 +1,5 @@
 import json
+import hashlib
 import textwrap
 import pandas as pd
 import streamlit as st
@@ -17,6 +18,7 @@ from stock_ontology import build_stock_ontology, StockOntology
 
 from .data import DATA_DIR_DEFAULT, load_kospi_index, load_kospi_list, load_stock_data, load_finance_data
 from .signals import build_signals
+from .ui_components import render_action_row, render_progress_steps
 
 
 @st.cache_data(ttl=3600, show_spinner=False)  # 1시간 캐시
@@ -99,34 +101,9 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
             
             st.markdown("---")
 
-        # 백테스트 설정은 시뮬레이션 탭에서만 표시
-        initial_cash = 50_000_000
-        max_daily_buys = 2
-        
-        # 매수 금액 단위 기본값 (최적 파라미터가 있으면 그것을 사용)
-        default_buy_unit_won = st.session_state.get('applied_buy_unit', 2_000_000)
-        default_buy_unit_man = int(default_buy_unit_won // 10_000)
-        buy_unit = 2_000_000
-        
-        if current_tab == "🎯 시뮬레이션":
-            with st.expander("💰 백테스트 설정", expanded=True):
-                initial_cash = st.number_input(
-                    "초기 자산", 
-                    min_value=0, max_value=1_000_000_000, 
-                    value=50_000_000, step=5_000_000,
-                    format="%d",
-                    help="백테스트 시작 자산 (원)"
-                )
-                buy_unit = st.number_input(
-                    "매수 금액 단위 (만원)",
-                    min_value=50, max_value=1000, value=default_buy_unit_man, step=100,
-                    help="1회 매수 시 투자 금액 (만원 단위). 예: 100 = 100만원"
-                ) * 10_000  # 만원 -> 원 변환
-                max_daily_buys = st.number_input(
-                    "일일 매수 한도", 
-                    min_value=1, max_value=10, value=2, step=1, 
-                    help="하루에 매수할 수 있는 최대 종목 수"
-                )
+        initial_cash = float(st.session_state.get("sim_initial_cash", 50_000_000))
+        max_daily_buys = int(st.session_state.get("sim_max_daily_buys", 2))
+        buy_unit = float(st.session_state.get("sim_buy_unit", 2_000_000))
 
     return {
         "data_dir": DATA_DIR_DEFAULT,
@@ -1618,466 +1595,492 @@ def render_kospi_crawling_page() -> None:
 
 
 def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: dict) -> None:
-    """파라미터 최적화 페이지 렌더링 - Unified 접근법"""
-    st.subheader("🎯 파라미터 최적화")
-    st.caption("📊 전체 기간(2022-2024)에 대해 최적의 범용 투자 전략 파라미터를 찾습니다")
-    st.write("모든 거래일에 대해 파라미터 조합을 테스트하여 가장 우수한 범용 파라미터를 찾습니다.")
-    
-    # GPU/CPU 정보 표시
+    """최적화 탭 UX 리팩토링: 탐색공간 미리보기 + Top N 비교 + 적용/내보내기"""
+    st.subheader("⚙️ 최적화")
+    st.caption("탐색 공간을 먼저 확인하고, 실행 후 Top N 후보를 비교·적용합니다")
+
     from optimizer import get_gpu_info, get_available_years
+
+    # session scaffolding
+    if "opt_grid" not in st.session_state:
+        st.session_state["opt_grid"] = {}
+    if "opt_constraints" not in st.session_state:
+        st.session_state["opt_constraints"] = {}
+    if "opt_results_df" not in st.session_state:
+        st.session_state["opt_results_df"] = pd.DataFrame()
+    if "opt_best" not in st.session_state:
+        st.session_state["opt_best"] = {}
+    if "opt_running" not in st.session_state:
+        st.session_state["opt_running"] = False
+    if "opt_cancel" not in st.session_state:
+        st.session_state["opt_cancel"] = False
+    if "opt_last_hash" not in st.session_state:
+        st.session_state["opt_last_hash"] = ""
+    if "opt_last_run_ts" not in st.session_state:
+        st.session_state["opt_last_run_ts"] = "-"
+
     gpu_info = get_gpu_info()
-    
     info_cols = st.columns(3)
     with info_cols[0]:
-        st.metric("사용 가능 CPU 코어", gpu_info['num_cpus'])
+        st.metric("사용 가능 CPU 코어", gpu_info["num_cpus"])
     with info_cols[1]:
-        processing_mode = "🚀 GPU 가속" if gpu_info['cuda_available'] else "⚙️ CPU 멀티프로세싱"
-        st.metric("처리 모드", processing_mode, delta="최고 성능" if gpu_info['cuda_available'] else "표준")
+        processing_mode = "🚀 GPU 가속" if gpu_info["cuda_available"] else "⚙️ CPU 멀티프로세싱"
+        st.metric("처리 모드", processing_mode)
     with info_cols[2]:
-        st.metric("병렬처리 방식", "multiprocessing.Pool", delta="Windows 호환")
-    
-    # 설정 영역을 컬럼으로 나누기
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("#### 📅 최적화 기간")
-        
-        # 데이터에서 이용 가능한 연도 추출
-        available_year_ranges = get_available_years(df)
-        
-        if not available_year_ranges:
-            st.error("데이터에서 사용 가능한 연도를 찾을 수 없습니다.")
-            return
-        
-        available_years = sorted(available_year_ranges.keys(), reverse=True)
-        
-        # 전체 데이터 범위 계산
-        all_start_dates = [available_year_ranges[year][0] for year in available_years]
-        all_end_dates = [available_year_ranges[year][1] for year in available_years]
-        global_start_date = min(all_start_dates)
-        global_end_date = max(all_end_dates)
-        
-        # 데이터 범위 정보 표시
-        with st.expander("📊 데이터 범위 정보"):
-            st.info(f"📈 **전체 최적화 기간**: {global_start_date.date()} ~ {global_end_date.date()}")
-            range_info = []
-            for year in sorted(available_years, reverse=True):
-                start_date, end_date = available_year_ranges[year]
-                range_info.append(f"**{year}년**: {start_date.date()} ~ {end_date.date()}")
-            st.write("\n".join(range_info))
-        
-        st.success(f"✅ 최적화 기간: {global_start_date.date()} ~ {global_end_date.date()}")
-        st.caption("💡 팁: 전체 기간 최적화는 연도별 최적화보다 3배 빠릅니다!")
-        
-        initial_cash = st.number_input(
-            "초기 자산 (원)",
-            min_value=10_000_000,
-            max_value=1_000_000_000,
-            value=50_000_000,
-            step=10_000_000,
-            format="%d"
-        )
-        
-        st.divider()
-    
-    with col2:
-        st.markdown("#### ⚙️ 파라미터 범위 설정")
-        
-        st.markdown("**일일 최대 매수 종목 수**")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            max_daily_buys_min = st.number_input("최소", min_value=1, max_value=5, value=1, key="mdb_min")
-        with col_b:
-            max_daily_buys_max = st.number_input("최대", min_value=1, max_value=5, value=3, key="mdb_max")
-        
-        st.markdown("**직전 거래일 평균** (⚡5-20일 권장)")
-        col_c, col_d = st.columns(2)
-        with col_c:
-            rolling_days_options = st.multiselect(
-                "테스트할 값 선택",
-                options=list(range(5, 31, 5)),
-                default=[5, 10, 15, 20],
-                key="rolling_options",
-                help="5, 10, 15, 20만 권장"
-            )
-        
-        st.markdown("**평균 대비 배수** (⚡1.5-3.0 권장)")
-        col_e, col_f = st.columns(2)
-        with col_e:
-            volume_threshold_options = st.multiselect(
-                "테스트할 값 선택",
-                options=[x / 2 for x in range(3, 21)],
-                default=[1.5, 2.0, 2.5, 3.0],
-                key="vol_options",
-                help="1.5, 2.0, 2.5, 3.0만 권장"
+        st.metric("마지막 실행", st.session_state.get("opt_last_run_ts", "-"))
+
+    available_year_ranges = get_available_years(df)
+    if not available_year_ranges:
+        st.error("데이터에서 사용 가능한 연도를 찾을 수 없습니다.")
+        return
+
+    available_years = sorted(available_year_ranges.keys(), reverse=True)
+    all_start_dates = [available_year_ranges[year][0] for year in available_years]
+    all_end_dates = [available_year_ranges[year][1] for year in available_years]
+    global_start_date = min(all_start_dates)
+    global_end_date = max(all_end_dates)
+
+    def _build_float_range(min_v: float, max_v: float, step_v: float) -> list[float]:
+        if step_v <= 0 or min_v > max_v:
+            return []
+        result = []
+        cursor = float(min_v)
+        while cursor <= float(max_v) + 1e-9:
+            result.append(round(cursor, 4))
+            cursor += float(step_v)
+        return sorted(list(dict.fromkeys(result)))
+
+    def _build_int_range(min_v: int, max_v: int, step_v: int) -> list[int]:
+        if step_v <= 0 or min_v > max_v:
+            return []
+        return list(range(int(min_v), int(max_v) + 1, int(step_v)))
+
+    # [1] Search Space Builder
+    block1 = st.container(border=True)
+    with block1:
+        st.markdown("#### [1] Search Space Builder")
+        left, right = st.columns(2)
+
+        with left:
+            st.markdown("**기본 설정**")
+            initial_cash = st.number_input(
+                "초기 자산 (원)",
+                min_value=10_000_000,
+                max_value=1_000_000_000,
+                value=int(st.session_state.get("opt_initial_cash", 50_000_000)),
+                step=10_000_000,
+                format="%d",
+                key="opt_initial_cash",
             )
 
-        st.markdown("**추가매수 손실 임계값(%)** (⚡-7% 권장)")
-        add_buy_threshold_options = st.multiselect(
-            "테스트할 값 선택",
-            options=[-float(x) for x in range(1, 11)],
-            default=[-7.0],
-            key="add_buy_threshold_options",
-            help="⚡-7.0만 권장 (가장 안정적 & 매우 빠름)"
-        )
-        
-        st.markdown("**매수 금액 단위 (만원)**")
-        buy_unit_options = st.multiselect(
-            "테스트할 값 선택",
-            options=[100, 150, 200, 250, 300],
-            default=[200],
-            key="buy_unit_options",
-            help="100=100만원, 200=200만원, 300=300만원"
-        )
-        
-    
-    # 최적화 기준 선택
-    st.markdown("#### 🎯 최적화 기준")
-    optimization_metric = st.selectbox(
-        "어떤 지표를 기준으로 최적화할까요?",
-        options=["total_return", "sharpe_ratio", "excess_return"],
-        format_func=lambda x: {
-            "total_return": "총 수익률",
-            "sharpe_ratio": "샤프 비율 (위험 대비 수익)",
-            "excess_return": "초과 수익률 (KOSPI 대비)"
-        }[x]
-    )
+            optimization_metric = st.selectbox(
+                "최적화 기준",
+                options=["total_return", "sharpe_ratio", "excess_return"],
+                format_func=lambda x: {
+                    "total_return": "총 수익률",
+                    "sharpe_ratio": "샤프 비율",
+                    "excess_return": "초과 수익률",
+                }[x],
+                key="opt_metric",
+            )
 
-    st.markdown("#### 🔎 탐색 방식 (속도 최적화)")
-    search_mode = st.selectbox(
-        "최적화 방식",
-        options=["random", "grid"],
-        index=0,
-        format_func=lambda x: "🚀 랜덤 서치 (빠름!)" if x == "random" else "그리드 서치 (느림)",
-        help="랜덤: 빠르고 충분히 정확 | 그리드: 느리지만 완전한 탐색"
-    )
-    sample_count = st.number_input(
-        "랜덤 샘플 수",
-        min_value=50,
-        max_value=5000,
-        value=150,
-        step=50,
-        help="⚡팁: 150-300개 추천 (빠름), 1000개 이상은 매우 느림",
-        disabled=(search_mode != "random")
-    )
-    random_seed = st.number_input(
-        "랜덤 시드",
-        min_value=0,
-        max_value=99999,
-        value=42,
-        step=1,
-        help="같은 시드면 동일한 샘플을 사용합니다",
-        disabled=(search_mode != "random")
-    )
-    
-    # 최적화 실행 버튼
-    st.divider()
-    
-    # ⚡ 속도 최적화 팁
-    with st.expander("⚡ 속도 향상 팁", expanded=False):
-        st.markdown("""
-        ### 🚀 빠른 최적화를 위한 권장 설정:
-        
-        **현재 설정 (권장):**
-        - 🎯 탐색 방식: **랜덤 서치** (기본값)
-        - 📊 샘플 수: **150개** (기본값)
-        - 📈 매개변수 범위:
-          - 직전 거래일: **5, 10, 15, 20** 만 선택 (기본값)
-          - 평균 배수: **1.5, 2.0, 2.5, 3.0** 만 선택 (기본값)
-          - 손실 임계값: **-7.0** 만 선택 (기본값)
-        
-        **성능 비교:**
-        | 설정 | 예상 시간 | 품질 |
-        |------|---------|------|
-        | 권장 설정 | ⚡ 1-2분 | ✅ 충분함 |
-        | 일반 설정 | 🟡 5-10분 | ✅ 동일 |
-        | 전체 탐색 | 🐢 30분+ | ✅ 조금더 정밀함 |
-        
-        **⚡ 최적화 기술:**
-        1. **랜덤 서치**: 그리드보다 3-5배 빠름
-        2. **파라미터 축소**: 범위를 절반만 사용해도 충분함
-        3. **병렬 처리**: CPU 코어 수 활용 (자동 최적화됨)
-        4. **신호 사전 계산**: 이미 메인 프로세스에서 계산됨
-        """)
-    
-    if st.button("🚀 범용 파라미터 최적화 실행", type="primary", use_container_width=True):
-        # 파라미터 범위 검증
-        if not rolling_days_options:
-            st.error("직전 거래일 평균 값을 최소 1개 이상 선택해주세요.")
-            return
-        
-        if not volume_threshold_options:
-            st.error("평균 대비 배수 값을 최소 1개 이상 선택해주세요.")
-            return
+            search_mode = st.selectbox(
+                "탐색 방식",
+                options=["random", "grid"],
+                index=0,
+                format_func=lambda x: "🚀 랜덤 서치" if x == "random" else "그리드 서치",
+                key="opt_search_mode",
+            )
+            sample_count = st.number_input(
+                "랜덤 샘플 수",
+                min_value=50,
+                max_value=5000,
+                value=int(st.session_state.get("opt_sample_count", 150)),
+                step=50,
+                disabled=(search_mode != "random"),
+                key="opt_sample_count",
+            )
+            random_seed = st.number_input(
+                "랜덤 시드",
+                min_value=0,
+                max_value=99999,
+                value=int(st.session_state.get("opt_random_seed", 42)),
+                step=1,
+                disabled=(search_mode != "random"),
+                key="opt_random_seed",
+            )
 
-        if not add_buy_threshold_options:
-            st.error("추가매수 손실 임계값을 최소 1개 이상 선택해주세요.")
-            return
-        
-        if not buy_unit_options:
-            st.error("매수 금액 단위를 최소 1개 이상 선택해주세요.")
-            return
-        
-        if max_daily_buys_min > max_daily_buys_max:
-            st.error("일일 최대 매수 종목 수의 최소값이 최대값보다 클 수 없습니다.")
-            return
-        
-        # 파라미터 범위 구성 (만원 -> 원 변환)
-        param_ranges = {
-            'max_daily_buys': list(range(max_daily_buys_min, max_daily_buys_max + 1)),
-            'rolling_days': sorted(rolling_days_options),
-            'volume_threshold': sorted(volume_threshold_options),
-            'add_buy_threshold_pct': sorted(add_buy_threshold_options),
-            'buy_unit': [int(b) * 10_000 for b in sorted(buy_unit_options)]  # 만원 -> 원
+        with right:
+            st.markdown("**파라미터 범위**")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                turnover_window_min = st.number_input("turnover_window 최소", 5, 120, 5, 1, key="opt_tw_min")
+            with c2:
+                turnover_window_max = st.number_input("turnover_window 최대", 5, 120, 20, 1, key="opt_tw_max")
+            with c3:
+                turnover_window_step = st.number_input("turnover_window 간격", 1, 20, 5, 1, key="opt_tw_step")
+
+            c4, c5, c6 = st.columns(3)
+            with c4:
+                turnover_multiplier_min = st.number_input("turnover_multiplier 최소", 1.0, 20.0, 1.5, 0.1, key="opt_tm_min")
+            with c5:
+                turnover_multiplier_max = st.number_input("turnover_multiplier 최대", 1.0, 20.0, 3.0, 0.1, key="opt_tm_max")
+            with c6:
+                turnover_multiplier_step = st.number_input("turnover_multiplier 간격", 0.1, 5.0, 0.5, 0.1, key="opt_tm_step")
+
+            c7, c8, c9 = st.columns(3)
+            with c7:
+                add_buy_threshold_min = st.number_input("extra_buy_threshold 최소", -30.0, -1.0, -10.0, 0.5, key="opt_abt_min")
+            with c8:
+                add_buy_threshold_max = st.number_input("extra_buy_threshold 최대", -30.0, -1.0, -3.0, 0.5, key="opt_abt_max")
+            with c9:
+                add_buy_threshold_step = st.number_input("extra_buy_threshold 간격", 0.5, 10.0, 1.0, 0.5, key="opt_abt_step")
+
+            c10, c11, c12 = st.columns(3)
+            with c10:
+                max_daily_buys_min = st.number_input("max_daily_buys 최소", 1, 10, 1, 1, key="opt_mdb_min")
+            with c11:
+                max_daily_buys_max = st.number_input("max_daily_buys 최대", 1, 10, 3, 1, key="opt_mdb_max")
+            with c12:
+                max_daily_buys_step = st.number_input("max_daily_buys 간격", 1, 5, 1, 1, key="opt_mdb_step")
+
+            c13, c14, c15 = st.columns(3)
+            with c13:
+                buy_unit_min = st.number_input("buy_unit(만원) 최소", 50, 5000, 100, 50, key="opt_bu_min")
+            with c14:
+                buy_unit_max = st.number_input("buy_unit(만원) 최대", 50, 5000, 300, 50, key="opt_bu_max")
+            with c15:
+                buy_unit_step = st.number_input("buy_unit(만원) 간격", 50, 1000, 100, 50, key="opt_bu_step")
+
+            st.markdown("**Constraints (선택)**")
+            cs1, cs2, cs3 = st.columns(3)
+            with cs1:
+                max_trades_per_month = st.number_input("max_trades_per_month", min_value=0, max_value=1000, value=0, step=5, key="opt_c_max_trades")
+            with cs2:
+                max_drawdown_limit = st.number_input("max_drawdown_limit(%)", min_value=-100.0, max_value=0.0, value=0.0, step=1.0, key="opt_c_mdd")
+            with cs3:
+                min_win_rate = st.number_input("min_win_rate(%)", min_value=0.0, max_value=100.0, value=0.0, step=1.0, key="opt_c_win")
+
+        opt_grid = {
+            "max_daily_buys": _build_int_range(max_daily_buys_min, max_daily_buys_max, max_daily_buys_step),
+            "rolling_days": _build_int_range(turnover_window_min, turnover_window_max, turnover_window_step),
+            "volume_threshold": _build_float_range(turnover_multiplier_min, turnover_multiplier_max, turnover_multiplier_step),
+            "add_buy_threshold_pct": _build_float_range(add_buy_threshold_min, add_buy_threshold_max, add_buy_threshold_step),
+            "buy_unit": [int(v) * 10_000 for v in _build_int_range(buy_unit_min, buy_unit_max, buy_unit_step)],
         }
-        
-        # 총 조합 수 계산
-        total_combinations = (
-            len(param_ranges['max_daily_buys']) * 
-            len(param_ranges['rolling_days']) * 
-            len(param_ranges['volume_threshold']) *
-            len(param_ranges['add_buy_threshold_pct']) *
-            len(param_ranges['buy_unit'])
+        opt_constraints = {
+            "max_trades_per_month": int(max_trades_per_month) if int(max_trades_per_month) > 0 else None,
+            "max_drawdown_limit": float(max_drawdown_limit) if float(max_drawdown_limit) != 0 else None,
+            "min_win_rate": float(min_win_rate) if float(min_win_rate) != 0 else None,
+        }
+        st.session_state["opt_grid"] = opt_grid
+        st.session_state["opt_constraints"] = opt_constraints
+
+    # [2] Search Space Preview
+    block2 = st.container(border=True)
+    with block2:
+        st.markdown("#### [2] Search Space Preview")
+        grid_counts = {k: len(v) for k, v in opt_grid.items() if isinstance(v, list)}
+        total_combinations = 1
+        for count in grid_counts.values():
+            total_combinations *= max(count, 0)
+
+        active_constraints = sum(1 for v in opt_constraints.values() if v is not None)
+        test_count = total_combinations if search_mode == "grid" else min(int(sample_count), total_combinations)
+        estimate_seconds = max(1, int(test_count * 0.35))
+
+        k1, k2, k3 = st.columns(3)
+        with k1:
+            st.metric("조합 수", f"{total_combinations:,}")
+        with k2:
+            st.metric("예상 소요시간", f"약 {estimate_seconds}s")
+        with k3:
+            st.metric("선택 제약 조건 수", f"{active_constraints}개")
+
+        range_rows = []
+        for param_name, values in opt_grid.items():
+            if not values:
+                continue
+            range_rows.append(
+                {
+                    "param": param_name,
+                    "count": len(values),
+                    "min": values[0],
+                    "max": values[-1],
+                    "step": (values[1] - values[0]) if len(values) > 1 else 0,
+                }
+            )
+        range_df = pd.DataFrame(range_rows)
+        st.dataframe(range_df, use_container_width=True, hide_index=True)
+
+        if len(opt_grid.get("rolling_days", [])) > 0 and len(opt_grid.get("volume_threshold", [])) > 0:
+            preview_points = []
+            for rd in opt_grid["rolling_days"]:
+                for vt in opt_grid["volume_threshold"]:
+                    preview_points.append({"rolling_days": rd, "volume_threshold": vt})
+                    if len(preview_points) >= 2000:
+                        break
+                if len(preview_points) >= 2000:
+                    break
+            if preview_points:
+                st.caption("grid preview: rolling_days × volume_threshold")
+                preview_df = pd.DataFrame(preview_points)
+                st.scatter_chart(preview_df, x="rolling_days", y="volume_threshold")
+
+    # hash guard
+    universe_size = int(df["code"].astype(str).nunique()) if "code" in df.columns else 0
+    hash_payload = {
+        "grid": opt_grid,
+        "constraints": opt_constraints,
+        "start": str(global_start_date.date()),
+        "end": str(global_end_date.date()),
+        "universe": universe_size,
+        "search_mode": search_mode,
+        "sample_count": int(sample_count),
+        "random_seed": int(random_seed),
+        "metric": optimization_metric,
+    }
+    run_hash = hashlib.md5(str(hash_payload).encode()).hexdigest()
+
+    # [3] Execution Control
+    block3 = st.container(border=True)
+    with block3:
+        st.markdown("#### [3] Execution Control")
+        too_large = total_combinations > 2000
+        large_confirm = True
+        if too_large:
+            st.warning(f"⚠️ 조합 수가 큽니다: {total_combinations:,}")
+            large_confirm = st.checkbox("조합 수가 많아 시간이 오래 걸릴 수 있습니다. 실행합니다.", value=False, key="opt_large_confirm")
+
+        force_rerun = st.checkbox("캐시 무시하고 다시 실행", value=False, key="opt_force_rerun")
+        actions = [
+            {"key": "run", "label": "최적화 시작", "kind": "primary", "disabled": st.session_state["opt_running"]},
+            {"key": "reset", "label": "초기화", "kind": "secondary"},
+        ]
+        if st.session_state["opt_running"]:
+            actions.append({"key": "cancel", "label": "중단", "kind": "secondary"})
+
+        clicked = render_action_row(actions, key_prefix="opt_action_")
+        run_clicked = clicked.get("run", False)
+        reset_clicked = clicked.get("reset", False)
+        cancel_clicked = clicked.get("cancel", False)
+
+        if reset_clicked:
+            st.session_state["opt_results_df"] = pd.DataFrame()
+            st.session_state["opt_best"] = {}
+            st.session_state["opt_cancel"] = False
+            st.session_state["opt_running"] = False
+            st.success("초기화 완료")
+
+        if cancel_clicked:
+            st.session_state["opt_cancel"] = True
+            st.warning("취소 요청됨(다음 실행부터 반영)")
+
+        can_use_cache = (
+            st.session_state.get("opt_last_hash") == run_hash
+            and not st.session_state.get("opt_results_df", pd.DataFrame()).empty
         )
 
-        if search_mode == "random":
-            sample_count = min(int(sample_count), total_combinations)
-            if sample_count <= 0:
-                st.error("랜덤 샘플 수가 0입니다. 파라미터 범위를 확인하세요.")
-                return
-        
-        # ===== 전체 기간 최적화 (Unified Approach) =====
-        st.markdown("---")
-        
-        # 예상 시간 계산
-        total_combos = (
-            len(param_ranges['max_daily_buys']) * 
-            len(param_ranges['rolling_days']) * 
-            len(param_ranges['volume_threshold']) *
-            len(param_ranges['add_buy_threshold_pct']) *
-            len(param_ranges['buy_unit'])
-        )
-        
-        if search_mode == "random":
-            test_count = min(int(sample_count), total_combos)
-            estimate_time = max(1, test_count // 150)  # 분당 약 150개 처리
-        else:
-            test_count = total_combos
-            estimate_time = max(2, test_count // 100)  # 분당 약 100개 처리
-        
-        st.info(f"📊 **전체 기간 최적화 중...**\n예상 시간: **{estimate_time}분** | 테스트 조합: {test_count}개 | 데이터 범위: {global_start_date.date()} ~ {global_end_date.date()}")
-        
-        # 프로그레스 바 설정
+        if run_clicked and too_large and not large_confirm:
+            st.error("대규모 실행 확인 체크가 필요합니다.")
+            run_clicked = False
+
+        if run_clicked and can_use_cache and not force_rerun:
+            st.info("동일 조건 결과가 있어 재실행을 생략합니다.")
+            run_clicked = False
+
+    # execute
+    if run_clicked:
+        st.session_state["opt_running"] = True
+        st.session_state["opt_cancel"] = False
+
         progress_bar = st.progress(0)
-        status_text = st.empty()
+        status = st.empty()
+        status.info("[1/2] 조합 생성")
+        progress_bar.progress(10)
         time_start = datetime.now()
-        
-        def update_progress(current, total, params):
-            import time
+
+        param_ranges = {
+            "max_daily_buys": opt_grid["max_daily_buys"],
+            "rolling_days": opt_grid["rolling_days"],
+            "volume_threshold": opt_grid["volume_threshold"],
+            "add_buy_threshold_pct": opt_grid["add_buy_threshold_pct"],
+            "buy_unit": opt_grid["buy_unit"],
+        }
+
+        if any(len(v) == 0 for v in param_ranges.values()):
+            st.error("파라미터 범위가 비어 있습니다. 최소/최대/간격을 확인하세요.")
+            st.session_state["opt_running"] = False
+            return
+
+        sample_size_to_use = int(sample_count)
+        if search_mode == "random":
+            sample_size_to_use = min(sample_size_to_use, total_combinations)
+            if sample_size_to_use <= 0:
+                st.error("랜덤 샘플 수가 0입니다.")
+                st.session_state["opt_running"] = False
+                return
+
+        status.info("[2/2] 백테스트 평가 중")
+        progress_bar.progress(20)
+
+        def update_progress(current, total, combo_params):
+            total = max(int(total), 1)
+            current = max(0, int(current))
+            progress = min(max(current / total, 0.0), 1.0)
+            progress_bar.progress(20 + int(progress * 80))
+            if st.session_state.get("opt_cancel", False):
+                status.warning("취소 요청됨(진행 중 작업 완료 후 반영)")
+                return
+
             elapsed = (datetime.now() - time_start).total_seconds()
-            progress = current / total
-            progress_bar.progress(progress)
-            
-            # 예상 남은 시간 계산
-            if progress > 0.05:  # 최소 5% 이상 진행했을 때만 계산
-                estimated_total = elapsed / progress
-                estimated_remaining = estimated_total - elapsed
-                time_str = f"{int(estimated_remaining)}초"
-                if estimated_remaining > 60:
-                    time_str = f"{estimated_remaining/60:.1f}분"
+            if progress > 0.03:
+                remain = max((elapsed / progress) - elapsed, 0)
+                remain_txt = f"{remain/60:.1f}분" if remain > 60 else f"{int(remain)}초"
             else:
-                time_str = "계산 중..."
-            
-            buy_unit_man = params.get('buy_unit', 2_000_000) // 10_000  # 원 -> 만원
-            status_text.text(
-                f"진행: {current}/{total} ({int(progress*100)}%) | "
-                f"남은 시간: {time_str} | "
-                f"매수: {params.get('max_daily_buys')}개, "
-                f"평균: {params.get('rolling_days')}일, "
-                f"배수: {params.get('volume_threshold')}"
+                remain_txt = "계산 중"
+            status.info(
+                f"진행: {current}/{total} ({int(progress*100)}%) · 예상 남은 시간: {remain_txt}"
             )
-        
-        # 최적화 실행 (전체 기간, 한 번만!)
+
         optimizer = BacktestOptimizer(df, kospi_index)
-        
         try:
             results_df = optimizer.optimize_parameters(
                 start_date=global_start_date,
                 end_date=global_end_date,
                 param_ranges=param_ranges,
-                initial_cash=initial_cash,
+                initial_cash=float(initial_cash),
                 progress_callback=update_progress,
                 search_mode=search_mode,
-                sample_size=sample_count,
-                random_seed=random_seed,
+                sample_size=sample_size_to_use,
+                random_seed=int(random_seed),
             )
-            
-            progress_bar.progress(1.0)
-            
-            if results_df.empty:
-                st.warning(f"⚠️ 최적화 결과가 없습니다.")
-                
-                # 디버깅 정보 표시
-                with st.expander("🔍 진단 정보"):
-                    st.write(f"""
-                    **데이터 범위**: {global_start_date.date()} ~ {global_end_date.date()}
-                    **파라미터 범위**: 
-                    - max_daily_buys: {param_ranges['max_daily_buys']}
-                    - rolling_days: {param_ranges['rolling_days']}
-                    - volume_threshold: {param_ranges['volume_threshold']}
-                    - add_buy_threshold_pct: {param_ranges['add_buy_threshold_pct']}
-                    
-                    **가능한 원인**:
-                    1. 선택한 기간에 거래 데이터가 부족합니다
-                    2. 모든 백테스트 조합에서 오류가 발생했습니다 (터미널 로그 확인)
-                    3. 시그널이 생성되지 않았습니다
-                    
-                    **해결 방법**:
-                    - 파라미터 범위를 줄여보세요
-                    - 더 많은 데이터를 로드해보세요
-                    - 터미널 출력을 확인하세요
-                    """)
-                
+
+            progress_bar.progress(100)
+            st.session_state["opt_running"] = False
+
+            if results_df is None or results_df.empty:
+                st.warning("⚠️ 최적화 결과가 없습니다.")
             else:
-                # 최적 파라미터 찾기
-                optimal_params = optimizer.get_optimal_params(results_df, optimization_metric)
-                
-                # 최적화 완료 메시지
-                st.success(f"✅ 최적화 완료! {len(results_df)}개 조합 테스트 완료")
-                
-                # ===== 최적 범용 파라미터 표시 =====
-                st.markdown("### 🏆 최적 범용 파라미터")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("일일 최대 매수", f"{optimal_params['max_daily_buys']}개")
-                    st.metric("직전 거래일 평균", f"{optimal_params['rolling_days']}일")
-                
-                with col2:
-                    st.metric("평균 대비 배수", f"{optimal_params['volume_threshold']:.2f}배")
-                    st.metric("추가매수 손절", f"{optimal_params['add_buy_threshold_pct']:.1f}%")
-                
-                with col3:
-                    buy_unit_man = optimal_params.get('buy_unit', 2_000_000) // 10_000
-                    st.metric("매수 금액 단위", f"{int(buy_unit_man)}만원")
-                    metric_name = {
-                        "total_return": "총 수익률",
-                        "sharpe_ratio": "샤프 비율",
-                        "excess_return": "초과 수익률"
-                    }[optimization_metric]
-                    metric_value = optimal_params[f'best_{optimization_metric}']
-                    if optimization_metric in ["total_return", "excess_return"]:
-                        st.metric(f"🎯 {metric_name}", f"{metric_value:.2f}%")
-                    else:
-                        st.metric(f"🎯 {metric_name}", f"{metric_value:.4f}")
-                
-                # ===== 성과 지표 =====
-                st.markdown("### 📊 성과 지표")
-                
-                metric_cols = st.columns(5)
-                
-                with metric_cols[0]:
-                    st.metric("총 수익률", f"{optimal_params['best_total_return']:.2f}%")
-                
-                with metric_cols[1]:
-                    st.metric("KOSPI 수익률", f"{optimal_params['best_kospi_return']:.2f}%")
-                
-                with metric_cols[2]:
-                    st.metric("초과 수익률", f"{optimal_params['best_excess_return']:.2f}%")
-                
-                with metric_cols[3]:
-                    st.metric("샤프 비율", f"{optimal_params['best_sharpe_ratio']:.4f}")
-                
-                with metric_cols[4]:
-                    st.metric("최대 낙폭", f"{optimal_params['best_mdd']:.2f}%")
-                
-                # ===== 거래 통계 =====
-                st.markdown("### 💹 거래 통계")
-                
-                trade_cols = st.columns(3)
-                
-                with trade_cols[0]:
-                    st.metric("총 거래 횟수", f"{optimal_params['total_trades']}회")
-                
-                with trade_cols[1]:
-                    st.metric("승률", f"{optimal_params['win_rate']:.2f}%")
-                
-                with trade_cols[2]:
-                    st.metric("기간", f"{(global_end_date - global_start_date).days}일")
-                
-                # ===== 결과 상세 정보 =====
-                with st.expander("📈 상세 결과 (모든 테스트 조합)"):
-                    # 상위 10개 결과
-                    top_10 = results_df.nlargest(10, optimization_metric)
-                    display_cols = ['max_daily_buys', 'rolling_days', 'volume_threshold', 
-                                   'add_buy_threshold_pct', 'total_return', 'sharpe_ratio', 
-                                   'excess_return', 'total_trades', 'win_rate']
-                    
-                    # buy_unit는 원 단위이므로 만원으로 변환해서 표시
-                    display_df = top_10[display_cols].copy()
-                    if 'buy_unit' in top_10.columns:
-                        display_df.insert(4, '매수금액(만원)', top_10['buy_unit'] // 10_000)
-                    
-                    st.dataframe(display_df, use_container_width=True)
-                    
-                    # 다운로드 버튼
-                    csv_data = results_df.to_csv(index=False)
-                    st.download_button(
-                        label="📥 전체 결과 CSV 다운로드",
-                        data=csv_data,
-                        file_name=f"optimization_results_{global_start_date.strftime('%Y%m%d')}_{global_end_date.strftime('%Y%m%d')}.csv",
-                        mime="text/csv"
-                    )
-                
-                # ===== 최적 파라미터 저장 제안 =====
-                st.markdown("### 💾 최적 파라미터 저장")
-                
-                save_col1, save_col2 = st.columns(2)
-                
-                with save_col1:
-                    if st.button("💾 최적 파라미터를 설정으로 저장", use_container_width=True, type="primary"):
-                        from app.settings import UserSettings
-                        settings_mgr = UserSettings()
-                        
-                        settings_mgr.set('optimal_max_daily_buys', optimal_params['max_daily_buys'])
-                        settings_mgr.set('optimal_rolling_days', optimal_params['rolling_days'])
-                        settings_mgr.set('optimal_volume_threshold', optimal_params['volume_threshold'])
-                        settings_mgr.set('optimal_add_buy_threshold_pct', optimal_params['add_buy_threshold_pct'])
-                        settings_mgr.set('optimal_buy_unit', optimal_params.get('buy_unit', 2_000_000))
-                        
-                        st.success("✅ 최적 파라미터가 설정으로 저장되었습니다!")
-                
-                with save_col2:
-                    # 최적 파라미터를 JSON으로 표시
-                    optimal_json = {
-                        'max_daily_buys': int(optimal_params['max_daily_buys']),
-                        'rolling_days': int(optimal_params['rolling_days']),
-                        'volume_threshold': float(optimal_params['volume_threshold']),
-                        'add_buy_threshold_pct': float(optimal_params['add_buy_threshold_pct']),
-                        'buy_unit': int(optimal_params.get('buy_unit', 2_000_000)),
-                        'optimization_date': global_end_date.strftime('%Y-%m-%d'),
-                        'test_period': f"{global_start_date.strftime('%Y-%m-%d')} ~ {global_end_date.strftime('%Y-%m-%d')}"
-                    }
-                    
-                    json_str = json.dumps(optimal_json, indent=2, ensure_ascii=False)
-                    
-                    st.download_button(
-                        label="📥 파라미터 JSON 다운로드",
-                        data=json_str,
-                        file_name=f"optimal_params_{global_end_date.strftime('%Y%m%d')}.json",
-                        mime="application/json",
-                        use_container_width=True
-                    )
-                    
+                results_df = results_df.copy()
+                if optimization_metric in results_df.columns:
+                    results_df = results_df.sort_values(optimization_metric, ascending=False).reset_index(drop=True)
+                results_df.insert(0, "rank", range(1, len(results_df) + 1))
+
+                st.session_state["opt_results_df"] = results_df
+                best_row = results_df.iloc[0].to_dict()
+                st.session_state["opt_best"] = best_row
+                st.session_state["opt_last_hash"] = run_hash
+                st.session_state["opt_last_run_ts"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                st.success(f"✅ 최적화 완료 · {len(results_df)}개 후보 평가")
         except Exception as e:
-            st.error(f"⚠️ 최적화 중 오류 발생")
-            
-            # 상세 에러 정보 표시
+            st.session_state["opt_running"] = False
+            st.error("⚠️ 최적화 중 오류 발생")
             with st.expander("🔍 오류 상세 정보"):
                 import traceback
                 st.code(f"Error: {str(e)}", language="text")
                 st.code(traceback.format_exc(), language="python")
+
+    # [4] Results
+    block4 = st.container(border=True)
+    with block4:
+        st.markdown("#### [4] Results")
+        results_df = st.session_state.get("opt_results_df", pd.DataFrame())
+        if results_df is None or results_df.empty:
+            st.info("최적화 실행 후 결과가 여기에 표시됩니다.")
+            return
+
+        metric_alias = {
+            "total_return": "CAGR/total_return",
+            "win_rate": "win_rate",
+            "mdd": "max_drawdown",
+            "max_drawdown": "max_drawdown",
+            "total_trades": "trades_count",
+        }
+
+        best_row = st.session_state.get("opt_best", {})
+        st.markdown("##### Best Params")
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            st.metric("objective", f"{best_row.get(st.session_state.get('opt_metric', 'total_return'), '-')}")
+        with b2:
+            st.metric("rolling_days", f"{best_row.get('rolling_days', '-')}")
+        with b3:
+            st.metric("volume_threshold", f"{best_row.get('volume_threshold', '-')}")
+
+        top_n = st.selectbox("Top N", options=[5, 10, 20], index=1, key="opt_top_n")
+        top_df = results_df.head(int(top_n)).copy()
+
+        show_cols = [
+            "rank",
+            st.session_state.get("opt_metric", "total_return"),
+            "total_return",
+            "win_rate",
+            "mdd",
+            "max_drawdown",
+            "total_trades",
+            "rolling_days",
+            "volume_threshold",
+            "add_buy_threshold_pct",
+            "max_daily_buys",
+            "buy_unit",
+        ]
+        show_cols = [c for c in show_cols if c in top_df.columns]
+        if "buy_unit" in top_df.columns:
+            top_df["buy_unit(만원)"] = (top_df["buy_unit"] // 10_000).astype(int)
+            show_cols = [c for c in show_cols if c != "buy_unit"] + ["buy_unit(만원)"]
+
+        st.dataframe(top_df[show_cols], use_container_width=True, hide_index=True)
+
+        st.markdown("##### Compare (최대 3개)")
+        compare_labels = [f"#{int(r['rank'])}" for _, r in top_df.iterrows()]
+        selected_labels = st.multiselect("비교 후보", options=compare_labels, default=compare_labels[: min(2, len(compare_labels))])
+        selected_ranks = [int(lbl.replace("#", "")) for lbl in selected_labels[:3]]
+        selected_rows = top_df[top_df["rank"].isin(selected_ranks)]
+        if not selected_rows.empty:
+            cols = st.columns(len(selected_rows))
+            for col, (_, row) in zip(cols, selected_rows.iterrows()):
+                with col:
+                    st.markdown(f"**#{int(row['rank'])}**")
+                    for key in ["total_return", "sharpe_ratio", "excess_return", "win_rate", "mdd", "rolling_days", "volume_threshold", "add_buy_threshold_pct", "max_daily_buys"]:
+                        if key in row:
+                            st.caption(f"{key}: {row[key]}")
+
+        st.markdown("##### Apply / Export")
+        apply_cols = st.columns(min(len(top_df), 3)) if len(top_df) > 0 else []
+        for idx, (_, row) in enumerate(top_df.head(len(apply_cols)).iterrows()):
+            with apply_cols[idx]:
+                if st.button(f"Apply #{int(row['rank'])}", key=f"opt_apply_{int(row['rank'])}", use_container_width=True):
+                    if "rolling_days" in row:
+                        st.session_state["backtest_rolling_days"] = int(row["rolling_days"])
+                    if "volume_threshold" in row:
+                        st.session_state["backtest_volume_threshold"] = float(row["volume_threshold"])
+                    if "add_buy_threshold_pct" in row:
+                        st.session_state["backtest_loss_threshold"] = float(row["add_buy_threshold_pct"])
+                    if "max_daily_buys" in row:
+                        st.session_state["sim_max_daily_buys"] = int(row["max_daily_buys"])
+                    if "buy_unit" in row:
+                        st.session_state["sim_buy_unit"] = float(row["buy_unit"])
+                    st.success("🎯 시뮬레이션 탭에 파라미터가 적용되었습니다. 실행 버튼을 눌러 확인하세요.")
+
+        export_col1, export_col2 = st.columns(2)
+        with export_col1:
+            st.download_button(
+                label="Export Top N as CSV",
+                data=top_df.to_csv(index=False),
+                file_name=f"optimization_top_{top_n}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with export_col2:
+            best_json = json.dumps(best_row, ensure_ascii=False, indent=2, default=str)
+            st.download_button(
+                label="Export Best Params as JSON",
+                data=best_json,
+                file_name="optimization_best_params.json",
+                mime="application/json",
+                use_container_width=True,
+            )
 
 
 def run_app(current_tab: str = "📊 시그널") -> None:
@@ -2423,101 +2426,195 @@ def run_app(current_tab: str = "📊 시그널") -> None:
 
     elif current_tab == "🎯 시뮬레이션":
         st.subheader("🎯 백테스트 시뮬레이션")
-        
-        # 시뮬레이션 모드 선택 (먼저 선택)
-        st.markdown("### 🎯 시뮬레이션 모드 선택")
-        simulation_mode = st.radio(
-            "분석 방식을 선택하세요",
-            options=["📊 기본 시뮬레이션", "🔬 종목별 일괄 테스트", "📅 연도별 성과 분석"],
-            horizontal=True,
-            help="기본: 전체 신호 분석 | 종목별: 각 종목별 알고리즘 비교 | 연도별: 시황변화에 무관한 종목 찾기"
-        )
-        
-        st.divider()
-        
-        # 연도별 성과분석을 제외한 모드에서만 분석 기간 설정 표시
-        if simulation_mode != "📅 연도별 성과 분석":
-            # 날짜 범위 설정
-            with st.expander("📅 분석 기간 설정", expanded=True):
-                st.caption("시뮬레이션을 실행할 기간을 선택하세요")
-                
-                col_date1, col_date2 = st.columns(2)
-                
-                # 기본값: 최근 1년
-                from datetime import datetime, timedelta
+        if "simulation_mode" not in st.session_state:
+            st.session_state["simulation_mode"] = "📊 기본 시뮬레이션"
+        if "sim_running" not in st.session_state:
+            st.session_state["sim_running"] = False
+        if "sim_stop_requested" not in st.session_state:
+            st.session_state["sim_stop_requested"] = False
+        if "recent_runs" not in st.session_state:
+            st.session_state["recent_runs"] = []
+        if "simulation_results" not in st.session_state:
+            st.session_state["simulation_results"] = {}
+        if "simulation_last_param_hash" not in st.session_state:
+            st.session_state["simulation_last_param_hash"] = ""
+
+        mode_desc = {
+            "📊 기본 시뮬레이션": "기본: 전체 신호 기반 단일 백테스트",
+            "🔬 종목별 일괄 테스트": "일괄: 다수 종목 성과 비교",
+            "📅 연도별 성과 분석": "연도별: 전략 일관성 검증",
+        }
+
+        mode_box = st.container(border=True)
+        with mode_box:
+            st.markdown("#### [1] Mode Selector")
+            simulation_mode = st.radio(
+                "분석 방식을 선택하세요",
+                options=["📊 기본 시뮬레이션", "🔬 종목별 일괄 테스트", "📅 연도별 성과 분석"],
+                index=["📊 기본 시뮬레이션", "🔬 종목별 일괄 테스트", "📅 연도별 성과 분석"].index(st.session_state.get("simulation_mode", "📊 기본 시뮬레이션")),
+                horizontal=True,
+                key="sim_mode_select",
+            )
+            st.session_state["simulation_mode"] = simulation_mode
+            st.caption(mode_desc.get(simulation_mode, ""))
+
+        param_box = st.container(border=True)
+        with param_box:
+            st.markdown("#### [2] Parameter Block")
+            cap1, cap2, cap3 = st.columns(3)
+            with cap1:
+                initial_cash = st.number_input(
+                    "초기 자산",
+                    min_value=0,
+                    max_value=1_000_000_000,
+                    value=int(st.session_state.get("sim_initial_cash", params["initial_cash"])),
+                    step=5_000_000,
+                    format="%d",
+                    key="sim_initial_cash_main",
+                )
+            with cap2:
+                buy_unit = st.number_input(
+                    "매수 금액 단위 (만원)",
+                    min_value=50,
+                    max_value=1000,
+                    value=int(st.session_state.get("sim_buy_unit", params["buy_unit"]) // 10_000),
+                    step=50,
+                    key="sim_buy_unit_main",
+                ) * 10_000
+            with cap3:
+                max_daily_buys = st.number_input(
+                    "일일 매수 한도",
+                    min_value=1,
+                    max_value=10,
+                    value=int(st.session_state.get("sim_max_daily_buys", params["max_daily_buys"])),
+                    step=1,
+                    key="sim_max_daily_buys_main",
+                )
+
+            st.session_state["sim_initial_cash"] = float(initial_cash)
+            st.session_state["sim_buy_unit"] = float(buy_unit)
+            st.session_state["sim_max_daily_buys"] = int(max_daily_buys)
+
+            params["initial_cash"] = float(initial_cash)
+            params["buy_unit"] = float(buy_unit)
+            params["max_daily_buys"] = int(max_daily_buys)
+
+            if simulation_mode != "📅 연도별 성과 분석":
+                date_col1, date_col2 = st.columns(2)
+                from datetime import timedelta
                 today = datetime.now().date()
                 one_year_ago = today - timedelta(days=365)
-                
-                with col_date1:
-                    start_date = st.date_input(
-                        "시작일자",
-                        value=one_year_ago,
-                        help="시뮬레이션을 시작할 날짜"
-                    )
-                
-                with col_date2:
-                    end_date = st.date_input(
-                        "종료일자",
-                        value=today,
-                        help="시뮬레이션을 종료할 날짜"
-                    )
-                
-                # 기간 검증
+                with date_col1:
+                    start_date = st.date_input("시작일자", value=one_year_ago, key="sim_start_date")
+                with date_col2:
+                    end_date = st.date_input("종료일자", value=today, key="sim_end_date")
                 if start_date >= end_date:
                     st.error("⚠️ 시작일자는 종료일자보다 빨라야 합니다")
-                else:
-                    days_diff = (end_date - start_date).days
-                    st.success(f"✅ 분석 기간: {days_diff}일 ({start_date} ~ {end_date})")
-            
-            st.divider()
-        
-        # 파라미터 조정 섹션 (모든 모드에서 필요)
-        with st.expander("⚙️ 거래량 분석 파라미터 설정", expanded=True):
-            st.caption("파라미터를 조정하고 백테스트를 실행하세요")
-            
-            col_roll, col_vol, col_add = st.columns(3)
-            
-            with col_roll:
-                rolling_days = st.slider(
-                    "분석 기간 (일)",
-                    min_value=5, max_value=60, 
-                    value=params["turnover_window"], 
-                    step=1,
-                    help="거래량 평균을 계산하는 기간",
-                    key="backtest_rolling_days"
-                )
-            
-            with col_vol:
-                volume_threshold = st.slider(
-                    "급등 기준 (배수)",
-                    min_value=1.0, max_value=10.0, 
-                    value=params["turnover_multiplier"], 
-                    step=0.1,
-                    help="평균 거래량 대비 배수",
-                    key="backtest_volume_threshold"
-                )
-            
-            with col_add:
-                loss_threshold = st.slider(
-                    "추가매수 손실 임계값 (%)",
-                    min_value=-30.0, max_value=-1.0, 
-                    value=params["add_buy_threshold_pct"], 
-                    step=0.5,
-                    help="이 수익률 이하일 때 추가매수 고려",
-                    key="backtest_loss_threshold"
-                )
-            
-            # 현재 설정 표시
-            st.markdown("---")
-            col_info1, col_info2, col_info3 = st.columns(3)
-            with col_info1:
-                st.metric("📅 분석 기간", f"{int(rolling_days)}일")
-            with col_info2:
-                st.metric("📈 급등 기준", f"{volume_threshold:.1f}배")
-            with col_info3:
-                st.metric("🔴 손절 기준", f"{loss_threshold:.1f}%")
-        
-        st.divider()
+                    return
+                days_diff = (end_date - start_date).days
+            else:
+                start_date = None
+                end_date = None
+                days_diff = 365
+
+            roll_col, vol_col, loss_col = st.columns(3)
+            with roll_col:
+                rolling_days = st.slider("분석 기간 (일)", 5, 60, int(params["turnover_window"]), 1, key="backtest_rolling_days")
+            with vol_col:
+                volume_threshold = st.slider("급등 기준 (배수)", 1.0, 10.0, float(params["turnover_multiplier"]), 0.1, key="backtest_volume_threshold")
+            with loss_col:
+                loss_threshold = st.slider("추가매수 손실 임계값 (%)", -30.0, -1.0, float(params["add_buy_threshold_pct"]), 0.5, key="backtest_loss_threshold")
+
+        df_status = load_stock_data(params["data_dir"])
+        df_status["date"] = pd.to_datetime(df_status["date"])
+        total_stocks = int(df_status["code"].nunique()) if "code" in df_status.columns else 0
+        coverage_start = df_status["date"].min().date() if not df_status.empty else "-"
+        coverage_end = df_status["date"].max().date() if not df_status.empty else "-"
+        estimated_days = max(int(days_diff), 1)
+        estimated_seconds = (total_stocks * estimated_days) * 0.0008
+        workload = total_stocks * estimated_days
+
+        current_run = {
+            "mode": simulation_mode,
+            "start": str(start_date) if start_date else "-",
+            "end": str(end_date) if end_date else "-",
+            "window": int(rolling_days),
+            "multiplier": float(volume_threshold),
+            "loss": float(loss_threshold),
+            "initial_cash": float(params["initial_cash"]),
+            "buy_unit": float(params["buy_unit"]),
+            "max_daily_buys": int(params["max_daily_buys"]),
+        }
+        param_hash = hashlib.md5(str(current_run).encode()).hexdigest()
+
+        exec_box = st.container(border=True)
+        with exec_box:
+            st.markdown("#### [3] Execution Control Block")
+            st.caption(f"예상 소요시간: 약 {estimated_seconds:.1f}초 | 데이터 커버리지: {coverage_start} ~ {coverage_end}")
+            if workload > 100000:
+                st.warning(f"⚠️ 대규모 실행 감지: workload={workload:,}")
+
+            actions = [
+                {"key": "run", "label": "실행", "kind": "primary", "disabled": st.session_state["sim_running"]},
+                {"key": "reset", "label": "초기화", "kind": "secondary"},
+            ]
+            if st.session_state["sim_running"]:
+                actions.append({"key": "stop", "label": "중단", "kind": "secondary"})
+
+            clicked = render_action_row(actions, key_prefix="sim_action_")
+            run_simulation = clicked.get("run", False)
+            reset_params = clicked.get("reset", False)
+            stop_requested = clicked.get("stop", False)
+
+            st.markdown("##### 최근 실행 설정")
+            if st.session_state["recent_runs"]:
+                recent_df = pd.DataFrame(st.session_state["recent_runs"])
+                st.dataframe(recent_df, use_container_width=True, hide_index=True)
+                load_cols = st.columns(len(st.session_state["recent_runs"]))
+                for idx, slot in enumerate(st.session_state["recent_runs"]):
+                    with load_cols[idx]:
+                        if st.button(f"Load {idx + 1}", key=f"sim_load_{idx}", use_container_width=True):
+                            st.session_state["simulation_mode"] = slot["mode"]
+                            st.session_state["sim_initial_cash"] = float(slot["initial_cash"])
+                            st.session_state["sim_buy_unit"] = float(slot["buy_unit"])
+                            st.session_state["sim_max_daily_buys"] = int(slot["max_daily_buys"])
+                            st.session_state["backtest_rolling_days"] = int(slot["window"])
+                            st.session_state["backtest_volume_threshold"] = float(slot["multiplier"])
+                            st.session_state["backtest_loss_threshold"] = float(slot["loss"])
+                            if slot.get("start") and slot.get("start") != "-":
+                                st.session_state["sim_start_date"] = pd.to_datetime(slot["start"]).date()
+                            if slot.get("end") and slot.get("end") != "-":
+                                st.session_state["sim_end_date"] = pd.to_datetime(slot["end"]).date()
+                            st.rerun()
+
+        if reset_params:
+            st.session_state.clear()
+            st.rerun()
+        if stop_requested:
+            st.session_state["sim_stop_requested"] = True
+            st.warning("중단 요청이 접수되었습니다.")
+        if not run_simulation:
+            st.info("⚙️ 파라미터를 설정하고 실행 버튼을 눌러주세요.")
+            return
+
+        st.session_state["sim_running"] = True
+        st.session_state["sim_stop_requested"] = False
+
+        recent_runs = [current_run] + [r for r in st.session_state["recent_runs"] if r != current_run]
+        st.session_state["recent_runs"] = recent_runs[:3]
+
+        use_cached_result = (
+            st.session_state.get("simulation_last_param_hash") == param_hash
+            and param_hash in st.session_state.get("simulation_results", {})
+        )
+
+        progress_placeholder = st.empty()
+        with progress_placeholder.container():
+            render_progress_steps(["데이터 로드", "시그널 생성", "백테스트 실행"], 0, 0.1)
+
+        result_box = st.container(border=True)
+        with result_box:
+            st.markdown("#### [4] Results Block")
         
         # 데이터 로딩
         with st.spinner("📊 데이터 로딩 중..."):
@@ -2544,27 +2641,39 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         
         # 모드별 시뮬레이션 실행
         if simulation_mode == "📊 기본 시뮬레이션":
-            # 시뮬레이션 실행 버튼
-            col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
-            with col_btn1:
-                run_simulation = st.button("🚀 시뮬레이션 하기", use_container_width=True, type="primary", key="basic_sim_btn")
-            with col_btn2:
-                reset_params = st.button("🔄 초기화", use_container_width=True, key="reset_btn")
-            
-            if reset_params:
-                st.session_state.clear()
-                st.rerun()
-            
-            if not run_simulation:
-                st.info("⚙️ 파라미터를 설정하고 '🚀 시뮬레이션 하기' 버튼을 클릭하세요.")
-                return
-            
             st.subheader(f"📊 백테스트 결과 ({start_date} ~ {end_date})")
             st.caption(f"분석 기간: {(end_date - start_date).days}일 동안 시뮬레이션")
-            
-            # 시그널 생성 (시뮬레이션 탭 전용) - 조정된 파라미터 사용
-            with st.spinner("🔍 시그널 분석 중..."):
-                signals = build_signals(
+
+            cached_payload = st.session_state["simulation_results"].get(param_hash) if use_cached_result else None
+            if cached_payload and cached_payload.get("mode") == simulation_mode:
+                equity_df = cached_payload.get("equity_df", pd.DataFrame())
+                trades_df = cached_payload.get("trades_df", pd.DataFrame())
+                strategy_signals = cached_payload.get("strategy_signals", pd.DataFrame())
+                st.info("🧠 동일 파라미터 결과를 캐시에서 불러왔습니다.")
+            else:
+                with st.spinner("🔍 시그널 분석 중..."):
+                    signals = build_signals(
+                        df_filtered,
+                        int(rolling_days),
+                        float(volume_threshold),
+                        20,
+                        5.0,
+                        20,
+                        2.0,
+                        20,
+                        2.0,
+                        ["Turnover Spike"],
+                        "ANY",
+                    )
+                    signals = signals.merge(kospi, on="code", how="left")
+
+                    if "spike_ratio" in signals.columns:
+                        signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
+                    else:
+                        signals = signals.sort_values(["date"], ascending=[False])
+                    signals = apply_signal_filters(signals, params["signal_filter"])
+
+                strategy_signals = build_signals(
                     df_filtered,
                     int(rolling_days),
                     float(volume_threshold),
@@ -2577,40 +2686,26 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                     ["Turnover Spike"],
                     "ANY",
                 )
-                signals = signals.merge(kospi, on="code", how="left")
+                strategy_signals = strategy_signals.merge(kospi, on="code", how="left")
 
-                if "spike_ratio" in signals.columns:
-                    signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
-                else:
-                    signals = signals.sort_values(["date"], ascending=[False])
-                signals = apply_signal_filters(signals, params["signal_filter"])
-            
-            strategy_signals = build_signals(
-                df_filtered,
-                int(rolling_days),
-                float(volume_threshold),
-                20,
-                5.0,
-                20,
-                2.0,
-                20,
-                2.0,
-                ["Turnover Spike"],
-                "ANY",
-            )
-            strategy_signals = strategy_signals.merge(kospi, on="code", how="left")
-
-            equity_df, trades_df = run_turnover_strategy_backtest(
-                df_filtered,
-                strategy_signals,
-                kospi_index,
-                start_date_dt,
-                top_n=2,
-                initial_cash=params["initial_cash"],
-                max_daily_buys=params["max_daily_buys"],
-                buy_unit=params["buy_unit"],
-                add_buy_threshold_pct=float(loss_threshold),
-            )
+                equity_df, trades_df = run_turnover_strategy_backtest(
+                    df_filtered,
+                    strategy_signals,
+                    kospi_index,
+                    start_date_dt,
+                    top_n=2,
+                    initial_cash=params["initial_cash"],
+                    max_daily_buys=params["max_daily_buys"],
+                    buy_unit=params["buy_unit"],
+                    add_buy_threshold_pct=float(loss_threshold),
+                )
+                st.session_state["simulation_results"][param_hash] = {
+                    "mode": simulation_mode,
+                    "equity_df": equity_df,
+                    "trades_df": trades_df,
+                    "strategy_signals": strategy_signals,
+                }
+                st.session_state["simulation_last_param_hash"] = param_hash
             render_backtest_curve(equity_df, kospi_index, start_date_dt)
             if not equity_df.empty:
                 equity_df = equity_df.copy()
@@ -2769,20 +2864,9 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                     test_stock_codes = overlapping  # 데이터가 있는 종목만 테스트
             
             st.divider()
-            
-            # 일괄 테스트 실행 버튼
-            col_btn1, col_btn2 = st.columns([1, 1])
-            with col_btn1:
-                run_batch_test = st.button("🚀 일괄 테스트 실행", use_container_width=True, type="primary", key="batch_test_btn")
-            with col_btn2:
-                reset_params = st.button("🔄 초기화", use_container_width=True, key="reset_btn2")
-            
-            if reset_params:
-                st.session_state.clear()
-                st.rerun()
-            
-            if not run_batch_test or len(test_stock_codes) == 0:
-                st.info("📌 테스트할 종목을 선택하고 '🚀 일괄 테스트 실행' 버튼을 클릭하세요.")
+
+            if len(test_stock_codes) == 0:
+                st.info("📌 테스트할 종목을 선택해주세요.")
                 return
             
             st.divider()
@@ -2792,24 +2876,34 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             
             # 일괄 백테스트 실행
             from app.backtest_analyzer import run_batch_backtest
-            
-            with st.spinner("🔬 종목별 테스트 진행 중..."):
-                batch_results = run_batch_backtest(
-                    df_filtered,
-                    test_stock_codes,
-                    int(rolling_days),
-                    float(volume_threshold),
-                    float(loss_threshold),
-                    start_date,
-                    end_date,
-                    build_signals,
-                    run_turnover_strategy_backtest,
-                    kospi_index,
-                    kospi_list=kospi,
-                    initial_cash=params["initial_cash"],
-                    max_daily_buys=params["max_daily_buys"],
-                    buy_unit=params["buy_unit"],
-                )
+
+            cached_payload = st.session_state["simulation_results"].get(param_hash) if use_cached_result else None
+            if cached_payload and cached_payload.get("mode") == simulation_mode:
+                batch_results = cached_payload.get("batch_results", pd.DataFrame())
+                st.info("🧠 동일 파라미터 결과를 캐시에서 불러왔습니다.")
+            else:
+                with st.spinner("🔬 종목별 테스트 진행 중..."):
+                    batch_results = run_batch_backtest(
+                        df_filtered,
+                        test_stock_codes,
+                        int(rolling_days),
+                        float(volume_threshold),
+                        float(loss_threshold),
+                        start_date,
+                        end_date,
+                        build_signals,
+                        run_turnover_strategy_backtest,
+                        kospi_index,
+                        kospi_list=kospi,
+                        initial_cash=params["initial_cash"],
+                        max_daily_buys=params["max_daily_buys"],
+                        buy_unit=params["buy_unit"],
+                    )
+                st.session_state["simulation_results"][param_hash] = {
+                    "mode": simulation_mode,
+                    "batch_results": batch_results,
+                }
+                st.session_state["simulation_last_param_hash"] = param_hash
             
             if not batch_results.empty:
                 st.success(f"✅ {len(batch_results)}개 종목 분석 완료")
@@ -3089,68 +3183,62 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             
             st.divider()
             
-            # 연도별 분석 실행 버튼
-            col_btn1, col_btn2 = st.columns([1, 1])
-            with col_btn1:
-                run_yearly_test = st.button("🚀 연도별 분석 실행", use_container_width=True, type="primary")
-            with col_btn2:
-                reset_yearly = st.button("🔄 초기화", use_container_width=True)
-            
-            if reset_yearly:
-                st.session_state.clear()
-                st.rerun()
-            
-            if not run_yearly_test:
-                st.info("📌 분석할 종목을 선택하고 '🚀 연도별 분석 실행' 버튼을 클릭하세요.")
-                return
-            
-            st.divider()
-            
             # 연도별 백테스트 실행
-            if analysis_scope == "📌 단일 종목":
-                from app.yearly_backtest import run_yearly_backtest, analyze_consistency
-                
-                with st.spinner(f"📅 {selected_name} 연도별 분석 진행 중..."):
-                    yearly_results = run_yearly_backtest(
-                        df,
-                        selected_code,
-                        selected_name,
-                        int(rolling_days),
-                        float(volume_threshold),
-                        float(loss_threshold),
-                        build_signals,
-                        run_turnover_strategy_backtest,
-                        kospi_index,
-                        initial_cash=params["initial_cash"],
-                        max_daily_buys=params["max_daily_buys"],
-                        buy_unit=params["buy_unit"],
-                        start_year=int(start_year),
-                        end_year=int(end_year),
-                    )
-            else:  # 모든 종목
-                from app.yearly_backtest import run_yearly_backtest_batch, summarize_all_stocks_consistency
-                
-                with st.spinner(f"📅 {len(selected_codes)}개 종목 연도별 분석 진행 중... (시간이 걸릴 수 있습니다)"):
-                    yearly_results = run_yearly_backtest_batch(
-                        df,
-                        selected_codes,
-                        int(rolling_days),
-                        float(volume_threshold),
-                        float(loss_threshold),
-                        build_signals,
-                        run_turnover_strategy_backtest,
-                        kospi_index,
-                        kospi_list=kospi,
-                        initial_cash=params["initial_cash"],
-                        max_daily_buys=params["max_daily_buys"],
-                        buy_unit=params["buy_unit"],
-                        start_year=int(start_year),
-                        end_year=int(end_year),
-                    )
-                
-                # 종목별 일관성 요약 계산
-                if not yearly_results.empty:
-                    consistency_summary = summarize_all_stocks_consistency(yearly_results)
+            cached_payload = st.session_state["simulation_results"].get(param_hash) if use_cached_result else None
+            if cached_payload and cached_payload.get("mode") == simulation_mode:
+                yearly_results = cached_payload.get("yearly_results", pd.DataFrame())
+                consistency_summary = cached_payload.get("consistency_summary", pd.DataFrame())
+                st.info("🧠 동일 파라미터 결과를 캐시에서 불러왔습니다.")
+            else:
+                if analysis_scope == "📌 단일 종목":
+                    from app.yearly_backtest import run_yearly_backtest, analyze_consistency
+                    
+                    with st.spinner(f"📅 {selected_name} 연도별 분석 진행 중..."):
+                        yearly_results = run_yearly_backtest(
+                            df,
+                            selected_code,
+                            selected_name,
+                            int(rolling_days),
+                            float(volume_threshold),
+                            float(loss_threshold),
+                            build_signals,
+                            run_turnover_strategy_backtest,
+                            kospi_index,
+                            initial_cash=params["initial_cash"],
+                            max_daily_buys=params["max_daily_buys"],
+                            buy_unit=params["buy_unit"],
+                            start_year=int(start_year),
+                            end_year=int(end_year),
+                        )
+                    consistency_summary = pd.DataFrame()
+                else:  # 모든 종목
+                    from app.yearly_backtest import run_yearly_backtest_batch, summarize_all_stocks_consistency
+                    
+                    with st.spinner(f"📅 {len(selected_codes)}개 종목 연도별 분석 진행 중... (시간이 걸릴 수 있습니다)"):
+                        yearly_results = run_yearly_backtest_batch(
+                            df,
+                            selected_codes,
+                            int(rolling_days),
+                            float(volume_threshold),
+                            float(loss_threshold),
+                            build_signals,
+                            run_turnover_strategy_backtest,
+                            kospi_index,
+                            kospi_list=kospi,
+                            initial_cash=params["initial_cash"],
+                            max_daily_buys=params["max_daily_buys"],
+                            buy_unit=params["buy_unit"],
+                            start_year=int(start_year),
+                            end_year=int(end_year),
+                        )
+                    consistency_summary = summarize_all_stocks_consistency(yearly_results) if not yearly_results.empty else pd.DataFrame()
+
+                st.session_state["simulation_results"][param_hash] = {
+                    "mode": simulation_mode,
+                    "yearly_results": yearly_results,
+                    "consistency_summary": consistency_summary,
+                }
+                st.session_state["simulation_last_param_hash"] = param_hash
             
             if not yearly_results.empty:
                 if analysis_scope == "📌 단일 종목":
@@ -3274,6 +3362,8 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                     st.bar_chart(chart_df2)
             else:
                 st.error("❌ 분석할 수 있는 데이터가 없습니다.")
+
+        st.session_state["sim_running"] = False
 
     elif current_tab == "⚙️ 최적화":
         # 데이터 로딩 (최적화 탭 전용)

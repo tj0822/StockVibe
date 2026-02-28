@@ -2,6 +2,7 @@ import os
 import pickle
 import pandas as pd
 import streamlit as st
+from datetime import datetime
 
 
 DATA_DIR_DEFAULT = "data"
@@ -84,3 +85,31 @@ def load_finance_data(data_dir: str) -> pd.DataFrame:
         df['foreigner_ratio'] = (df['forignerHaveCnt'] / df['totalCnt'] * 100).fillna(0)
     
     return df.dropna(subset=['date', 'code']).sort_values(['code', 'date'])
+
+
+@st.cache_data(ttl=120)
+def get_data_status(data_dir: str = DATA_DIR_DEFAULT) -> dict:
+    files = {
+        "price": os.path.join(data_dir, "stock.pkl"),
+        "finance": os.path.join(data_dir, "stock_finance_data.pkl"),
+        "news": os.path.join(data_dir, "trading_input_log.json"),
+    }
+
+    status = {
+        "price_ts": "-",
+        "finance_ts": "-",
+        "news_ts": "-",
+        "last_success_fetch": "-",
+    }
+
+    timestamps = []
+    for key, path in files.items():
+        if os.path.exists(path):
+            ts = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
+            status[f"{key}_ts"] = ts
+            timestamps.append(ts)
+
+    if timestamps:
+        status["last_success_fetch"] = max(timestamps)
+
+    return status
