@@ -59,6 +59,23 @@ def get_news_data_for_stock(code: str):
     return news_data
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_kospi_stocks_cached() -> dict:
+    try:
+        crawler = CrawlingKospi()
+        return crawler.GetKospi200()
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_portfolio_codes_cached() -> set:
+    from app.portfolio import PortfolioManager
+    portfolio_mgr = PortfolioManager()
+    portfolio = portfolio_mgr.load_portfolio()
+    return set(portfolio.keys())
+
+
 def render_sidebar(current_tab: str = "시그널") -> dict:
     with st.sidebar:
         st.header("⚙️ 설정")
@@ -1241,30 +1258,15 @@ def render_stock_analysis_page(
     """종목별 분석 페이지: 차트상에 BUY/SELL 신호를 표시"""
     st.title("📈 종목분석")
     st.caption("개별 종목의 주가 추이와 매매 신호를 분석합니다")
-    
-    # KOSPI 200 종목 로드
-    from crawling_kospi import CrawlingKospi
-    from app.portfolio import PortfolioManager
-    
-    @st.cache_data(ttl=3600)
-    def load_kospi_stocks():
-        try:
-            crawler = CrawlingKospi()
-            kospi_dict = crawler.GetKospi200()
-            return kospi_dict
-        except:
-            return {}
-    
-    kospi_dict = load_kospi_stocks()  # {종목코드: 종목명}
+
+    # KOSPI 200/포트폴리오 로드 (캐시)
+    kospi_dict = load_kospi_stocks_cached()  # {종목코드: 종목명}
     
     if not kospi_dict:
         st.error("KOSPI 200 종목 데이터를 불러올 수 없습니다.")
         return
     
-    # 포트폴리오 로드
-    portfolio_mgr = PortfolioManager()
-    portfolio = portfolio_mgr.load_portfolio()
-    portfolio_codes = set(portfolio.keys())  # 보유 종목 코드
+    portfolio_codes = load_portfolio_codes_cached()  # 보유 종목 코드
     
     # 최신 신호 발생 종목 추출
     latest_signals = signals[signals['signal'].isin(['BUY', 'SELL'])].copy()
@@ -1309,17 +1311,8 @@ def render_stock_analysis_page(
         st.error("분석 가능한 종목이 없습니다.")
         return
     
-    # 기간 선택 (기본값: 6개월)
-    period_map = {
-        "1개월": 30,
-        "3개월": 90,
-        "6개월": 180,
-        "1년": 365,
-        "3년": 1095,
-    }
-    
-    # 선택 UI를 한 줄에 배치
-    col1, col2, col3 = st.columns([2, 1, 1])
+    # 선택 UI
+    col1, col2 = st.columns([3, 1])
     
     with col1:
         # 기본값: 첫 번째 보유 종목, 없으면 신호 발생 종목, 없으면 첫 번째 종목
@@ -1338,16 +1331,7 @@ def render_stock_analysis_page(
         )
     
     with col2:
-        selected_period = st.selectbox(
-            "기간",
-            list(period_map.keys()),
-            index=2,  # 기본값: 6개월
-            label_visibility="collapsed",
-            key="period_select"
-        )
-    
-    with col3:
-        st.write("")  # 간격 조정
+        st.caption("기간은 아래에서 시작/종료일로 선택")
     
     if selected_stock not in code_to_name:
         st.error("종목을 선택해주세요.")
@@ -1355,29 +1339,218 @@ def render_stock_analysis_page(
     
     selected_code = code_to_name[selected_stock]
     selected_name = kospi_dict.get(selected_code, selected_code)
-    chart_period = selected_period
     
     # 주가 데이터 필터링
     stock_prices = price_df[price_df['code'] == selected_code].copy()
-    stock_prices = stock_prices.sort_values('date')
+    stock_prices['date'] = pd.to_datetime(stock_prices['date'], errors='coerce')
+    stock_prices = stock_prices.dropna(subset=['date']).sort_values('date')
 
     
     if stock_prices.empty:
         st.warning(f"⚠️ {selected_name}({selected_code})의 주가 데이터가 없습니다.")
         return
+
+    # 날짜 범위 선택 (3년 초과 가능)
+    data_start = pd.to_datetime(stock_prices['date']).min()
+    data_end = pd.to_datetime(stock_prices['date']).max()
+
+    # 기본 시작일: 최근 3년(데이터가 더 짧으면 데이터 시작일)
+    default_start = max(data_start, data_end - pd.DateOffset(days=1095))
+    start_key = "stock_analysis_start_date"
+    end_key = "stock_analysis_end_date"
+
+    # 세션 값 클램프 (선택 종목 데이터 범위 벗어나는 경우 대비)
+    if start_key not in st.session_state:
+        st.session_state[start_key] = default_start.date()
+    else:
+        current_start = st.session_state[start_key]
+        if current_start < data_start.date():
+            st.session_state[start_key] = data_start.date()
+        elif current_start > data_end.date():
+            st.session_state[start_key] = data_end.date()
+
+    if end_key not in st.session_state:
+        st.session_state[end_key] = data_end.date()
+    else:
+        current_end = st.session_state[end_key]
+        if current_end < data_start.date():
+            st.session_state[end_key] = data_start.date()
+        elif current_end > data_end.date():
+            st.session_state[end_key] = data_end.date()
+
+    date_col1, date_col2 = st.columns(2)
+    with date_col1:
+        selected_start_date = st.date_input(
+            "시작일자",
+            min_value=data_start.date(),
+            max_value=data_end.date(),
+            key=start_key,
+            help="분석 시작 날짜를 선택하세요",
+        )
+    with date_col2:
+        selected_end_date = st.date_input(
+            "종료일자",
+            min_value=data_start.date(),
+            max_value=data_end.date(),
+            key=end_key,
+            help="분석 종료 날짜를 선택하세요",
+        )
+
+    if selected_start_date > selected_end_date:
+        st.error("⚠️ 시작일자는 종료일자보다 빠르거나 같아야 합니다.")
+        return
+
+    st.caption(f"선택 구간: {selected_start_date} ~ {selected_end_date} (데이터 범위: {data_start.date()} ~ {data_end.date()})")
     
-    # 기간 필터링
-    days = period_map[chart_period]
-    cutoff_date = pd.Timestamp.now() - pd.DateOffset(days=days)
-    filtered_prices = stock_prices[stock_prices['date'] >= cutoff_date].copy()
+    # 구간 필터링
+    selected_start_ts = pd.to_datetime(selected_start_date)
+    selected_end_ts = pd.to_datetime(selected_end_date)
+    filtered_prices = stock_prices[
+        (stock_prices['date'] >= selected_start_ts) &
+        (stock_prices['date'] <= selected_end_ts)
+    ].copy()
     
     if filtered_prices.empty:
-        st.warning(f"⚠️ {chart_period} 기간의 데이터가 없습니다.")
+        st.warning(f"⚠️ 선택한 구간({selected_start_date} ~ {selected_end_date})의 데이터가 없습니다.")
         return
+
+    # 렌더링/구간 판정 설정
+    perf_col1, perf_col2, perf_col3 = st.columns([1, 1, 2])
+    with perf_col1:
+        fast_plot_mode = st.toggle(
+            "고속 차트 모드",
+            value=True,
+            key="stock_analysis_fast_plot_mode",
+            help="장기 구간에서 주간 리샘플링으로 차트 렌더링 속도를 높입니다",
+        )
+    with perf_col2:
+        regime_window_label = st.selectbox(
+            "상승/하락 기준",
+            options=["3개월", "6개월", "9개월", "12개월"],
+            index=1,
+            key="stock_analysis_regime_window_months",
+            help="코스피 지수의 n개월 추세 수익률(+)이면 상승 구간, (-)이면 하락 구간으로 판정합니다",
+        )
+    with perf_col3:
+        st.caption("고속 모드 ON: 캔들/코스피는 주간 기준으로 단순화되어 렌더링됩니다")
+    regime_window_months = int(regime_window_label.replace("개월", ""))
+
+    plot_prices = filtered_prices
+    if fast_plot_mode and len(filtered_prices) > 520:
+        plot_prices = (
+            filtered_prices
+            .set_index('date')
+            .resample('W-FRI')
+            .agg({
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last',
+                'volume': 'sum',
+            })
+            .dropna(subset=['open', 'high', 'low', 'close'])
+            .reset_index()
+        )
     
     # 해당 종목의 신호 추출
     stock_signals = signals[signals['code'] == selected_code].copy()
-    stock_signals = stock_signals[stock_signals['date'] >= cutoff_date]
+    if not stock_signals.empty:
+        stock_signals['date'] = pd.to_datetime(stock_signals['date'], errors='coerce')
+        stock_signals = stock_signals.dropna(subset=['date'])
+        stock_signals = stock_signals[
+            (stock_signals['date'] >= selected_start_ts) &
+            (stock_signals['date'] <= selected_end_ts)
+        ].sort_values('date')
+
+    # 코스피 지수 로드 및 동일 기간 필터링
+    kospi_index_df = load_kospi_index(params.get("data_dir", "data"))
+    if not kospi_index_df.empty:
+        kospi_index_df = kospi_index_df.copy()
+        kospi_index_df["date"] = pd.to_datetime(kospi_index_df["date"], errors="coerce")
+        kospi_index_df = kospi_index_df.dropna(subset=["date", "index"]).sort_values("date")
+        chart_start = selected_start_ts
+        chart_end = selected_end_ts
+        kospi_filtered = kospi_index_df[
+            (kospi_index_df["date"] >= chart_start) & (kospi_index_df["date"] <= chart_end)
+        ].copy()
+
+        if fast_plot_mode and len(kospi_filtered) > 520:
+            kospi_plot = (
+                kospi_filtered
+                .set_index("date")
+                .resample("W-FRI")
+                .last()
+                .dropna()
+                .reset_index()
+            )
+        else:
+            kospi_plot = kospi_filtered
+    else:
+        kospi_filtered = pd.DataFrame()
+        kospi_plot = pd.DataFrame()
+
+    market_label = "데이터 없음"
+    market_emoji = "⚪"
+    kospi_change_pct = 0.0
+    if not kospi_filtered.empty and len(kospi_filtered) >= 2:
+        kospi_start = float(kospi_filtered["index"].iloc[0])
+        kospi_end = float(kospi_filtered["index"].iloc[-1])
+        if kospi_start > 0:
+            kospi_change_pct = ((kospi_end - kospi_start) / kospi_start) * 100
+        if kospi_change_pct >= 0:
+            market_label = "상승장"
+            market_emoji = "📈"
+        else:
+            market_label = "하락장"
+            market_emoji = "📉"
+
+    # 코스피 상승/하락 구간 계산 (연속 구간)
+    kospi_regime_segments = []
+    if not kospi_filtered.empty and len(kospi_filtered) >= 2:
+        regime_df = kospi_filtered[["date", "index"]].copy().sort_values("date")
+        # 장기간 조회 시 segment 과다 생성으로 렌더링이 느려지는 문제 완화
+        if len(regime_df) > 520:
+            regime_df = (
+                regime_df.set_index("date")
+                .resample("2W-FRI")
+                .last()
+                .dropna()
+                .reset_index()
+            )
+        elif len(regime_df) > 260:
+            regime_df = (
+                regime_df.set_index("date")
+                .resample("W-FRI")
+                .last()
+                .dropna()
+                .reset_index()
+            )
+
+        # n개월 기준 추세 수익률로 상승/하락 구간 판정
+        step_days = regime_df["date"].diff().dt.days.median()
+        step_days = int(step_days) if pd.notna(step_days) and step_days > 0 else 1
+        lookback_points = max(1, int(round((regime_window_months * 30) / step_days)))
+
+        regime_df["trend_return"] = regime_df["index"].pct_change(periods=lookback_points)
+        regime_df["change"] = regime_df["index"].diff()
+        regime_df["is_up"] = regime_df["trend_return"] >= 0
+        # 초기 구간(lookback 이전)은 단기 변화 방향으로 보정
+        regime_df["is_up"] = regime_df["is_up"].where(regime_df["trend_return"].notna(), regime_df["change"] >= 0)
+        first_regime = bool(regime_df["is_up"].iloc[1]) if len(regime_df) > 1 else True
+        regime_df.iloc[0, regime_df.columns.get_loc("is_up")] = first_regime
+
+        segment_start = regime_df["date"].iloc[0]
+        current_regime = bool(regime_df["is_up"].iloc[0])
+
+        for i in range(1, len(regime_df)):
+            point_regime = bool(regime_df["is_up"].iloc[i])
+            if point_regime != current_regime:
+                segment_end = regime_df["date"].iloc[i]
+                kospi_regime_segments.append((segment_start, segment_end, current_regime))
+                segment_start = regime_df["date"].iloc[i]
+                current_regime = point_regime
+
+        kospi_regime_segments.append((segment_start, regime_df["date"].iloc[-1], current_regime))
     
     # =====  캔들스틱 차트 + 신호 표시 =====
     fig = make_subplots(
@@ -1385,32 +1558,65 @@ def render_stock_analysis_page(
         shared_xaxes=True,
         vertical_spacing=0.03,
         row_heights=[0.7, 0.3],
-        subplot_titles=('주가', '거래량')
+        subplot_titles=('주가(코스피 비교)', '거래량'),
+        specs=[[{"secondary_y": True}], [{"secondary_y": False}]],
     )
     
     # 캔들스틱 차트
     fig.add_trace(
         go.Candlestick(
-            x=filtered_prices['date'],
-            open=filtered_prices['open'],
-            high=filtered_prices['high'],
-            low=filtered_prices['low'],
-            close=filtered_prices['close'],
+            x=plot_prices['date'],
+            open=plot_prices['open'],
+            high=plot_prices['high'],
+            low=plot_prices['low'],
+            close=plot_prices['close'],
             name='주가',
             increasing_line_color='red',
             decreasing_line_color='blue'
         ),
-        row=1, col=1
+        row=1, col=1,
+        secondary_y=False,
     )
+
+    # 코스피 지수 라인(보조축)
+    if not kospi_plot.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=kospi_plot["date"],
+                y=kospi_plot["index"],
+                mode="lines",
+                name="KOSPI 지수",
+                line=dict(color="#6b7280", width=2, dash="dot"),
+                opacity=0.9,
+            ),
+            row=1,
+            col=1,
+            secondary_y=True,
+        )
+
+    # 코스피 상승/하락 구간 배경 표시 (상승=빨강, 하락=파랑)
+    show_regime_background = (not fast_plot_mode) or (len(kospi_regime_segments) <= 120)
+    if show_regime_background:
+        for segment_start, segment_end, is_up in kospi_regime_segments:
+            fig.add_vrect(
+                x0=segment_start,
+                x1=segment_end,
+                fillcolor="rgba(255, 0, 0, 0.08)" if is_up else "rgba(0, 0, 255, 0.08)",
+                opacity=1.0,
+                layer="below",
+                line_width=0,
+                row=1,
+                col=1,
+            )
     
     # 거래량 바 차트
     colors = ['red' if close >= open else 'blue' 
-             for close, open in zip(filtered_prices['close'], filtered_prices['open'])]
+             for close, open in zip(plot_prices['close'], plot_prices['open'])]
     
     fig.add_trace(
         go.Bar(
-            x=filtered_prices['date'],
-            y=filtered_prices['volume'],
+            x=plot_prices['date'],
+            y=plot_prices['volume'],
             name='거래량',
             marker_color=colors,
             showlegend=False
@@ -1421,25 +1627,29 @@ def render_stock_analysis_page(
     # BUY/SELL 신호 표시 (스캐터 포인트)
     buy_signals = stock_signals[stock_signals['signal'] == 'BUY']
     sell_signals = stock_signals[stock_signals['signal'] == 'SELL']
+
+    signal_points = stock_signals[stock_signals['signal'].isin(['BUY', 'SELL'])][['date', 'signal']].copy()
+    if not signal_points.empty:
+        signal_points = signal_points.sort_values('date')
+        price_for_match = filtered_prices[['date', 'high', 'low']].sort_values('date')
+        signal_points = pd.merge_asof(
+            signal_points,
+            price_for_match,
+            on='date',
+            direction='nearest',
+        )
+    else:
+        signal_points = pd.DataFrame(columns=['date', 'signal', 'high', 'low'])
     
     if not buy_signals.empty:
-        # 신호 발생 날짜의 종가 찾기
-        buy_prices = []
-        for _, signal_row in buy_signals.iterrows():
-            signal_date = signal_row['date']
-            price_on_date = filtered_prices[filtered_prices['date'] == signal_date]
-            if not price_on_date.empty:
-                buy_prices.append(price_on_date['high'].iloc[0] * 1.02)  # 고가 위에 약간 위에 표시
-            else:
-                # 날짜를 못 찾으면 가장 가까운 날짜 사용
-                closest = filtered_prices.iloc[(filtered_prices['date'] - signal_date).abs().argsort()[:1]]
-                if not closest.empty:
-                    buy_prices.append(closest['high'].iloc[0] * 1.02)
+        buy_points = signal_points[signal_points['signal'] == 'BUY'].copy()
+        buy_points = buy_points.dropna(subset=['high'])
+        buy_prices = (buy_points['high'] * 1.02).tolist()
         
-        if buy_prices:
+        if buy_prices and not buy_points.empty:
             fig.add_trace(
                 go.Scatter(
-                    x=buy_signals['date'],
+                    x=buy_points['date'],
                     y=buy_prices,
                     mode='markers',
                     name='BUY',
@@ -1452,27 +1662,19 @@ def render_stock_analysis_page(
                     text=[f"매수 신호<br>{v:.0f}원" for v in buy_prices],
                     hoverinfo='text'
                 ),
-                row=1, col=1
+                row=1, col=1,
+                secondary_y=False,
             )
     
     if not sell_signals.empty:
-        # 신호 발생 날짜의 종가 찾기
-        sell_prices = []
-        for _, signal_row in sell_signals.iterrows():
-            signal_date = signal_row['date']
-            price_on_date = filtered_prices[filtered_prices['date'] == signal_date]
-            if not price_on_date.empty:
-                sell_prices.append(price_on_date['low'].iloc[0] * 0.98)  # 저가 아래에 약간 아래에 표시
-            else:
-                # 날짜를 못 찾으면 가장 가까운 날짜 사용
-                closest = filtered_prices.iloc[(filtered_prices['date'] - signal_date).abs().argsort()[:1]]
-                if not closest.empty:
-                    sell_prices.append(closest['low'].iloc[0] * 0.98)
+        sell_points = signal_points[signal_points['signal'] == 'SELL'].copy()
+        sell_points = sell_points.dropna(subset=['low'])
+        sell_prices = (sell_points['low'] * 0.98).tolist()
         
-        if sell_prices:
+        if sell_prices and not sell_points.empty:
             fig.add_trace(
                 go.Scatter(
-                    x=sell_signals['date'],
+                    x=sell_points['date'],
                     y=sell_prices,
                     mode='markers',
                     name='SELL',
@@ -1485,7 +1687,8 @@ def render_stock_analysis_page(
                     text=[f"매도 신호<br>{v:.0f}원" for v in sell_prices],
                     hoverinfo='text'
                 ),
-                row=1, col=1
+                row=1, col=1,
+                secondary_y=False,
             )
     
     # 레이아웃 설정
@@ -1495,11 +1698,12 @@ def render_stock_analysis_page(
         hovermode='x unified',
         template='plotly_white',
         margin=dict(l=0, r=0, t=40, b=0),
-        title=f"{selected_name} ({selected_code}) - {chart_period} 차트",
+        title=f"{selected_name} ({selected_code}) - {selected_start_date} ~ {selected_end_date}",
     )
     
     # y축 레이블
-    fig.update_yaxes(title_text="가격 (원)", row=1, col=1)
+    fig.update_yaxes(title_text="종목 가격 (원)", row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="KOSPI 지수", row=1, col=1, secondary_y=True)
     fig.update_yaxes(title_text="거래량", row=2, col=1)
     
     # x축 설정
@@ -1510,10 +1714,16 @@ def render_stock_analysis_page(
     )
     
     st.plotly_chart(fig, use_container_width=True)
+
+    st.caption(f"시장 국면: {market_emoji} {market_label} (코스피 {kospi_change_pct:+.2f}%)")
+    if show_regime_background:
+        st.caption(f"배경 구간: 🔴 코스피 상승 구간 / 🔵 코스피 하락 구간 (판정 기준: {regime_window_label})")
+    else:
+        st.caption("배경 구간은 고속 모드에서 자동 생략됨 (렌더링 속도 개선)")
     
     # =====  신호 통계 및 상세 정보 =====
     st.divider()
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric("현재가", f"{filtered_prices['close'].iloc[-1]:,.0f}원")
@@ -1525,6 +1735,8 @@ def render_stock_analysis_page(
         st.metric("최고가", f"{filtered_prices['high'].max():,.0f}원")
     with col4:
         st.metric("최저가", f"{filtered_prices['low'].min():,.0f}원")
+    with col5:
+        st.metric("코스피 기간수익률", f"{kospi_change_pct:+.2f}%", delta=market_label)
     
     # 신호 통계
     st.subheader("📊 신호 통계")
