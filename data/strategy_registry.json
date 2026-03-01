@@ -1,0 +1,9 @@
+{
+  "turnover_spike": {
+    "enabled": true,
+    "validated": false,
+    "in_production": false,
+    "last_validation": null,
+    "notes": ""
+  }
+}

@@ -18,6 +18,10 @@ from stock_ontology import build_stock_ontology, StockOntology
 
 from .data import DATA_DIR_DEFAULT, load_kospi_index, load_kospi_list, load_stock_data, load_finance_data
 from .signals import build_signals
+from .strategies.registry import get_strategy, list_strategies
+from .strategies.registry_store import get_production_strategy_ids, load_registry
+from .strategies.validation import validate_strategy
+from .strategies.registry_store import update_validation_result
 from .ui_components import render_action_row, render_progress_steps
 
 
@@ -143,6 +147,62 @@ def apply_signal_filters(signals: pd.DataFrame, signal_filter: list[str]) -> pd.
     if signal_filter:
         return signals[signals["signal"].isin(signal_filter)]
     return signals
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def generate_strategy_signals_cached(
+    strategy_id: str,
+    strategy_version: str,
+    price_df: pd.DataFrame,
+    market_df: pd.DataFrame,
+    params_json: str,
+) -> pd.DataFrame:
+    strategy = get_strategy(strategy_id)
+    params = json.loads(params_json) if params_json else {}
+
+    volume_cols = [c for c in ["date", "code", "volume"] if c in price_df.columns]
+    volume_df = price_df[volume_cols].copy() if volume_cols else pd.DataFrame()
+
+    signals = strategy.generate_signals(
+        price_df=price_df,
+        volume_df=volume_df,
+        market_df=market_df,
+        params=params,
+    )
+    if signals is None or signals.empty:
+        return pd.DataFrame(columns=["date", "code", "signal", "confidence", "features_json", "strategy_id", "strategy_name", "strategy_version"])
+
+    signals = signals.copy()
+    if "strategy_id" not in signals.columns:
+        signals["strategy_id"] = strategy.spec.strategy_id
+    if "strategy_name" not in signals.columns:
+        signals["strategy_name"] = strategy.spec.name
+    if "strategy_version" not in signals.columns:
+        signals["strategy_version"] = strategy.spec.version
+    if "confidence" not in signals.columns:
+        signals["confidence"] = 50.0
+    if "features_json" not in signals.columns:
+        signals["features_json"] = "{}"
+
+    return signals
+
+
+def _get_runtime_strategy_params(strategy_id: str, params: dict, rolling_days: int | None = None, volume_threshold: float | None = None) -> dict:
+    strategy = get_strategy(strategy_id)
+    strategy_params = dict(strategy.spec.default_params)
+
+    if strategy_id == "turnover_spike":
+        strategy_params.update(
+            {
+                "turnover_window": int(rolling_days if rolling_days is not None else params.get("turnover_window", 10)),
+                "turnover_multiplier": float(volume_threshold if volume_threshold is not None else params.get("turnover_multiplier", 3.0)),
+                "combine_mode": "ANY",
+                "enabled_algos": ["Turnover Spike"],
+                "top_n": int(params.get("top_n", 10)),
+            }
+        )
+
+    return strategy_params
 
 
 def select_date(signals: pd.DataFrame) -> pd.Timestamp | None:
@@ -867,6 +927,7 @@ def run_turnover_strategy_backtest(
     max_daily_buys: int = 2,
     buy_unit: float = 2_000_000,
     kospi_bullish_only: bool = False,
+    kospi_bullish_lookback_months: int = 6,
     add_buy_threshold_pct: float = -7.0,
     fee_rate: float = 0.0,
     slippage_rate: float = 0.0,
@@ -914,16 +975,22 @@ def run_turnover_strategy_backtest(
     start_date = pd.to_datetime(start_date, errors="coerce").normalize()
     dates = [d for d in open_pivot.index if d >= start_date]
     
-    # 코스피 양봉 날짜 세트 생성 (전일 대비 상승한 날)
+    # 코스피 상승기간 날짜 세트 생성 (n개월 추세 수익률 기준)
     if kospi_bullish_dates is None:
         kospi_bullish_dates = set()
-        if not kospi_index.empty:
+        if kospi_bullish_only and not kospi_index.empty:
             ki = kospi_index.copy()
             ki["date"] = pd.to_datetime(ki["date"], errors="coerce").dt.normalize()
-            ki = ki.sort_values("date").drop_duplicates(subset=["date"], keep="last")
-            ki["prev_index"] = ki["index"].shift(1)
-            ki["is_bullish"] = ki["index"] > ki["prev_index"]
-            kospi_bullish_dates = set(ki[ki["is_bullish"]]["date"].values)
+            ki = ki.dropna(subset=["date", "index"]).sort_values("date").drop_duplicates(subset=["date"], keep="last")
+            if not ki.empty and len(ki) >= 2:
+                step_days = ki["date"].diff().dt.days.median()
+                step_days = int(step_days) if pd.notna(step_days) and step_days > 0 else 1
+                lookback_points = max(1, int(round((int(kospi_bullish_lookback_months) * 30) / step_days)))
+                ki["trend_return"] = ki["index"].pct_change(periods=lookback_points)
+                ki["change"] = ki["index"].diff()
+                ki["is_bullish"] = ki["trend_return"] >= 0
+                ki["is_bullish"] = ki["is_bullish"].where(ki["trend_return"].notna(), ki["change"] >= 0)
+                kospi_bullish_dates = set(ki[ki["is_bullish"]]["date"].tolist())
     
     positions: dict[str, dict] = {}
     cash = float(initial_cash)
@@ -1052,7 +1119,7 @@ def run_turnover_strategy_backtest(
             ret = (close_price - pos["avg_cost"]) / pos["avg_cost"] if pos["avg_cost"] > 0 else 0
             
             if ret <= (add_buy_threshold_pct / 100.0):
-                is_kospi_bullish = (date in kospi_bullish_dates) if kospi_bullish_dates else True
+                is_kospi_bullish = (date in kospi_bullish_dates) if kospi_bullish_only else True
                 if pos["step"] == 0:
                     # step 0: 첫 번째 추가 매수 (다음날 시작가로)
                     if next_date and is_kospi_bullish:
@@ -1075,8 +1142,9 @@ def run_turnover_strategy_backtest(
             # 매수 시그널
             if date in buy_by_date:
                 daily_buy_count = 0
+                is_kospi_bullish_for_buy = (date in kospi_bullish_dates) if kospi_bullish_only else True
                 for code in buy_by_date[date]:
-                    if code not in positions and daily_buy_count < max_daily_buys:
+                    if code not in positions and daily_buy_count < max_daily_buys and is_kospi_bullish_for_buy:
                         if next_date not in pending_buys:
                             pending_buys[next_date] = []
                         pending_buys[next_date].append((code, buy_unit, 0))
@@ -1462,6 +1530,71 @@ def render_stock_analysis_page(
             (stock_signals['date'] <= selected_end_ts)
         ].sort_values('date')
 
+    # 신호 기반 매매 수익률 계산
+    # 규칙: 최초 매수 후 추가 매수 금지, SELL로 청산된 뒤에만 재매수 허용
+    signal_return_pct = 0.0
+    signal_trade_count = 0
+    signal_mode_label = "신호 부족"
+    signal_return_valid = False
+    executed_buy_dates = []
+    executed_buy_prices = []
+    executed_sell_dates = []
+    executed_sell_prices = []
+    if not stock_signals.empty and not filtered_prices.empty:
+        signal_points_for_return = stock_signals[
+            stock_signals['signal'].isin(['BUY', 'SELL'])
+        ][['date', 'signal']].copy()
+        signal_points_for_return['signal_priority'] = signal_points_for_return['signal'].map({'SELL': 0, 'BUY': 1}).fillna(2)
+        signal_points_for_return = signal_points_for_return.sort_values(['date', 'signal_priority'])
+
+        if not signal_points_for_return.empty:
+            price_for_return = filtered_prices[['date', 'close']].sort_values('date').copy()
+            signal_points_for_return = pd.merge_asof(
+                signal_points_for_return,
+                price_for_return,
+                on='date',
+                direction='nearest',
+            )
+            signal_points_for_return = signal_points_for_return.dropna(subset=['close'])
+
+            cash = 1.0
+            shares = 0.0
+            has_position = False
+            can_buy = True
+
+            for _, row in signal_points_for_return.iterrows():
+                px = float(row['close'])
+                if px <= 0:
+                    continue
+
+                if row['signal'] == 'BUY' and can_buy and not has_position:
+                    shares = cash / px
+                    cash = 0.0
+                    has_position = True
+                    can_buy = False
+                    executed_buy_dates.append(row['date'])
+                    executed_buy_prices.append(px)
+                elif row['signal'] == 'SELL' and has_position:
+                    cash = shares * px
+                    shares = 0.0
+                    has_position = False
+                    can_buy = True
+                    signal_trade_count += 1
+                    executed_sell_dates.append(row['date'])
+                    executed_sell_prices.append(px)
+
+            final_close = float(filtered_prices['close'].iloc[-1])
+            final_equity = cash if not has_position else shares * final_close
+            signal_return_pct = (final_equity - 1.0) * 100
+            signal_return_valid = True
+
+            if signal_trade_count > 0:
+                signal_mode_label = f"완료 {signal_trade_count}건"
+            elif has_position:
+                signal_mode_label = "보유중(미청산)"
+            else:
+                signal_mode_label = "거래 없음"
+
     # 코스피 지수 로드 및 동일 기간 필터링
     kospi_index_df = load_kospi_index(params.get("data_dir", "data"))
     if not kospi_index_df.empty:
@@ -1690,6 +1823,49 @@ def render_stock_analysis_page(
                 row=1, col=1,
                 secondary_y=False,
             )
+
+    # 실제 체결 매수/매도 지점 표시 (시그널 규칙 반영)
+    if executed_buy_dates and executed_buy_prices:
+        fig.add_trace(
+            go.Scatter(
+                x=executed_buy_dates,
+                y=executed_buy_prices,
+                mode='markers',
+                name='실거래 매수',
+                marker=dict(
+                    size=14,
+                    color='#16a34a',
+                    symbol='star',
+                    line=dict(width=1, color='black')
+                ),
+                text=[f"실거래 매수<br>{v:.0f}원" for v in executed_buy_prices],
+                hoverinfo='text'
+            ),
+            row=1,
+            col=1,
+            secondary_y=False,
+        )
+
+    if executed_sell_dates and executed_sell_prices:
+        fig.add_trace(
+            go.Scatter(
+                x=executed_sell_dates,
+                y=executed_sell_prices,
+                mode='markers',
+                name='실거래 매도',
+                marker=dict(
+                    size=14,
+                    color='#dc2626',
+                    symbol='x',
+                    line=dict(width=1, color='black')
+                ),
+                text=[f"실거래 매도<br>{v:.0f}원" for v in executed_sell_prices],
+                hoverinfo='text'
+            ),
+            row=1,
+            col=1,
+            secondary_y=False,
+        )
     
     # 레이아웃 설정
     fig.update_layout(
@@ -1723,7 +1899,7 @@ def render_stock_analysis_page(
     
     # =====  신호 통계 및 상세 정보 =====
     st.divider()
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     
     with col1:
         st.metric("현재가", f"{filtered_prices['close'].iloc[-1]:,.0f}원")
@@ -1737,6 +1913,12 @@ def render_stock_analysis_page(
         st.metric("최저가", f"{filtered_prices['low'].min():,.0f}원")
     with col5:
         st.metric("코스피 기간수익률", f"{kospi_change_pct:+.2f}%", delta=market_label)
+    with col6:
+        if signal_return_valid:
+            signal_delta = f"vs 종목 {signal_return_pct - price_change_pct:+.2f}%p"
+            st.metric("시그널 매매 수익률", f"{signal_return_pct:+.2f}%", delta=signal_delta)
+        else:
+            st.metric("시그널 매매 수익률", "N/A", delta=signal_mode_label)
     
     # 신호 통계
     st.subheader("📊 신호 통계")
@@ -2321,28 +2503,71 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             kospi_index = load_kospi_index(params["data_dir"])
             finance_df = load_finance_data(params["data_dir"])
 
-        # 시그널 생성 (시그널 탭 전용)
+        # 시그널 생성 (운영 전략만)
         with st.spinner("🔍 시그널 분석 중..."):
-            signals = build_signals(
-                df,
-                params["turnover_window"],
-                params["turnover_multiplier"],
-                20,
-                5.0,
-                20,
-                2.0,
-                20,
-                2.0,
-                ["Turnover Spike"],
-                "ANY",
-            )
-            signals = signals.merge(kospi, on="code", how="left")
+            registry = load_registry()
+            production_ids = get_production_strategy_ids()
 
-            if "spike_ratio" in signals.columns:
-                signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
+            fallback_mode = False
+            if not production_ids:
+                fallback_mode = True
+                st.warning("No validated strategy in production. Please validate one in Simulation.")
+                production_ids = ["turnover_spike"]
+
+            all_signals = []
+            active_strategy_labels = []
+            last_validation_labels = []
+
+            for strategy_id in production_ids:
+                try:
+                    strategy = get_strategy(strategy_id)
+                except Exception:
+                    continue
+
+                strategy_params = _get_runtime_strategy_params(strategy_id, params)
+                sig = generate_strategy_signals_cached(
+                    strategy_id=strategy.spec.strategy_id,
+                    strategy_version=strategy.spec.version,
+                    price_df=df,
+                    market_df=kospi_index,
+                    params_json=json.dumps(strategy_params, sort_keys=True, default=str),
+                )
+                if not sig.empty:
+                    all_signals.append(sig)
+
+                active_strategy_labels.append(f"{strategy.spec.name}({strategy.spec.version})")
+                state = registry.get(strategy_id, {})
+                lv = state.get("last_validation") if isinstance(state, dict) else None
+                if isinstance(lv, dict) and lv.get("run_ts"):
+                    last_validation_labels.append(f"{strategy.spec.strategy_id}: {lv.get('run_ts')}")
+
+            if all_signals:
+                signals = pd.concat(all_signals, ignore_index=True)
             else:
-                signals = signals.sort_values(["date"], ascending=[False])
-            signals = apply_signal_filters(signals, params["signal_filter"])
+                signals = pd.DataFrame(columns=["date", "code", "signal", "confidence", "features_json", "strategy_id", "strategy_name", "strategy_version"])
+
+            if not signals.empty:
+                signals = signals.merge(kospi, on="code", how="left")
+                if "spike_ratio" in signals.columns:
+                    signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
+                else:
+                    signals = signals.sort_values(["date"], ascending=[False])
+                signals = apply_signal_filters(signals, params["signal_filter"])
+
+            if active_strategy_labels:
+                mode_label = "(Fallback)" if fallback_mode else "(Production)"
+                st.caption(f"검증된 전략만 반영 {mode_label}: " + ", ".join(active_strategy_labels))
+            if last_validation_labels:
+                st.caption("Last validation: " + " | ".join(last_validation_labels))
+
+        if not signals.empty and "strategy_id" in signals.columns:
+            strategy_filter_options = ["All"] + sorted(signals["strategy_id"].dropna().astype(str).unique().tolist())
+            selected_strategy_filter = st.selectbox("전략 필터", strategy_filter_options, index=0, key="signal_strategy_filter")
+            if selected_strategy_filter != "All":
+                signals = signals[signals["strategy_id"] == selected_strategy_filter]
+            strategy_counts = signals["strategy_id"].value_counts().to_dict()
+            if strategy_counts:
+                st.caption("전략별 시그널 수: " + ", ".join([f"{k}:{v}" for k, v in strategy_counts.items()]))
 
         selected_date = select_date(signals)
         if selected_date is None:
@@ -2651,6 +2876,30 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         if "simulation_last_param_hash" not in st.session_state:
             st.session_state["simulation_last_param_hash"] = ""
 
+        # 최근 실행 불러오기 값을 위젯 생성 전에 적용 (Streamlit widget key 직접 수정 오류 방지)
+        if "sim_load_pending" in st.session_state:
+            slot = st.session_state.pop("sim_load_pending") or {}
+            st.session_state["simulation_mode"] = slot.get("mode", st.session_state.get("simulation_mode", "📊 기본 시뮬레이션"))
+            if slot.get("strategy_id"):
+                st.session_state["sim_strategy_id"] = slot["strategy_id"]
+
+            st.session_state["sim_initial_cash"] = float(slot.get("initial_cash", st.session_state.get("sim_initial_cash", params["initial_cash"])))
+            st.session_state["sim_buy_unit"] = float(slot.get("buy_unit", st.session_state.get("sim_buy_unit", params["buy_unit"])))
+            st.session_state["sim_max_daily_buys"] = int(slot.get("max_daily_buys", st.session_state.get("sim_max_daily_buys", params["max_daily_buys"])))
+
+            st.session_state["backtest_rolling_days"] = int(slot.get("window", st.session_state.get("backtest_rolling_days", params["turnover_window"])))
+            st.session_state["backtest_volume_threshold"] = float(slot.get("multiplier", st.session_state.get("backtest_volume_threshold", params["turnover_multiplier"])))
+            st.session_state["backtest_loss_threshold"] = float(slot.get("loss", st.session_state.get("backtest_loss_threshold", params["add_buy_threshold_pct"])))
+
+            st.session_state["sim_kospi_bullish_only"] = bool(slot.get("kospi_bullish_only", st.session_state.get("sim_kospi_bullish_only", False)))
+            months_loaded = int(slot.get("kospi_bullish_lookback_months", 6))
+            st.session_state["sim_kospi_bullish_month_label"] = f"{months_loaded}개월"
+
+            if slot.get("start") and slot.get("start") != "-":
+                st.session_state["sim_start_date"] = pd.to_datetime(slot["start"]).date()
+            if slot.get("end") and slot.get("end") != "-":
+                st.session_state["sim_end_date"] = pd.to_datetime(slot["end"]).date()
+
         mode_desc = {
             "📊 기본 시뮬레이션": "기본: 전체 신호 기반 단일 백테스트",
             "🔬 종목별 일괄 테스트": "일괄: 다수 종목 성과 비교",
@@ -2673,6 +2922,29 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         param_box = st.container(border=True)
         with param_box:
             st.markdown("#### [2] Parameter Block")
+            strategy_specs = list_strategies()
+            strategy_registry = load_registry()
+            enabled_specs = [s for s in strategy_specs if strategy_registry.get(s.strategy_id, {}).get("enabled", True)]
+            select_specs = enabled_specs if enabled_specs else strategy_specs
+
+            if not select_specs:
+                st.error("전략이 등록되어 있지 않습니다. app/strategies/impl를 확인하세요.")
+                return
+
+            selected_strategy_id = st.session_state.get("sim_strategy_id", select_specs[0].strategy_id)
+            strategy_ids = [s.strategy_id for s in select_specs]
+            if selected_strategy_id not in strategy_ids:
+                selected_strategy_id = strategy_ids[0]
+
+            sim_strategy = st.selectbox(
+                "전략 선택 (실험)",
+                options=strategy_ids,
+                index=strategy_ids.index(selected_strategy_id),
+                format_func=lambda sid: f"{get_strategy(sid).spec.name} · {sid} · v{get_strategy(sid).spec.version}",
+                key="sim_strategy_id",
+            )
+            selected_strategy_id = sim_strategy
+
             cap1, cap2, cap3 = st.columns(3)
             with cap1:
                 initial_cash = st.number_input(
@@ -2737,6 +3009,26 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             with loss_col:
                 loss_threshold = st.slider("추가매수 손실 임계값 (%)", -30.0, -1.0, float(params["add_buy_threshold_pct"]), 0.5, key="backtest_loss_threshold")
 
+            kospi_gate_col1, kospi_gate_col2 = st.columns(2)
+            with kospi_gate_col1:
+                kospi_bullish_only = st.toggle(
+                    "코스피 상승기간일 때만 매수",
+                    value=bool(st.session_state.get("sim_kospi_bullish_only", False)),
+                    key="sim_kospi_bullish_only",
+                    help="ON이면 코스피 n개월 추세 수익률이 양(+)인 기간에만 BUY 진입합니다",
+                )
+            with kospi_gate_col2:
+                kospi_bullish_month_label = st.selectbox(
+                    "상승기간 기준",
+                    options=["3개월", "6개월", "9개월", "12개월"],
+                    index=["3개월", "6개월", "9개월", "12개월"].index(
+                        st.session_state.get("sim_kospi_bullish_month_label", "6개월")
+                    ) if st.session_state.get("sim_kospi_bullish_month_label", "6개월") in ["3개월", "6개월", "9개월", "12개월"] else 1,
+                    key="sim_kospi_bullish_month_label",
+                    disabled=not kospi_bullish_only,
+                )
+            kospi_bullish_lookback_months = int(str(kospi_bullish_month_label).replace("개월", ""))
+
         df_status = load_stock_data(params["data_dir"])
         df_status["date"] = pd.to_datetime(df_status["date"])
         total_stocks = int(df_status["code"].nunique()) if "code" in df_status.columns else 0
@@ -2748,11 +3040,15 @@ def run_app(current_tab: str = "📊 시그널") -> None:
 
         current_run = {
             "mode": simulation_mode,
+            "strategy_id": selected_strategy_id,
+            "strategy_version": get_strategy(selected_strategy_id).spec.version,
             "start": str(start_date) if start_date else "-",
             "end": str(end_date) if end_date else "-",
             "window": int(rolling_days),
             "multiplier": float(volume_threshold),
             "loss": float(loss_threshold),
+            "kospi_bullish_only": bool(kospi_bullish_only),
+            "kospi_bullish_lookback_months": int(kospi_bullish_lookback_months),
             "initial_cash": float(params["initial_cash"]),
             "buy_unit": float(params["buy_unit"]),
             "max_daily_buys": int(params["max_daily_buys"]),
@@ -2786,17 +3082,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 for idx, slot in enumerate(st.session_state["recent_runs"]):
                     with load_cols[idx]:
                         if st.button(f"Load {idx + 1}", key=f"sim_load_{idx}", use_container_width=True):
-                            st.session_state["simulation_mode"] = slot["mode"]
-                            st.session_state["sim_initial_cash"] = float(slot["initial_cash"])
-                            st.session_state["sim_buy_unit"] = float(slot["buy_unit"])
-                            st.session_state["sim_max_daily_buys"] = int(slot["max_daily_buys"])
-                            st.session_state["backtest_rolling_days"] = int(slot["window"])
-                            st.session_state["backtest_volume_threshold"] = float(slot["multiplier"])
-                            st.session_state["backtest_loss_threshold"] = float(slot["loss"])
-                            if slot.get("start") and slot.get("start") != "-":
-                                st.session_state["sim_start_date"] = pd.to_datetime(slot["start"]).date()
-                            if slot.get("end") and slot.get("end") != "-":
-                                st.session_state["sim_end_date"] = pd.to_datetime(slot["end"]).date()
+                            st.session_state["sim_load_pending"] = dict(slot)
                             st.rerun()
 
         if reset_params:
@@ -2856,6 +3142,23 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             st.subheader(f"📊 백테스트 결과 ({start_date} ~ {end_date})")
             st.caption(f"분석 기간: {(end_date - start_date).days}일 동안 시뮬레이션")
 
+            strategy_for_sim = get_strategy(selected_strategy_id)
+            strategy_params_for_sim = _get_runtime_strategy_params(
+                selected_strategy_id,
+                params,
+                rolling_days=int(rolling_days),
+                volume_threshold=float(volume_threshold),
+            )
+            strategy_params_for_sim.update(
+                {
+                    "initial_cash": float(params["initial_cash"]),
+                    "buy_unit": float(params["buy_unit"]),
+                    "max_daily_buys": int(params["max_daily_buys"]),
+                    "add_buy_threshold_pct": float(loss_threshold),
+                }
+            )
+            st.caption(f"실험 전략: {strategy_for_sim.spec.name} (v{strategy_for_sim.spec.version})")
+
             cached_payload = st.session_state["simulation_results"].get(param_hash) if use_cached_result else None
             if cached_payload and cached_payload.get("mode") == simulation_mode:
                 equity_df = cached_payload.get("equity_df", pd.DataFrame())
@@ -2864,18 +3167,12 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 st.info("🧠 동일 파라미터 결과를 캐시에서 불러왔습니다.")
             else:
                 with st.spinner("🔍 시그널 분석 중..."):
-                    signals = build_signals(
-                        df_filtered,
-                        int(rolling_days),
-                        float(volume_threshold),
-                        20,
-                        5.0,
-                        20,
-                        2.0,
-                        20,
-                        2.0,
-                        ["Turnover Spike"],
-                        "ANY",
+                    signals = generate_strategy_signals_cached(
+                        strategy_id=strategy_for_sim.spec.strategy_id,
+                        strategy_version=strategy_for_sim.spec.version,
+                        price_df=df_filtered,
+                        market_df=kospi_index,
+                        params_json=json.dumps(strategy_params_for_sim, sort_keys=True, default=str),
                     )
                     signals = signals.merge(kospi, on="code", how="left")
 
@@ -2885,18 +3182,12 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                         signals = signals.sort_values(["date"], ascending=[False])
                     signals = apply_signal_filters(signals, params["signal_filter"])
 
-                strategy_signals = build_signals(
-                    df_filtered,
-                    int(rolling_days),
-                    float(volume_threshold),
-                    20,
-                    5.0,
-                    20,
-                    2.0,
-                    20,
-                    2.0,
-                    ["Turnover Spike"],
-                    "ANY",
+                strategy_signals = generate_strategy_signals_cached(
+                    strategy_id=strategy_for_sim.spec.strategy_id,
+                    strategy_version=strategy_for_sim.spec.version,
+                    price_df=df_filtered,
+                    market_df=kospi_index,
+                    params_json=json.dumps(strategy_params_for_sim, sort_keys=True, default=str),
                 )
                 strategy_signals = strategy_signals.merge(kospi, on="code", how="left")
 
@@ -2909,6 +3200,8 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                     initial_cash=params["initial_cash"],
                     max_daily_buys=params["max_daily_buys"],
                     buy_unit=params["buy_unit"],
+                    kospi_bullish_only=bool(kospi_bullish_only),
+                    kospi_bullish_lookback_months=int(kospi_bullish_lookback_months),
                     add_buy_threshold_pct=float(loss_threshold),
                 )
                 st.session_state["simulation_results"][param_hash] = {
@@ -2918,6 +3211,31 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                     "strategy_signals": strategy_signals,
                 }
                 st.session_state["simulation_last_param_hash"] = param_hash
+
+            validation_col1, validation_col2 = st.columns([2, 1])
+            with validation_col1:
+                st.caption("검증 게이트: 시뮬레이션에서 전략 성능 검증 후 설정에서 Production 승격")
+            with validation_col2:
+                if st.button("✅ Validate 전략", key="validate_selected_strategy", use_container_width=True):
+                    validation_result = validate_strategy(
+                        strategy_id=selected_strategy_id,
+                        params=strategy_params_for_sim,
+                        universe="All KOSPI",
+                        start_date=str(start_date),
+                        end_date=str(end_date),
+                        thresholds={
+                            "min_cagr": 0.05,
+                            "max_mdd": 0.25,
+                            "min_win_rate": 0.52,
+                            "min_trades": 30,
+                        },
+                    )
+                    update_validation_result(selected_strategy_id, validation_result)
+                    if validation_result.get("validated"):
+                        st.success("전략 검증 통과: Settings에서 Production 승격 가능합니다.")
+                    else:
+                        st.warning("전략 검증 미통과: 기준치 충족 후 다시 검증하세요.")
+                    st.json(validation_result)
             render_backtest_curve(equity_df, kospi_index, start_date_dt)
             if not equity_df.empty:
                 equity_df = equity_df.copy()
@@ -3110,6 +3428,8 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                         initial_cash=params["initial_cash"],
                         max_daily_buys=params["max_daily_buys"],
                         buy_unit=params["buy_unit"],
+                        kospi_bullish_only=bool(kospi_bullish_only),
+                        kospi_bullish_lookback_months=int(kospi_bullish_lookback_months),
                     )
                 st.session_state["simulation_results"][param_hash] = {
                     "mode": simulation_mode,

@@ -22,6 +22,8 @@ def run_batch_backtest(
     initial_cash: float = 50_000_000,
     max_daily_buys: int = 2,
     buy_unit: float = 2_000_000,
+    kospi_bullish_only: bool = False,
+    kospi_bullish_lookback_months: int = 6,
 ) -> pd.DataFrame:
     """
     여러 종목에 대해 일괄 백테스트 실행
@@ -41,6 +43,8 @@ def run_batch_backtest(
         initial_cash: 초기 자본금
         max_daily_buys: 일일 최대 매수 수
         buy_unit: 매수 단위
+        kospi_bullish_only: 코스피 상승기간에만 매수 여부
+        kospi_bullish_lookback_months: 코스피 상승판정 기준 개월 수
     
     Returns:
         성과 지표 데이터프레임
@@ -113,6 +117,8 @@ def run_batch_backtest(
                     initial_cash=initial_cash,
                     max_daily_buys=max_daily_buys,
                     buy_unit=buy_unit,
+                    kospi_bullish_only=kospi_bullish_only,
+                    kospi_bullish_lookback_months=kospi_bullish_lookback_months,
                     add_buy_threshold_pct=loss_threshold_pct,
                 )
             except Exception as bt_error:
