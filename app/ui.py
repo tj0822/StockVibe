@@ -1422,8 +1422,8 @@ def render_stock_analysis_page(
     data_start = pd.to_datetime(stock_prices['date']).min()
     data_end = pd.to_datetime(stock_prices['date']).max()
 
-    # 기본 시작일: 최근 3년(데이터가 더 짧으면 데이터 시작일)
-    default_start = max(data_start, data_end - pd.DateOffset(days=1095))
+    # 기본 시작일: 최근 1년(데이터가 더 짧으면 데이터 시작일)
+    default_start = max(data_start, data_end - pd.DateOffset(days=365))
     start_key = "stock_analysis_start_date"
     end_key = "stock_analysis_end_date"
 
