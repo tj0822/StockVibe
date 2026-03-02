@@ -1,6 +1,7 @@
 import json
 import hashlib
 import textwrap
+import os
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -974,6 +975,8 @@ def run_turnover_strategy_backtest(
 
     start_date = pd.to_datetime(start_date, errors="coerce").normalize()
     dates = [d for d in open_pivot.index if d >= start_date]
+    trading_dates = pd.DatetimeIndex(sorted(pd.to_datetime(dates).normalize().unique()))
+    trading_day_pos = {d: i for i, d in enumerate(trading_dates)}
     
     # 코스피 상승기간 날짜 세트 생성 (n개월 추세 수익률 기준)
     if kospi_bullish_dates is None:
@@ -1028,9 +1031,15 @@ def run_turnover_strategy_backtest(
                 "shares": total_shares,
                 "avg_cost": total_cost / total_shares if total_shares > 0 else 0,
                 "step": step,
+                "buy_date": min(pos.get("buy_date", date), date),
             })
         else:
-            positions[code] = {"shares": shares, "avg_cost": actual_amount / shares, "step": step}
+            positions[code] = {
+                "shares": shares,
+                "avg_cost": actual_amount / shares,
+                "step": step,
+                "buy_date": date,
+            }
         cash -= actual_amount
         trades.append({
             "date": date,
@@ -1049,6 +1058,16 @@ def run_turnover_strategy_backtest(
         if code not in positions:
             return
         pos = positions.pop(code)
+        buy_date = pd.to_datetime(pos.get("buy_date"), errors="coerce")
+        sell_date = pd.to_datetime(date, errors="coerce")
+        holding_days = None
+        if pd.notna(buy_date) and pd.notna(sell_date):
+            buy_norm = buy_date.normalize()
+            sell_norm = sell_date.normalize()
+            buy_idx = trading_day_pos.get(buy_norm)
+            sell_idx = trading_day_pos.get(sell_norm)
+            if buy_idx is not None and sell_idx is not None:
+                holding_days = max(0, int(sell_idx - buy_idx)) + 1
         effective_price = price * (1 - slippage_rate)
         proceeds = pos["shares"] * effective_price
         fee_amount = proceeds * fee_rate
@@ -1065,6 +1084,8 @@ def run_turnover_strategy_backtest(
             "price": effective_price,
             "shares": pos["shares"],
             "pnl": pnl,
+            "buy_date": pos.get("buy_date"),
+            "holding_days": holding_days,
             "buy_price": pos["avg_cost"],
             "return_pct": ((net_proceeds / (pos["avg_cost"] * pos["shares"])) - 1) * 100 if pos["avg_cost"] > 0 else 0,
             "reason": reason,
@@ -1120,15 +1141,16 @@ def run_turnover_strategy_backtest(
             
             if ret <= (add_buy_threshold_pct / 100.0):
                 is_kospi_bullish = (date in kospi_bullish_dates) if kospi_bullish_only else True
+                has_buy_signal_for_code_today = code in set(buy_by_date.get(date, []))
                 if pos["step"] == 0:
                     # step 0: 첫 번째 추가 매수 (다음날 시작가로)
-                    if next_date and is_kospi_bullish:
+                    if next_date and is_kospi_bullish and has_buy_signal_for_code_today:
                         if next_date not in pending_buys:
                             pending_buys[next_date] = []
                         pending_buys[next_date].append((code, buy_unit, 1))
                 elif pos["step"] == 1:
                     # step 1: 두 번째 추가 매수 (다음날 시작가로)
-                    if next_date and is_kospi_bullish:
+                    if next_date and is_kospi_bullish and has_buy_signal_for_code_today:
                         if next_date not in pending_buys:
                             pending_buys[next_date] = []
                         pending_buys[next_date].append((code, buy_unit * 2, 2))
@@ -2863,8 +2885,6 @@ def run_app(current_tab: str = "📊 시그널") -> None:
 
     elif current_tab == "🎯 시뮬레이션":
         st.subheader("🎯 백테스트 시뮬레이션")
-        if "simulation_mode" not in st.session_state:
-            st.session_state["simulation_mode"] = "📊 기본 시뮬레이션"
         if "sim_running" not in st.session_state:
             st.session_state["sim_running"] = False
         if "sim_stop_requested" not in st.session_state:
@@ -2879,7 +2899,6 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         # 최근 실행 불러오기 값을 위젯 생성 전에 적용 (Streamlit widget key 직접 수정 오류 방지)
         if "sim_load_pending" in st.session_state:
             slot = st.session_state.pop("sim_load_pending") or {}
-            st.session_state["simulation_mode"] = slot.get("mode", st.session_state.get("simulation_mode", "📊 기본 시뮬레이션"))
             if slot.get("strategy_id"):
                 st.session_state["sim_strategy_id"] = slot["strategy_id"]
 
@@ -2900,28 +2919,14 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             if slot.get("end") and slot.get("end") != "-":
                 st.session_state["sim_end_date"] = pd.to_datetime(slot["end"]).date()
 
-        mode_desc = {
-            "📊 기본 시뮬레이션": "기본: 전체 신호 기반 단일 백테스트",
-            "🔬 종목별 일괄 테스트": "일괄: 다수 종목 성과 비교",
-            "📅 연도별 성과 분석": "연도별: 전략 일관성 검증",
-        }
-
-        mode_box = st.container(border=True)
-        with mode_box:
-            st.markdown("#### [1] Mode Selector")
-            simulation_mode = st.radio(
-                "분석 방식을 선택하세요",
-                options=["📊 기본 시뮬레이션", "🔬 종목별 일괄 테스트", "📅 연도별 성과 분석"],
-                index=["📊 기본 시뮬레이션", "🔬 종목별 일괄 테스트", "📅 연도별 성과 분석"].index(st.session_state.get("simulation_mode", "📊 기본 시뮬레이션")),
-                horizontal=True,
-                key="sim_mode_select",
-            )
-            st.session_state["simulation_mode"] = simulation_mode
-            st.caption(mode_desc.get(simulation_mode, ""))
+        simulation_mode = "📊 기본 시뮬레이션"
 
         param_box = st.container(border=True)
         with param_box:
-            st.markdown("#### [2] Parameter Block")
+            st.markdown("#### [1] Parameter Block")
+            df_limit = load_stock_data(params["data_dir"])
+            max_daily_buy_cap = int(df_limit["code"].nunique()) if (not df_limit.empty and "code" in df_limit.columns) else 10
+            max_daily_buy_cap = max(1, max_daily_buy_cap)
             strategy_specs = list_strategies()
             strategy_registry = load_registry()
             enabled_specs = [s for s in strategy_specs if strategy_registry.get(s.strategy_id, {}).get("enabled", True)]
@@ -2969,11 +2974,12 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 max_daily_buys = st.number_input(
                     "일일 매수 한도",
                     min_value=1,
-                    max_value=10,
+                    max_value=max_daily_buy_cap,
                     value=int(st.session_state.get("sim_max_daily_buys", params["max_daily_buys"])),
                     step=1,
                     key="sim_max_daily_buys_main",
                 )
+                st.caption(f"설정 가능 범위: 1 ~ {max_daily_buy_cap}")
 
             st.session_state["sim_initial_cash"] = float(initial_cash)
             st.session_state["sim_buy_unit"] = float(buy_unit)
@@ -2983,23 +2989,18 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             params["buy_unit"] = float(buy_unit)
             params["max_daily_buys"] = int(max_daily_buys)
 
-            if simulation_mode != "📅 연도별 성과 분석":
-                date_col1, date_col2 = st.columns(2)
-                from datetime import timedelta
-                today = datetime.now().date()
-                one_year_ago = today - timedelta(days=365)
-                with date_col1:
-                    start_date = st.date_input("시작일자", value=one_year_ago, key="sim_start_date")
-                with date_col2:
-                    end_date = st.date_input("종료일자", value=today, key="sim_end_date")
-                if start_date >= end_date:
-                    st.error("⚠️ 시작일자는 종료일자보다 빨라야 합니다")
-                    return
-                days_diff = (end_date - start_date).days
-            else:
-                start_date = None
-                end_date = None
-                days_diff = 365
+            date_col1, date_col2 = st.columns(2)
+            from datetime import timedelta
+            today = datetime.now().date()
+            one_year_ago = today - timedelta(days=365)
+            with date_col1:
+                start_date = st.date_input("시작일자", value=one_year_ago, key="sim_start_date")
+            with date_col2:
+                end_date = st.date_input("종료일자", value=today, key="sim_end_date")
+            if start_date >= end_date:
+                st.error("⚠️ 시작일자는 종료일자보다 빨라야 합니다")
+                return
+            days_diff = (end_date - start_date).days
 
             roll_col, vol_col, loss_col = st.columns(3)
             with roll_col:
@@ -3057,7 +3058,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
 
         exec_box = st.container(border=True)
         with exec_box:
-            st.markdown("#### [3] Execution Control Block")
+            st.markdown("#### [2] Execution Control Block")
             st.caption(f"예상 소요시간: 약 {estimated_seconds:.1f}초 | 데이터 커버리지: {coverage_start} ~ {coverage_end}")
             if workload > 100000:
                 st.warning(f"⚠️ 대규모 실행 감지: workload={workload:,}")
@@ -3112,7 +3113,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
 
         result_box = st.container(border=True)
         with result_box:
-            st.markdown("#### [4] Results Block")
+            st.markdown("#### [3] Results Block")
         
         # 데이터 로딩
         with st.spinner("📊 데이터 로딩 중..."):
@@ -3120,20 +3121,15 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             kospi = load_kospi_list(params["data_dir"])
             kospi_index = load_kospi_index(params["data_dir"])
             
-            if simulation_mode != "📅 연도별 성과 분석":
-                # 선택된 날짜 범위로 전체 데이터 필터링
-                df['date'] = pd.to_datetime(df['date'])
-                start_date_dt = pd.to_datetime(start_date)
-                end_date_dt = pd.to_datetime(end_date)
-                df_filtered = df[(df['date'] >= start_date_dt) & (df['date'] <= end_date_dt)]
-                
-                if df_filtered.empty:
-                    st.error(f"⚠️ 선택한 기간({start_date} ~ {end_date})에 데이터가 없습니다.")
-                    return
-            else:
-                # 연도별 성과분석은 전체 historical data 사용
-                df['date'] = pd.to_datetime(df['date'])
-                df_filtered = df  # 전체 데이터 사용
+            # 선택된 날짜 범위로 전체 데이터 필터링
+            df['date'] = pd.to_datetime(df['date'])
+            start_date_dt = pd.to_datetime(start_date)
+            end_date_dt = pd.to_datetime(end_date)
+            df_filtered = df[(df['date'] >= start_date_dt) & (df['date'] <= end_date_dt)]
+
+            if df_filtered.empty:
+                st.error(f"⚠️ 선택한 기간({start_date} ~ {end_date})에 데이터가 없습니다.")
+                return
         
         st.divider()
         
@@ -3196,7 +3192,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                     strategy_signals,
                     kospi_index,
                     start_date_dt,
-                    top_n=2,
+                    top_n=max(1, int(params["max_daily_buys"])),
                     initial_cash=params["initial_cash"],
                     max_daily_buys=params["max_daily_buys"],
                     buy_unit=params["buy_unit"],
@@ -3236,6 +3232,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                     else:
                         st.warning("전략 검증 미통과: 기준치 충족 후 다시 검증하세요.")
                     st.json(validation_result)
+
             render_backtest_curve(equity_df, kospi_index, start_date_dt)
             if not equity_df.empty:
                 equity_df = equity_df.copy()
@@ -3319,14 +3316,42 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             trades_df["return_pct_display"] = trades_df["return_pct"].apply(
                 lambda v: f"{v:.2f}%" if pd.notna(v) else ""
             )
+            if "buy_date" in trades_df.columns:
+                trades_df["buy_date"] = pd.to_datetime(trades_df["buy_date"], errors="coerce")
+            if "holding_days" in trades_df.columns:
+                trades_df["holding_days"] = pd.to_numeric(trades_df["holding_days"], errors="coerce")
+
+            preferred_cols = [
+                "date",
+                "code",
+                "name",
+                "action",
+                "amount",
+                "price",
+                "buy_date",
+                "holding_days",
+                "buy_price",
+                "shares",
+                "step",
+                "pnl",
+                "return_pct_display",
+                "reason",
+                "equity",
+            ]
+            ordered_cols = [col for col in preferred_cols if col in trades_df.columns]
+            remaining_cols = [col for col in trades_df.columns if col not in ordered_cols]
+            trades_view_df = trades_df[ordered_cols + remaining_cols]
+
             st.dataframe(
-                trades_df,
+                trades_view_df,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
                     "date": st.column_config.DateColumn("날짜"),
                     "amount": st.column_config.NumberColumn("금액", format="%,.0f"),
                     "price": st.column_config.NumberColumn("가격", format="%,.0f"),
+                    "buy_date": st.column_config.DateColumn("매수일자"),
+                    "holding_days": st.column_config.NumberColumn("보유기간(일)", format="%d"),
                     "buy_price": st.column_config.NumberColumn("매수가", format="%,.0f"),
                     "shares": st.column_config.NumberColumn("수량", format="%,.0f"),
                     "step": st.column_config.NumberColumn("매수단계"),
@@ -3670,37 +3695,18 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             st.subheader("📅 연도별 알고리즘 성과 분석")
             st.caption("시황 변화에 무관하게 일관되게 성과를 내는 종목 찾기")
             
-            # 분석 종목 선택
+            # 분석 종목 선택 (모든 종목 고정)
             with st.expander("📌 분석 종목 선택", expanded=True):
-                st.caption("단일 종목 또는 모든 종목에 대해 2010년부터 현재까지 연도별로 분석합니다")
-                
-                # 분석 범위 선택
-                analysis_scope = st.radio(
-                    "분석 범위",
-                    options=["📌 단일 종목", "📊 모든 종목"],
-                    horizontal=True,
-                    help="단일: 선택한 종목만 | 모든 종목: 가격 데이터가 있는 모든 종목"
-                )
+                st.caption("가격 데이터가 있는 모든 종목을 대상으로 2010년부터 현재까지 연도별로 분석합니다")
                 
                 # KOSPI 목록에서 종목 선택
                 if not isinstance(kospi, pd.DataFrame):
                     st.error("❌ KOSPI 목록을 불러올 수 없습니다.")
                     return
-                
-                if analysis_scope == "📌 단일 종목":
-                    stock_options = [f"{code} - {name}" for code, name in zip(kospi['code'], kospi['name'])]
-                    selected_stock = st.selectbox(
-                        "분석할 종목",
-                        options=stock_options,
-                        key="yearly_stock_select"
-                    )
-                    selected_code = selected_stock.split(" - ")[0].strip()
-                    selected_name = selected_stock.split(" - ")[1].strip()
-                    selected_codes = [selected_code]
-                else:  # 모든 종목
-                    st.info("📊 가격 데이터가 있는 모든 종목을 분석합니다")
-                    selected_codes = kospi['code'].astype(str).tolist()
-                    st.write(f"분석할 종목 수: **{len(selected_codes)}개**")
+
+                st.info("📊 가격 데이터가 있는 모든 종목을 분석합니다")
+                selected_codes = kospi['code'].astype(str).tolist()
+                st.write(f"분석할 종목 수: **{len(selected_codes)}개**")
                 
                 # 연도 범위 선택
                 col_start_year, col_end_year = st.columns(2)
@@ -3722,48 +3728,26 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 consistency_summary = cached_payload.get("consistency_summary", pd.DataFrame())
                 st.info("🧠 동일 파라미터 결과를 캐시에서 불러왔습니다.")
             else:
-                if analysis_scope == "📌 단일 종목":
-                    from app.yearly_backtest import run_yearly_backtest, analyze_consistency
-                    
-                    with st.spinner(f"📅 {selected_name} 연도별 분석 진행 중..."):
-                        yearly_results = run_yearly_backtest(
-                            df,
-                            selected_code,
-                            selected_name,
-                            int(rolling_days),
-                            float(volume_threshold),
-                            float(loss_threshold),
-                            build_signals,
-                            run_turnover_strategy_backtest,
-                            kospi_index,
-                            initial_cash=params["initial_cash"],
-                            max_daily_buys=params["max_daily_buys"],
-                            buy_unit=params["buy_unit"],
-                            start_year=int(start_year),
-                            end_year=int(end_year),
-                        )
-                    consistency_summary = pd.DataFrame()
-                else:  # 모든 종목
-                    from app.yearly_backtest import run_yearly_backtest_batch, summarize_all_stocks_consistency
-                    
-                    with st.spinner(f"📅 {len(selected_codes)}개 종목 연도별 분석 진행 중... (시간이 걸릴 수 있습니다)"):
-                        yearly_results = run_yearly_backtest_batch(
-                            df,
-                            selected_codes,
-                            int(rolling_days),
-                            float(volume_threshold),
-                            float(loss_threshold),
-                            build_signals,
-                            run_turnover_strategy_backtest,
-                            kospi_index,
-                            kospi_list=kospi,
-                            initial_cash=params["initial_cash"],
-                            max_daily_buys=params["max_daily_buys"],
-                            buy_unit=params["buy_unit"],
-                            start_year=int(start_year),
-                            end_year=int(end_year),
-                        )
-                    consistency_summary = summarize_all_stocks_consistency(yearly_results) if not yearly_results.empty else pd.DataFrame()
+                from app.yearly_backtest import run_yearly_backtest_batch, summarize_all_stocks_consistency
+                
+                with st.spinner(f"📅 {len(selected_codes)}개 종목 연도별 분석 진행 중... (시간이 걸릴 수 있습니다)"):
+                    yearly_results = run_yearly_backtest_batch(
+                        df,
+                        selected_codes,
+                        int(rolling_days),
+                        float(volume_threshold),
+                        float(loss_threshold),
+                        build_signals,
+                        run_turnover_strategy_backtest,
+                        kospi_index,
+                        kospi_list=kospi,
+                        initial_cash=params["initial_cash"],
+                        max_daily_buys=params["max_daily_buys"],
+                        buy_unit=params["buy_unit"],
+                        start_year=int(start_year),
+                        end_year=int(end_year),
+                    )
+                consistency_summary = summarize_all_stocks_consistency(yearly_results) if not yearly_results.empty else pd.DataFrame()
 
                 st.session_state["simulation_results"][param_hash] = {
                     "mode": simulation_mode,
@@ -3773,125 +3757,43 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 st.session_state["simulation_last_param_hash"] = param_hash
             
             if not yearly_results.empty:
-                if analysis_scope == "📌 단일 종목":
-                    # 단일 종목 결과 표시
-                    st.success(f"✅ {len(yearly_results)}개 연도 분석 완료")
-                    
-                    st.divider()
-                    
-                    # 일관성 분석
-                    from app.yearly_backtest import analyze_consistency
-                    consistency = analyze_consistency(yearly_results)
-                    
-                    st.subheader("📊 성과 일관성 분석")
-                    
-                    cons_col1, cons_col2, cons_col3, cons_col4 = st.columns(4)
-                    
-                    with cons_col1:
-                        pos_years = consistency.get('positive_years', 0)
-                        total = consistency.get('total_years', 0)
-                        success_rate = (pos_years / total * 100) if total > 0 else 0
-                        st.metric("✅ 수익 연도", f"{pos_years}/{total}년 ({success_rate:.0f}%)")
-                    
-                    with cons_col2:
-                        avg_ret = consistency.get('avg_return_pct', 0)
-                        std_ret = consistency.get('std_return_pct', 0)
-                        color = "🟢" if avg_ret >= 0 else "🔴"
-                        st.metric(f"{color} 평균 연수익률", f"{avg_ret:+.2f}%", f"표준편차: {std_ret:.2f}%")
-                    
-                    with cons_col3:
-                        min_ret = consistency.get('min_return_pct', 0)
-                        max_ret = consistency.get('max_return_pct', 0)
-                        st.metric("📈 수익률 범위", f"{min_ret:+.2f}% ~ {max_ret:+.2f}%")
-                    
-                    with cons_col4:
-                        win_rate_avg = consistency.get('win_rate_avg', 0)
-                        win_rate_std = consistency.get('win_rate_std', 0)
-                        st.metric("🎯 평균 승률", f"{win_rate_avg:.1f}%", f"표준편차: {win_rate_std:.1f}%")
-                
-                else:  # 모든 종목
-                    # 모든 종목 결과 표시
-                    st.success(f"✅ {yearly_results['code'].nunique()}개 종목의 {len(yearly_results)}개 연도별 분석 완료")
-                    
-                    st.divider()
-                    st.subheader("🏆 종목별 성과 순위")
-                    
-                    # 종목별 일관성 요약
-                    ranking_cols = ['code', 'name', 'test_years', 'positive_years', 'success_rate', 'avg_return_pct', 'std_return_pct', 'avg_win_rate']
-                    available_ranking_cols = [col for col in ranking_cols if col in consistency_summary.columns]
-                    
-                    ranking_df = consistency_summary[available_ranking_cols].copy()
-                    
-                    # 포맷팅
-                    if 'success_rate' in ranking_df.columns:
-                        ranking_df['success_rate'] = ranking_df['success_rate'].apply(lambda x: f"{x:.0f}%")
-                    if 'avg_return_pct' in ranking_df.columns:
-                        ranking_df['avg_return_pct'] = ranking_df['avg_return_pct'].apply(lambda x: f"{x:+.2f}%")
-                    if 'std_return_pct' in ranking_df.columns:
-                        ranking_df['std_return_pct'] = ranking_df['std_return_pct'].apply(lambda x: f"{x:.2f}%")
-                    if 'avg_win_rate' in ranking_df.columns:
-                        ranking_df['avg_win_rate'] = ranking_df['avg_win_rate'].apply(lambda x: f"{x:.1f}%")
-                    
-                    st.dataframe(
-                        ranking_df.head(30),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                    
-                    # CSV 다운로드
-                    csv_data = consistency_summary.to_csv(index=False)
-                    st.download_button(
-                        label="📥 종목별 성과 순위 다운로드 (CSV)",
-                        data=csv_data,
-                        file_name="yearly_performance_ranking.csv",
-                        mime="text/csv",
-                        key="download_ranking"
-                    )
+                # 모든 종목 결과 표시
+                st.success(f"✅ {yearly_results['code'].nunique()}개 종목의 {len(yearly_results)}개 연도별 분석 완료")
                 
                 st.divider()
+                st.subheader("🏆 종목별 성과 순위")
                 
-                if analysis_scope == "📌 단일 종목":
-                    # 연도별 상세 결과 (단일 종목에만 표시)
-                    st.subheader("📋 연도별 상세 결과")
-                    
-                    display_cols = ['year', 'total_return_pct', 'total_trades', 'win_trades', 'lose_trades', 
-                                   'win_rate', 'avg_return', 'profit_loss_ratio', 'max_drawdown']
-                    available_cols = [col for col in display_cols if col in yearly_results.columns]
-                    
-                    display_df = yearly_results[available_cols].copy()
-                    
-                    # 포맷팅
-                    if 'total_return_pct' in display_df.columns:
-                        display_df['total_return_pct'] = display_df['total_return_pct'].apply(lambda x: f"{x:+.2f}%")
-                    if 'win_rate' in display_df.columns:
-                        display_df['win_rate'] = display_df['win_rate'].apply(lambda x: f"{x:.1f}%")
-                    if 'avg_return' in display_df.columns:
-                        display_df['avg_return'] = display_df['avg_return'].apply(lambda x: f"{x:+.2f}%")
-                    if 'max_drawdown' in display_df.columns:
-                        display_df['max_drawdown'] = display_df['max_drawdown'].apply(lambda x: f"{x:.2f}%")
-                    if 'profit_loss_ratio' in display_df.columns:
-                        display_df['profit_loss_ratio'] = display_df['profit_loss_ratio'].apply(lambda x: f"{x:.2f}")
-                    if 'total_trades' in display_df.columns:
-                        display_df['total_trades'] = display_df['total_trades'].astype(int)
-                    
-                    st.dataframe(
-                        display_df,
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                    
-                    st.divider()
-                    
-                    # 연도별 수익률 차트
-                    st.subheader("📈 연도별 수익률 추이")
-                    
-                    chart_df = yearly_results[['year', 'total_return_pct']].set_index('year')
-                    st.bar_chart(chart_df)
-                    
-                    st.subheader("📊 연도별 승률 추이")
-                    
-                    chart_df2 = yearly_results[['year', 'win_rate']].set_index('year')
-                    st.bar_chart(chart_df2)
+                # 종목별 일관성 요약
+                ranking_cols = ['code', 'name', 'test_years', 'positive_years', 'success_rate', 'avg_return_pct', 'std_return_pct', 'avg_win_rate']
+                available_ranking_cols = [col for col in ranking_cols if col in consistency_summary.columns]
+                
+                ranking_df = consistency_summary[available_ranking_cols].copy()
+                
+                # 포맷팅
+                if 'success_rate' in ranking_df.columns:
+                    ranking_df['success_rate'] = ranking_df['success_rate'].apply(lambda x: f"{x:.0f}%")
+                if 'avg_return_pct' in ranking_df.columns:
+                    ranking_df['avg_return_pct'] = ranking_df['avg_return_pct'].apply(lambda x: f"{x:+.2f}%")
+                if 'std_return_pct' in ranking_df.columns:
+                    ranking_df['std_return_pct'] = ranking_df['std_return_pct'].apply(lambda x: f"{x:.2f}%")
+                if 'avg_win_rate' in ranking_df.columns:
+                    ranking_df['avg_win_rate'] = ranking_df['avg_win_rate'].apply(lambda x: f"{x:.1f}%")
+                
+                st.dataframe(
+                    ranking_df.head(30),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                
+                # CSV 다운로드
+                csv_data = consistency_summary.to_csv(index=False)
+                st.download_button(
+                    label="📥 종목별 성과 순위 다운로드 (CSV)",
+                    data=csv_data,
+                    file_name="yearly_performance_ranking.csv",
+                    mime="text/csv",
+                    key="download_ranking"
+                )
             else:
                 st.error("❌ 분석할 수 있는 데이터가 없습니다.")
 

@@ -113,7 +113,7 @@ def run_batch_backtest(
                     signals,
                     kospi_index,
                     start_date_dt,
-                    top_n=2,
+                    top_n=max(1, int(max_daily_buys)),
                     initial_cash=initial_cash,
                     max_daily_buys=max_daily_buys,
                     buy_unit=buy_unit,
