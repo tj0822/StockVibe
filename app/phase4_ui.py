@@ -79,18 +79,48 @@ def load_kospi_name_map():
 # =================================
 
 
+def _build_default_analysis_signals(df: pd.DataFrame, kospi: pd.DataFrame) -> pd.DataFrame:
+    """종목/섹터 분석 페이지 공통 기본 시그널 생성"""
+    from app.signals import build_signals
+
+    signals = build_signals(
+        df,
+        10,  # turnover_window
+        3.0,  # turnover_multiplier
+        20,
+        5.0,
+        20,
+        2.0,
+        20,
+        2.0,
+        ["Turnover Spike"],
+        "ANY",
+    )
+    return signals.merge(kospi, on="code", how="left")
+
+
+def _get_default_analysis_params() -> dict:
+    """종목/섹터 분석 페이지 공통 기본 파라미터"""
+    return {
+        "data_dir": "data",
+        "turnover_window": 10,
+        "turnover_multiplier": 3.0,
+    }
+
+
 def render_sidebar_menu() -> tuple[str, str]:
     """사이드바 메뉴"""
     st.sidebar.title("📊 StockVibe Pro")
     st.sidebar.markdown("---")
     
-    selected = st.sidebar.radio("메뉴", ["메인 대시보드", "종목분석", "포트폴리오", "설정"])
+    selected = st.sidebar.radio("메뉴", ["🏠 메인 대시보드", "📈 종목분석", "🏭 섹터분석", "💼 포트폴리오", "⚙️ 설정"])
     
     page_map = {
-        "메인 대시보드": "main",
-        "종목분석": "analysis",
-        "포트폴리오": "portfolio",
-        "설정": "settings"
+        "🏠 메인 대시보드": "main",
+        "📈 종목분석": "analysis",
+        "🏭 섹터분석": "sector-analysis",
+        "💼 포트폴리오": "portfolio",
+        "⚙️ 설정": "settings"
     }
     selected_page = page_map[selected]
 
@@ -2781,6 +2811,7 @@ def run_phase4_app():
         menu_to_page = {
             "🏠 메인 대시보드": "main",
             "📈 종목분석": "analysis",
+            "🏭 섹터분석": "sector-analysis",
             "💼 포트폴리오": "portfolio",
             "⚙️ 설정": "settings"
         }
@@ -2796,6 +2827,7 @@ def run_phase4_app():
     page_name_map = {
         "main": f"메인 대시보드 · {selected_main_tab}",
         "analysis": "종목분석",
+        "sector-analysis": "섹터분석",
         "portfolio": "포트폴리오",
         "settings": "설정",
     }
@@ -2823,7 +2855,6 @@ def run_phase4_app():
         # 종목분석 페이지
         from app.ui import render_stock_analysis_page
         from app.data import load_stock_data, load_kospi_list, load_finance_data
-        from app.signals import build_signals
         
         # 데이터 로딩
         with st.spinner("📊 데이터 로딩 중..."):
@@ -2833,24 +2864,25 @@ def run_phase4_app():
         
         # 시그널 생성
         with st.spinner("🔍 시그널 분석 중..."):
-            signals = build_signals(
-                df,
-                10,  # turnover_window
-                3.0,  # turnover_multiplier
-                20, 5.0, 20, 2.0, 20, 2.0,
-                ["Turnover Spike"],
-                "ANY",
-            )
-            signals = signals.merge(kospi, on="code", how="left")
+            signals = _build_default_analysis_signals(df, kospi)
         
-        # 기본 params
-        params = {
-            "data_dir": "data",
-            "turnover_window": 10,
-            "turnover_multiplier": 3.0,
-        }
+        params = _get_default_analysis_params()
         
         render_stock_analysis_page(df, signals, finance_df, params)
+    elif page == "sector-analysis":
+        from app.ui import render_sector_analysis_page
+        from app.data import load_stock_data, load_kospi_list
+
+        with st.spinner("📊 데이터 로딩 중..."):
+            df = load_stock_data("data")
+            kospi = load_kospi_list("data")
+
+        with st.spinner("🔍 시그널 분석 중..."):
+            signals = _build_default_analysis_signals(df, kospi)
+
+        params = _get_default_analysis_params()
+
+        render_sector_analysis_page(df, signals, params)
     else:
         # 기존 메인 대시보드
         run_app(selected_main_tab)
