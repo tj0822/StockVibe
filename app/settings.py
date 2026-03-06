@@ -55,6 +55,12 @@ class UserSettings:
         # 내보내기
         'export_format': 'excel',  # 'excel' or 'csv'
         'include_charts': True,
+
+        # 포트폴리오 정책 임계값
+        'concentration_warning_pct': 35.0,
+        'concentration_critical_pct': 50.0,
+        'compliant_score_threshold': 70.0,
+        'watch_score_threshold': 60.0,
     }
     
     def __init__(self, data_dir: str = "data"):

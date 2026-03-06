@@ -13,7 +13,16 @@ from app.portfolio import PortfolioManager
 from app.comparison import ComparisonAnalyzer
 from app.export import DataExporter, ReportGenerator, ChartExporter
 from app.advanced_charts import CandlePatternRecognizer, CorrelationAnalyzer, VolumeAnalyzer
+from app.alerts import AlertManager, AutoRefreshManager
 from app.settings import UserSettings, ThemeManager, DisplaySettings
+from app.data_pipeline import build_stock_master_df
+from app.portfolio_insights import (
+    build_rebalance_suggestions,
+    build_trade_sector_summary,
+    compute_sector_exposure,
+    merge_holdings_with_context,
+    normalize_portfolio_thresholds,
+)
 from app.strategies.registry import list_strategies
 from app.strategies.registry_store import (
     demote_from_production,
@@ -113,12 +122,14 @@ def render_sidebar_menu() -> tuple[str, str]:
     st.sidebar.title("📊 StockVibe Pro")
     st.sidebar.markdown("---")
     
-    selected = st.sidebar.radio("메뉴", ["🏠 메인 대시보드", "📈 종목분석", "🏭 섹터분석", "💼 포트폴리오", "⚙️ 설정"])
+    selected = st.sidebar.radio("메뉴", ["🏠 메인 대시보드", "📈 종목분석", "🏭 섹터분석", "📡 시장구조", "🌡 시장 체온계", "💼 포트폴리오", "⚙️ 설정"])
     
     page_map = {
         "🏠 메인 대시보드": "main",
         "📈 종목분석": "analysis",
         "🏭 섹터분석": "sector-analysis",
+        "📡 시장구조": "market-structure",
+        "🌡 시장 체온계": "market-thermometer",
         "💼 포트폴리오": "portfolio",
         "⚙️ 설정": "settings"
     }
@@ -1024,7 +1035,7 @@ def _render_trading_history_panel(code: str):
     ])
 
 
-def _render_portfolio_current(kospi_dict, price_df, finance_df):
+def _render_portfolio_current(kospi_dict, price_df, finance_df, stock_master_df: pd.DataFrame | None = None):
     """포트폴리오 현황 렌더링 헬퍼 함수"""
     portfolio_mgr = PortfolioManager()
     portfolio = portfolio_mgr.load_portfolio()
@@ -1070,69 +1081,155 @@ def _render_portfolio_current(kospi_dict, price_df, finance_df):
         holding_summary = portfolio_mgr.get_holding_summary(current_prices)
         
         if not holding_summary.empty:
-            # 수익률별 색상 표시
-            def highlight_profit_rate(val):
-                if val == 'N/A':
-                    return 'color: gray'
-                try:
-                    num_val = float(val) if isinstance(val, str) else val
-                    if num_val > 0:
-                        return 'color: red'  # 한국은 수익은 빨강
-                    elif num_val < 0:
-                        return 'color: blue'  # 손실은 파랑
-                    else:
-                        return 'color: gray'
-                except:
-                    return ''
-            
-            # 컬럼명 예쁘게
-            display_cols = ['종목명', '매수일자', '평균매수가격', '현재가격', '보유수량', '현재수익률(%)']
-            display_df = holding_summary[display_cols].copy()
-            
-            # 평균매수가격 포맷팅 (₩ 기호)
-            display_df['평균매수가격'] = display_df['평균매수가격'].apply(
-                lambda x: f"₩{int(x):,}" if pd.notna(x) else 'N/A'
+            settings_mgr = UserSettings()
+            threshold_cfg = normalize_portfolio_thresholds(settings_mgr.load_settings())
+
+            enriched_holdings = merge_holdings_with_context(
+                holding_summary_df=holding_summary,
+                stock_master_df=stock_master_df if stock_master_df is not None else pd.DataFrame(),
+                thresholds=threshold_cfg,
             )
-            
-            # 현재가격 포맷팅 (₩ 기호)
-            display_df['현재가격'] = display_df['현재가격'].apply(
-                lambda x: f"₩{int(x):,}" if pd.notna(x) else 'N/A'
+            sector_exposure = compute_sector_exposure(enriched_holdings)
+            portfolio_summary = portfolio_mgr.get_portfolio_summary(current_prices)
+
+            weak_exposure = float(
+                sector_exposure.loc[sector_exposure["sector_state"] == "WEAK", "sector_weight"].sum()
+            ) if not sector_exposure.empty else 0.0
+            leading_exposure = float(
+                sector_exposure.loc[sector_exposure["sector_state"] == "LEADING", "sector_weight"].sum()
+            ) if not sector_exposure.empty else 0.0
+            top_sector_weight = float(sector_exposure["sector_weight"].max()) if not sector_exposure.empty else 0.0
+            sectors_held = int(sector_exposure["sector"].nunique()) if not sector_exposure.empty else 0
+
+            compliance_ratio = 0.0
+            if not enriched_holdings.empty:
+                compliance_ratio = float((enriched_holdings["strategy_compliance"] == "COMPLIANT").mean() * 100.0)
+
+            render_kpi_row([
+                {"label": "총 자산", "value": f"₩{float(portfolio_summary.get('total_value', 0)):,.0f}"},
+                {"label": "포트폴리오 수익률", "value": f"{float(portfolio_summary.get('total_profit_rate', 0)):+.2f}%"},
+                {"label": "상위 섹터 집중도", "value": f"{top_sector_weight:.1f}%"},
+                {"label": "COMPLIANT 비율", "value": f"{compliance_ratio:.1f}%"},
+                {"label": "WEAK 섹터 노출", "value": f"{weak_exposure:.1f}%"},
+            ])
+
+            kpi_cols = st.columns(4)
+            with kpi_cols[0]:
+                st.metric("보유 섹터 수", sectors_held)
+            with kpi_cols[1]:
+                st.metric("LEADING 노출", f"{leading_exposure:.1f}%")
+            with kpi_cols[2]:
+                st.metric("WEAK 노출", f"{weak_exposure:.1f}%")
+            with kpi_cols[3]:
+                st.metric("종목 수", len(enriched_holdings))
+
+            if top_sector_weight > threshold_cfg["concentration_critical_pct"]:
+                st.error(f"🚨 상위 섹터 집중도 {top_sector_weight:.1f}% (>{threshold_cfg['concentration_critical_pct']:.1f}%)")
+            elif top_sector_weight > threshold_cfg["concentration_warning_pct"]:
+                st.warning(f"⚠️ 상위 섹터 집중도 {top_sector_weight:.1f}% (>{threshold_cfg['concentration_warning_pct']:.1f}%)")
+
+            if weak_exposure > threshold_cfg["weak_sector_warning_pct"]:
+                st.warning(f"⚠️ WEAK 섹터 총 노출 {weak_exposure:.1f}% (>{threshold_cfg['weak_sector_warning_pct']:.1f}%)")
+
+            st.markdown("#### 🧭 섹터 노출 테이블")
+            if sector_exposure.empty:
+                st.caption("섹터 노출 데이터를 계산할 수 없습니다.")
+            else:
+                sec_display = sector_exposure.copy()
+                sec_display["market_value"] = sec_display["market_value"].map(lambda x: f"₩{x:,.0f}")
+                sec_display["sector_weight"] = sec_display["sector_weight"].map(lambda x: f"{x:.1f}%")
+                sec_display["sector_power_mean"] = pd.to_numeric(sec_display["sector_power_mean"], errors="coerce").map(
+                    lambda x: f"{x:.1f}" if pd.notna(x) else "-"
+                )
+                st.dataframe(
+                    sec_display[["sector", "market_value", "sector_weight", "sector_state", "sector_power_mean"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            st.markdown("#### 📋 보유 종목 상세 (전략 정합성)")
+            filter_col1, filter_col2 = st.columns(2)
+            with filter_col1:
+                compliance_filter = st.radio(
+                    "정합성 필터",
+                    options=["ALL", "COMPLIANT", "WATCH", "NON_COMPLIANT"],
+                    horizontal=True,
+                    key="portfolio_compliance_filter",
+                )
+            with filter_col2:
+                sector_opts = ["ALL"] + sorted(enriched_holdings["sector"].dropna().astype(str).unique().tolist())
+                sector_filter = st.selectbox("섹터 필터", options=sector_opts, key="portfolio_sector_filter")
+
+            filtered = enriched_holdings.copy()
+            if compliance_filter != "ALL":
+                filtered = filtered[filtered["strategy_compliance"] == compliance_filter]
+            if sector_filter != "ALL":
+                filtered = filtered[filtered["sector"] == sector_filter]
+
+            def _color_compliance(val: str) -> str:
+                if val == "COMPLIANT":
+                    return "background-color: #dcfce7; color: #166534; font-weight: 700;"
+                if val == "WATCH":
+                    return "background-color: #fef9c3; color: #854d0e; font-weight: 700;"
+                if val == "NON_COMPLIANT":
+                    return "background-color: #fee2e2; color: #b91c1c; font-weight: 700;"
+                return ""
+
+            def _color_sector_state(val: str) -> str:
+                if val == "LEADING":
+                    return "background-color: #dcfce7; color: #166534; font-weight: 700;"
+                if val == "STRONG":
+                    return "background-color: #dbeafe; color: #1d4ed8; font-weight: 700;"
+                if val == "ROTATION":
+                    return "background-color: #fef9c3; color: #854d0e; font-weight: 700;"
+                if val == "WEAK":
+                    return "background-color: #fee2e2; color: #b91c1c; font-weight: 700;"
+                return ""
+
+            display_cols = [
+                "종목코드",
+                "종목명",
+                "보유수량",
+                "현재가격",
+                "현재수익률(%)",
+                "sector",
+                "sector_state",
+                "signal",
+                "final_score_adjusted",
+                "strategy_compliance",
+            ]
+            display_cols = [c for c in display_cols if c in filtered.columns]
+            tbl = filtered[display_cols].copy()
+            if "현재가격" in tbl.columns:
+                tbl["현재가격"] = pd.to_numeric(tbl["현재가격"], errors="coerce").map(lambda x: f"₩{x:,.0f}" if pd.notna(x) else "N/A")
+            if "현재수익률(%)" in tbl.columns:
+                tbl["현재수익률(%)"] = tbl["현재수익률(%)"].apply(
+                    lambda x: f"{float(x):+.2f}%" if isinstance(x, (int, float)) else x
+                )
+            if "final_score_adjusted" in tbl.columns:
+                tbl["final_score_adjusted"] = pd.to_numeric(tbl["final_score_adjusted"], errors="coerce").map(
+                    lambda x: f"{x:.1f}" if pd.notna(x) else "-"
+                )
+
+            styled_tbl = tbl.style
+            if "strategy_compliance" in tbl.columns:
+                styled_tbl = styled_tbl.applymap(_color_compliance, subset=["strategy_compliance"])
+            if "sector_state" in tbl.columns:
+                styled_tbl = styled_tbl.applymap(_color_sector_state, subset=["sector_state"])
+
+            st.dataframe(styled_tbl, use_container_width=True, hide_index=True)
+
+            st.markdown("#### ♻️ 리밸런싱 제안")
+            suggestions_df = build_rebalance_suggestions(
+                holdings_df=enriched_holdings,
+                stock_master_df=stock_master_df if stock_master_df is not None else pd.DataFrame(),
+                sector_exposure_df=sector_exposure,
+                thresholds=threshold_cfg,
             )
-            
-            # 현재수익률을 포맷팅 (소수점 2자리)
-            display_df['현재수익률(%)'] = display_df['현재수익률(%)'].apply(
-                lambda x: f"{float(x):+.2f}%" if x != 'N/A' else 'N/A'
-            )
-            
-            # DataFrame 스타일링
-            styled_df = display_df.style.applymap(
-                lambda x: highlight_profit_rate(x),
-                subset=['현재수익률(%)']
-            )
-            
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
-            
-            # 요약 통계
-            col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
-            
-            with col_stat1:
-                st.metric("보유 종목 수", len(holding_summary))
-            
-            with col_stat2:
-                avg_profit = holding_summary[holding_summary['현재수익률(%)'] != 'N/A']['현재수익률(%)'].apply(
-                    lambda x: float(x) if isinstance(x, (int, float)) else 0
-                ).mean()
-                st.metric("평균 수익률", f"{avg_profit:+.2f}%")
-            
-            with col_stat3:
-                profit_count = len(holding_summary[holding_summary['현재수익률(%)'] != 'N/A'][
-                    holding_summary['현재수익률(%)'].apply(lambda x: float(x) > 0 if isinstance(x, (int, float)) else False)
-                ])
-                st.metric("수익 종목 수", profit_count)
-            
-            with col_stat4:
-                total_buy_count = holding_summary['매수횟수'].sum()
-                st.metric("총 매수 횟수", total_buy_count)
+            if suggestions_df.empty:
+                st.caption("현재 기준에서 생성된 리밸런싱 제안이 없습니다.")
+            else:
+                st.dataframe(suggestions_df, use_container_width=True, hide_index=True)
         
         st.divider()
         
@@ -1473,11 +1570,19 @@ def page_portfolio():
                 return load_finance_data("data")
             except:
                 return pd.DataFrame()
+
+        @st.cache_data(ttl=3600)
+        def load_master_context():
+            try:
+                return build_stock_master_df("data")
+            except Exception:
+                return pd.DataFrame()
         
         # 데이터 로드
         kospi_dict = load_kospi_stocks()
         price_df = load_stock_prices()
         finance_df = load_finance_info()
+        master_context_df = load_master_context()
         
         # 빠른 초기화 버튼
         col_portf1, col_portf2 = st.columns([2, 1])
@@ -1508,11 +1613,21 @@ def page_portfolio():
         st.divider()
         
         # 포트폴리오 현황 렌더링
-        _render_portfolio_current(kospi_dict, price_df, finance_df)
+        _render_portfolio_current(kospi_dict, price_df, finance_df, master_context_df)
     
     with main_tab2:
         st.subheader("📈 거래 분석 & 통계")
         st.caption("거래 이력에 기반한 수익률 분석을 확인합니다.")
+
+        @st.cache_data(ttl=3600)
+        def load_master_context_trade():
+            try:
+                return build_stock_master_df("data")
+            except Exception:
+                return pd.DataFrame()
+
+        trade_master_context_df = load_master_context_trade()
+        threshold_cfg_trade = normalize_portfolio_thresholds(UserSettings().load_settings())
         
         # 거래 이력 반영 후 캐시 자동 새로고침
         if st.session_state.get('trades_applied', False):
@@ -1700,6 +1815,31 @@ def page_portfolio():
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
             else:
                 st.info("매도 거래가 없습니다.")
+
+            st.divider()
+            st.markdown("### 🏭 섹터별 실현손익/승률")
+            sector_summary_df, compliance_summary_df = build_trade_sector_summary(
+                sell_trades=trade_analysis.get('all_sell_trades', []),
+                stock_master_df=trade_master_context_df,
+                thresholds=threshold_cfg_trade,
+            )
+
+            if sector_summary_df.empty:
+                st.caption("섹터별 분석을 위한 매도 거래 데이터가 없습니다.")
+            else:
+                sec_view = sector_summary_df.copy()
+                sec_view['realized_pnl'] = sec_view['realized_pnl'].map(lambda x: f"₩{x:,.0f}")
+                sec_view['win_rate'] = sec_view['win_rate'].map(lambda x: f"{x:.1f}%")
+                st.dataframe(sec_view, use_container_width=True, hide_index=True)
+
+            st.markdown("### ✅ 거래 시점 정합성(현재 스냅샷 기반 MVP)")
+            if compliance_summary_df.empty:
+                st.caption("정합성 요약 데이터가 없습니다.")
+            else:
+                comp_view = compliance_summary_df.copy()
+                comp_view['realized_pnl'] = comp_view['realized_pnl'].map(lambda x: f"₩{x:,.0f}")
+                st.dataframe(comp_view, use_container_width=True, hide_index=True)
+                st.caption("참고: 과거 시점 스냅샷이 없어 현재 컨텍스트 기준으로 계산한 MVP 지표입니다.")
     
     with main_tab3:
         st.subheader("📝 거래 이력 입력 (키움증권 체결알림 복붙)")
@@ -2136,10 +2276,45 @@ def page_settings():
         auto_expand_value = convert_to_bool(current_settings.get('auto_expand_top', True))
         auto_expand = st.checkbox("1위 종목 자동 펼치기", 
                                  value=auto_expand_value)
+
+        st.markdown("---")
+        st.markdown("#### 포트폴리오 정책 임계값")
+        concentration_warning_pct = st.number_input(
+            "집중 경고 비중(%)",
+            min_value=10.0,
+            max_value=90.0,
+            value=float(current_settings.get('concentration_warning_pct', 35.0)),
+            step=1.0,
+        )
+        concentration_critical_pct = st.number_input(
+            "집중 위험 비중(%)",
+            min_value=10.0,
+            max_value=95.0,
+            value=float(current_settings.get('concentration_critical_pct', 50.0)),
+            step=1.0,
+        )
+        compliant_score_threshold = st.number_input(
+            "COMPLIANT 점수 기준",
+            min_value=0.0,
+            max_value=100.0,
+            value=float(current_settings.get('compliant_score_threshold', 70.0)),
+            step=1.0,
+        )
+        watch_score_threshold = st.number_input(
+            "WATCH 점수 기준",
+            min_value=0.0,
+            max_value=100.0,
+            value=float(current_settings.get('watch_score_threshold', 60.0)),
+            step=1.0,
+        )
         
         if st.button("저장", key="save_defaults"):
             settings_mgr.set('default_period', default_period)
             settings_mgr.set('auto_expand_top', auto_expand)
+            settings_mgr.set('concentration_warning_pct', concentration_warning_pct)
+            settings_mgr.set('concentration_critical_pct', concentration_critical_pct)
+            settings_mgr.set('compliant_score_threshold', compliant_score_threshold)
+            settings_mgr.set('watch_score_threshold', watch_score_threshold)
             st.success("설정이 저장되었습니다!")
     
     with tab3:
@@ -2210,17 +2385,76 @@ def page_settings():
                         universe = last_validation.get("universe", "-")
                         date_range = last_validation.get("date_range", "-")
                         st.caption(f"Last validation: {run_ts} · {universe} · {date_range}")
-                        metrics = last_validation.get("metrics", {})
-                        if isinstance(metrics, dict) and metrics:
+                        overall = last_validation.get("overall", last_validation.get("metrics", {}))
+                        if isinstance(overall, dict) and overall:
                             m1, m2, m3, m4 = st.columns(4)
                             with m1:
-                                st.metric("CAGR", f"{metrics.get('cagr', 0.0):.2%}")
+                                st.metric("CAGR", f"{overall.get('cagr', 0.0):.2%}")
                             with m2:
-                                st.metric("MDD", f"{metrics.get('max_drawdown', 0.0):.2%}")
+                                st.metric("MDD", f"{overall.get('max_drawdown', 0.0):.2%}")
                             with m3:
-                                st.metric("WinRate", f"{metrics.get('win_rate', 0.0):.2%}")
+                                st.metric("WinRate", f"{overall.get('win_rate', 0.0):.2%}")
                             with m4:
-                                st.metric("Trades", int(metrics.get('trades_count', 0)))
+                                st.metric("Trades", int(overall.get('trades_count', 0)))
+
+                        by_regime = last_validation.get("by_regime", {}) if isinstance(last_validation, dict) else {}
+                        if isinstance(by_regime, dict) and by_regime:
+                            strong_bull = False
+                            weak_bear = False
+                            bull_metrics = by_regime.get("BULL", {}) if isinstance(by_regime.get("BULL", {}), dict) else {}
+                            bear_metrics = by_regime.get("BEAR", {}) if isinstance(by_regime.get("BEAR", {}), dict) else {}
+
+                            if bull_metrics:
+                                strong_bull = (
+                                    float(bull_metrics.get("cagr", 0.0)) > 0
+                                    and float(bull_metrics.get("win_rate", 0.0)) >= 0.5
+                                )
+                            if bear_metrics:
+                                weak_bear = (
+                                    float(bear_metrics.get("cagr", 0.0)) < 0
+                                    or float(bear_metrics.get("max_drawdown", 0.0)) > 0.20
+                                )
+
+                            badge_col1, badge_col2 = st.columns(2)
+                            with badge_col1:
+                                if strong_bull:
+                                    st.success("Strong in BULL")
+                                else:
+                                    st.info("Neutral in BULL")
+                            with badge_col2:
+                                if weak_bear:
+                                    st.error("Weak in BEAR")
+                                else:
+                                    st.success("Resilient in BEAR")
+
+                            with st.expander("Regime Validation Summary", expanded=False):
+                                regime_rows = []
+                                for regime in ["BULL", "BEAR", "SIDEWAYS", "HIGH_VOL"]:
+                                    rm = by_regime.get(regime, {}) if isinstance(by_regime.get(regime, {}), dict) else {}
+                                    regime_rows.append(
+                                        {
+                                            "regime": regime,
+                                            "cagr": float(rm.get("cagr", 0.0)),
+                                            "max_drawdown": float(rm.get("max_drawdown", 0.0)),
+                                            "win_rate": float(rm.get("win_rate", 0.0)),
+                                            "trades_count": int(rm.get("trades_count", 0)),
+                                            "avg_return": float(rm.get("avg_return", 0.0)),
+                                            "profit_loss_ratio": float(rm.get("profit_loss_ratio", 0.0)),
+                                        }
+                                    )
+                                regime_df = pd.DataFrame(regime_rows)
+                                st.dataframe(
+                                    regime_df,
+                                    use_container_width=True,
+                                    hide_index=True,
+                                    column_config={
+                                        "cagr": st.column_config.NumberColumn("CAGR", format="%.2f%%"),
+                                        "max_drawdown": st.column_config.NumberColumn("MDD", format="%.2f%%"),
+                                        "win_rate": st.column_config.NumberColumn("WinRate", format="%.2f%%"),
+                                        "avg_return": st.column_config.NumberColumn("AvgReturn", format="%.2f"),
+                                        "profit_loss_ratio": st.column_config.NumberColumn("P/L", format="%.2f"),
+                                    },
+                                )
 
 
 def page_long_term_investment():
@@ -2812,6 +3046,8 @@ def run_phase4_app():
             "🏠 메인 대시보드": "main",
             "📈 종목분석": "analysis",
             "🏭 섹터분석": "sector-analysis",
+            "📡 시장구조": "market-structure",
+            "🌡 시장 체온계": "market-thermometer",
             "💼 포트폴리오": "portfolio",
             "⚙️ 설정": "settings"
         }
@@ -2828,6 +3064,8 @@ def run_phase4_app():
         "main": f"메인 대시보드 · {selected_main_tab}",
         "analysis": "종목분석",
         "sector-analysis": "섹터분석",
+        "market-structure": "시장구조",
+        "market-thermometer": "시장 체온계",
         "portfolio": "포트폴리오",
         "settings": "설정",
     }
@@ -2883,6 +3121,14 @@ def run_phase4_app():
         params = _get_default_analysis_params()
 
         render_sector_analysis_page(df, signals, params)
+    elif page == "market-structure":
+        from app.market_structure_ui import render_market_structure_page
+
+        render_market_structure_page()
+    elif page == "market-thermometer":
+        from app.market_thermometer_ui import render_market_thermometer
+
+        render_market_thermometer()
     else:
         # 기존 메인 대시보드
         run_app(selected_main_tab)

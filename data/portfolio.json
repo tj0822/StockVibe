@@ -1,1 +1,34 @@
-{}
+{
+  "096770": {
+    "name": "SK이노베이션",
+    "quantity": 23,
+    "avg_price": 132000.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 23,
+        "price": 132000.0,
+        "date": "2026-03-06 08:02:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-03-06 08:02:00",
+    "last_updated": "2026-03-06 23:00:07"
+  },
+  "006400": {
+    "name": "삼성SDI",
+    "quantity": 7,
+    "avg_price": 403000.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 7,
+        "price": 403000.0,
+        "date": "2026-03-06 09:04:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-03-06 09:04:00",
+    "last_updated": "2026-03-06 23:00:07"
+  }
+}

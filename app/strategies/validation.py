@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict
 
@@ -10,15 +11,154 @@ import pandas as pd
 import streamlit as st
 
 from app.data import load_kospi_index, load_kospi_list, load_stock_data
+from app.strategies.market_regime import classify_market_regime
 from app.strategies.registry import get_strategy
 
 
 DEFAULT_THRESHOLDS = {
-    "min_cagr": 0.05,
-    "max_mdd": 0.25,
-    "min_win_rate": 0.52,
-    "min_trades": 30,
+    "overall": {
+        "min_cagr": 0.05,
+        "max_mdd": 0.25,
+        "min_win_rate": 0.52,
+        "min_trades": 30,
+    },
+    "by_regime": {
+        "BULL": {"min_cagr": 0.08},
+        "BEAR": {"max_mdd": 0.20},
+        "SIDEWAYS": {"min_win_rate": 0.50},
+        "HIGH_VOL": {"max_mdd": 0.18},
+    },
 }
+
+
+REGIME_ORDER = ["BULL", "BEAR", "SIDEWAYS", "HIGH_VOL"]
+
+
+def _normalize_thresholds(raw_thresholds: dict | None) -> Dict[str, Any]:
+    raw_thresholds = raw_thresholds or {}
+
+    # Backward compatibility: accept flat dict schema.
+    if "overall" not in raw_thresholds and any(
+        key in raw_thresholds for key in ["min_cagr", "max_mdd", "min_win_rate", "min_trades"]
+    ):
+        overall = {**DEFAULT_THRESHOLDS["overall"], **raw_thresholds}
+        by_regime = deepcopy(DEFAULT_THRESHOLDS["by_regime"])
+        return {"overall": overall, "by_regime": by_regime}
+
+    overall = {**DEFAULT_THRESHOLDS["overall"], **raw_thresholds.get("overall", {})}
+
+    by_regime = deepcopy(DEFAULT_THRESHOLDS["by_regime"])
+    user_by_regime = raw_thresholds.get("by_regime", {})
+    for regime in REGIME_ORDER:
+        by_regime[regime] = {**by_regime.get(regime, {}), **user_by_regime.get(regime, {})}
+
+    return {
+        "overall": overall,
+        "by_regime": by_regime,
+    }
+
+
+def _compute_metrics(equity_df: pd.DataFrame, trades_df: pd.DataFrame) -> Dict[str, Any]:
+    if equity_df is None or equity_df.empty:
+        return {
+            "total_return": 0.0,
+            "cagr": 0.0,
+            "win_rate": 0.0,
+            "max_drawdown": 1.0,
+            "trades_count": 0,
+            "avg_return": 0.0,
+            "profit_loss_ratio": 0.0,
+            "sharpe": 0.0,
+            "avg_holding_days": 0.0,
+        }
+
+    eq = equity_df.copy()
+    eq["date"] = pd.to_datetime(eq["date"], errors="coerce")
+    eq = eq.dropna(subset=["date", "equity"]).sort_values("date")
+
+    if eq.empty:
+        return {
+            "total_return": 0.0,
+            "cagr": 0.0,
+            "win_rate": 0.0,
+            "max_drawdown": 1.0,
+            "trades_count": 0,
+            "avg_return": 0.0,
+            "profit_loss_ratio": 0.0,
+            "sharpe": 0.0,
+            "avg_holding_days": 0.0,
+        }
+
+    initial_equity = float(eq["equity"].iloc[0]) if len(eq) else 0.0
+    final_equity = float(eq["equity"].iloc[-1]) if len(eq) else 0.0
+    total_return = ((final_equity / initial_equity) - 1.0) if initial_equity > 0 else 0.0
+
+    years = max((eq["date"].iloc[-1] - eq["date"].iloc[0]).days / 365.25, 1e-9)
+    cagr = ((final_equity / initial_equity) ** (1 / years) - 1.0) if initial_equity > 0 else 0.0
+
+    cummax = eq["equity"].cummax()
+    drawdown = (eq["equity"] - cummax) / cummax.replace(0, np.nan)
+    max_drawdown = abs(float(drawdown.min())) if not drawdown.empty else 1.0
+
+    daily_ret = eq["equity"].pct_change().dropna()
+    sharpe = 0.0
+    if len(daily_ret) > 1 and daily_ret.std() > 0:
+        sharpe = float((daily_ret.mean() / daily_ret.std()) * np.sqrt(252))
+
+    sell_trades = trades_df[trades_df["action"] == "SELL"].copy() if not trades_df.empty else pd.DataFrame()
+    if not sell_trades.empty and "return_pct" in sell_trades.columns:
+        valid = sell_trades.dropna(subset=["return_pct"]).copy()
+        trades_count = int(len(valid))
+        win_rate = float((valid["return_pct"] > 0).mean()) if trades_count > 0 else 0.0
+        avg_return = float(valid["return_pct"].mean()) if trades_count > 0 else 0.0
+        avg_win = float(valid.loc[valid["return_pct"] > 0, "return_pct"].mean()) if (valid["return_pct"] > 0).any() else 0.0
+        avg_loss = float(valid.loc[valid["return_pct"] < 0, "return_pct"].mean()) if (valid["return_pct"] < 0).any() else 0.0
+        profit_loss_ratio = float(avg_win / abs(avg_loss)) if avg_loss < 0 else 0.0
+    else:
+        trades_count = 0
+        win_rate = 0.0
+        avg_return = 0.0
+        profit_loss_ratio = 0.0
+
+    avg_holding_days = _compute_avg_holding_days(trades_df if trades_df is not None else pd.DataFrame())
+
+    return {
+        "total_return": float(total_return),
+        "cagr": float(cagr),
+        "win_rate": float(win_rate),
+        "max_drawdown": float(max_drawdown),
+        "trades_count": int(trades_count),
+        "avg_return": float(avg_return),
+        "profit_loss_ratio": float(profit_loss_ratio),
+        "sharpe": float(sharpe),
+        "avg_holding_days": float(avg_holding_days),
+    }
+
+
+def _passes_overall(metrics: Dict[str, Any], thresholds: Dict[str, Any]) -> bool:
+    return (
+        float(metrics.get("cagr", 0.0)) >= float(thresholds.get("min_cagr", 0.0))
+        and float(metrics.get("max_drawdown", 1.0)) <= float(thresholds.get("max_mdd", 1.0))
+        and float(metrics.get("win_rate", 0.0)) >= float(thresholds.get("min_win_rate", 0.0))
+        and int(metrics.get("trades_count", 0)) >= int(thresholds.get("min_trades", 0))
+    )
+
+
+def _passes_regime(metrics: Dict[str, Any], regime_thresholds: Dict[str, Any]) -> bool:
+    if not regime_thresholds:
+        return True
+
+    checks = []
+    if "min_cagr" in regime_thresholds:
+        checks.append(float(metrics.get("cagr", 0.0)) >= float(regime_thresholds["min_cagr"]))
+    if "max_mdd" in regime_thresholds:
+        checks.append(float(metrics.get("max_drawdown", 1.0)) <= float(regime_thresholds["max_mdd"]))
+    if "min_win_rate" in regime_thresholds:
+        checks.append(float(metrics.get("win_rate", 0.0)) >= float(regime_thresholds["min_win_rate"]))
+    if "min_trades" in regime_thresholds:
+        checks.append(int(metrics.get("trades_count", 0)) >= int(regime_thresholds["min_trades"]))
+
+    return all(checks) if checks else True
 
 
 def _compute_avg_holding_days(trades_df: pd.DataFrame) -> float:
@@ -57,7 +197,7 @@ def _validate_strategy_cached(
     thresholds_json: str,
 ) -> Dict[str, Any]:
     params = json.loads(params_json) if params_json else {}
-    thresholds = {**DEFAULT_THRESHOLDS, **(json.loads(thresholds_json) if thresholds_json else {})}
+    thresholds = _normalize_thresholds(json.loads(thresholds_json) if thresholds_json else {})
 
     strategy = get_strategy(strategy_id)
 
@@ -68,8 +208,10 @@ def _validate_strategy_cached(
     if price_df.empty:
         return {
             "validated": False,
+            "passed": False,
             "reason": "price_df empty",
-            "metrics": {},
+            "overall": {},
+            "by_regime": {k: {} for k in REGIME_ORDER},
             "thresholds": thresholds,
         }
 
@@ -89,8 +231,10 @@ def _validate_strategy_cached(
     if work.empty:
         return {
             "validated": False,
+            "passed": False,
             "reason": "filtered universe/date data empty",
-            "metrics": {},
+            "overall": {},
+            "by_regime": {k: {} for k in REGIME_ORDER},
             "thresholds": thresholds,
         }
 
@@ -104,10 +248,12 @@ def _validate_strategy_cached(
     if signals_df.empty:
         return {
             "validated": False,
+            "passed": False,
             "reason": "no signals generated",
-            "metrics": {
+            "overall": {
                 "trades_count": 0,
             },
+            "by_regime": {k: {} for k in REGIME_ORDER},
             "thresholds": thresholds,
         }
 
@@ -125,73 +271,54 @@ def _validate_strategy_cached(
         add_buy_threshold_pct=float(params.get("add_buy_threshold_pct", -7.0)),
     )
 
-    if equity_df.empty:
-        metrics = {
-            "cagr": 0.0,
-            "total_return": 0.0,
-            "max_drawdown": 1.0,
-            "sharpe": 0.0,
-            "win_rate": 0.0,
-            "trades_count": 0,
-            "avg_holding_days": 0.0,
-        }
-    else:
+    overall_metrics = _compute_metrics(equity_df, trades_df)
+
+    regime_df = classify_market_regime(kospi_index)
+    by_regime: Dict[str, Dict[str, Any]] = {}
+    regime_checks: list[bool] = []
+
+    if not regime_df.empty and not equity_df.empty:
         eq = equity_df.copy()
-        eq["date"] = pd.to_datetime(eq["date"], errors="coerce")
-        eq = eq.dropna(subset=["date", "equity"]).sort_values("date")
+        eq["date"] = pd.to_datetime(eq["date"], errors="coerce").dt.normalize()
+        eq = eq.dropna(subset=["date"]).copy()
 
-        initial_equity = float(eq["equity"].iloc[0]) if len(eq) else 0.0
-        final_equity = float(eq["equity"].iloc[-1]) if len(eq) else 0.0
-        total_return = ((final_equity / initial_equity) - 1.0) if initial_equity > 0 else 0.0
+        regime_map = regime_df[["date", "regime"]].copy()
+        regime_map["date"] = pd.to_datetime(regime_map["date"], errors="coerce").dt.normalize()
+        regime_map = regime_map.dropna(subset=["date"]).drop_duplicates(subset=["date"], keep="last")
 
-        years = max((eq["date"].iloc[-1] - eq["date"].iloc[0]).days / 365.25, 1e-9)
-        cagr = ((final_equity / initial_equity) ** (1 / years) - 1.0) if initial_equity > 0 else 0.0
-
-        cummax = eq["equity"].cummax()
-        drawdown = (eq["equity"] - cummax) / cummax.replace(0, np.nan)
-        max_drawdown = abs(float(drawdown.min())) if not drawdown.empty else 1.0
-
-        daily_ret = eq["equity"].pct_change().dropna()
-        sharpe = 0.0
-        if len(daily_ret) > 1 and daily_ret.std() > 0:
-            sharpe = float((daily_ret.mean() / daily_ret.std()) * np.sqrt(252))
-
-        sell_trades = trades_df[trades_df["action"] == "SELL"].copy() if not trades_df.empty else pd.DataFrame()
-        if not sell_trades.empty and "return_pct" in sell_trades.columns:
-            valid = sell_trades.dropna(subset=["return_pct"])
-            win_rate = float((valid["return_pct"] > 0).mean()) if len(valid) > 0 else 0.0
-            trades_count = int(len(valid))
+        eq = eq.merge(regime_map, on="date", how="left")
+        if trades_df is not None and not trades_df.empty:
+            tdf = trades_df.copy()
+            tdf["date"] = pd.to_datetime(tdf["date"], errors="coerce").dt.normalize()
+            tdf = tdf.dropna(subset=["date"]).merge(regime_map, on="date", how="left")
         else:
-            win_rate = 0.0
-            trades_count = 0
+            tdf = pd.DataFrame(columns=["date", "action", "return_pct", "code", "regime"])
 
-        avg_holding_days = _compute_avg_holding_days(trades_df)
+        for regime in REGIME_ORDER:
+            eq_reg = eq[eq["regime"] == regime].copy()
+            tdf_reg = tdf[tdf["regime"] == regime].copy()
+            regime_metrics = _compute_metrics(eq_reg, tdf_reg)
+            by_regime[regime] = regime_metrics
+            regime_checks.append(_passes_regime(regime_metrics, thresholds.get("by_regime", {}).get(regime, {})))
+    else:
+        for regime in REGIME_ORDER:
+            by_regime[regime] = _compute_metrics(pd.DataFrame(), pd.DataFrame())
+            regime_checks.append(_passes_regime(by_regime[regime], thresholds.get("by_regime", {}).get(regime, {})))
 
-        metrics = {
-            "cagr": float(cagr),
-            "total_return": float(total_return),
-            "max_drawdown": float(max_drawdown),
-            "sharpe": float(sharpe),
-            "win_rate": float(win_rate),
-            "trades_count": int(trades_count),
-            "avg_holding_days": float(avg_holding_days),
-        }
-
-    passed = (
-        metrics.get("cagr", 0.0) >= float(thresholds["min_cagr"])
-        and metrics.get("max_drawdown", 1.0) <= float(thresholds["max_mdd"])
-        and metrics.get("win_rate", 0.0) >= float(thresholds["min_win_rate"])
-        and metrics.get("trades_count", 0) >= int(thresholds["min_trades"])
-    )
+    overall_passed = _passes_overall(overall_metrics, thresholds.get("overall", {}))
+    passed = bool(overall_passed and all(regime_checks))
 
     return {
         "strategy_id": strategy_id,
         "strategy_version": strategy.spec.version,
         "validated": bool(passed),
+        "passed": bool(passed),
         "run_ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "universe": universe,
         "date_range": f"{start_date} ~ {end_date}",
-        "metrics": metrics,
+        "overall": overall_metrics,
+        "metrics": overall_metrics,  # backward compatibility
+        "by_regime": by_regime,
         "thresholds": thresholds,
     }
 

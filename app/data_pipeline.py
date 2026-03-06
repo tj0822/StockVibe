@@ -9,6 +9,7 @@ import streamlit as st
 from financial_utils import StockScoringEngine
 
 from .data import load_finance_data, load_kospi_index, load_kospi_list, load_stock_data
+from .sector_context import compute_sector_power
 from .signals import build_signals
 from .strategies.registry import get_strategy
 from .strategies.registry_store import get_production_strategy_ids
@@ -184,13 +185,32 @@ def build_stock_master_df(data_dir: str = "data") -> pd.DataFrame:
     - sector
     - close
     - final_score
+    - final_score_adjusted
     - momentum_score
     - signal
     - return_1m
+    - sector_power
+    - sector_rank
+    - sector_state
     """
     price_df = load_stock_data(data_dir).copy()
     if price_df.empty:
-        return pd.DataFrame(columns=["code", "name", "sector", "close", "final_score", "momentum_score", "signal", "return_1m"])
+        return pd.DataFrame(
+            columns=[
+                "code",
+                "name",
+                "sector",
+                "close",
+                "final_score",
+                "final_score_adjusted",
+                "momentum_score",
+                "signal",
+                "return_1m",
+                "sector_power",
+                "sector_rank",
+                "sector_state",
+            ]
+        )
 
     price_df["date"] = pd.to_datetime(price_df["date"], errors="coerce")
     price_df["code"] = price_df["code"].astype(str).str.zfill(6)
@@ -268,9 +288,35 @@ def build_stock_master_df(data_dir: str = "data") -> pd.DataFrame:
         "return_1m",
     ]].copy()
 
+    sector_summary_df = compute_sector_power(stock_master_df)
+    if not sector_summary_df.empty:
+        stock_master_df = stock_master_df.merge(
+            sector_summary_df,
+            on="sector",
+            how="left",
+        )
+    else:
+        stock_master_df["sector_power"] = np.nan
+        stock_master_df["sector_rank"] = np.nan
+        stock_master_df["sector_state"] = None
+
+    sector_bonus = {
+        "LEADING": 8,
+        "STRONG": 4,
+        "ROTATION": 0,
+        "WEAK": -4,
+    }
+    stock_master_df["final_score_adjusted"] = (
+        pd.to_numeric(stock_master_df["final_score"], errors="coerce").fillna(0.0)
+        + stock_master_df["sector_state"].map(sector_bonus).fillna(0.0)
+    ).clip(0, 100)
+
+    if "sector_rank" in stock_master_df.columns:
+        stock_master_df["sector_rank"] = pd.to_numeric(stock_master_df["sector_rank"], errors="coerce").astype("Int64")
+
     stock_master_df = (
         stock_master_df
-        .sort_values(["code", "final_score", "momentum_score"], ascending=[True, False, False])
+        .sort_values(["code", "final_score_adjusted", "final_score", "momentum_score"], ascending=[True, False, False, False])
         .drop_duplicates(subset=["code"], keep="first")
         .reset_index(drop=True)
     )

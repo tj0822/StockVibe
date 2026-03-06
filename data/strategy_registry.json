@@ -4,6 +4,28 @@
     "validated": false,
     "in_production": false,
     "last_validation": null,
+    "validation_thresholds": {
+      "overall": {
+        "min_cagr": 0.05,
+        "max_mdd": 0.25,
+        "min_win_rate": 0.52,
+        "min_trades": 30
+      },
+      "by_regime": {
+        "BULL": {
+          "min_cagr": 0.08
+        },
+        "BEAR": {
+          "max_mdd": 0.2
+        },
+        "SIDEWAYS": {
+          "min_win_rate": 0.5
+        },
+        "HIGH_VOL": {
+          "max_mdd": 0.18
+        }
+      }
+    },
     "notes": ""
   }
 }

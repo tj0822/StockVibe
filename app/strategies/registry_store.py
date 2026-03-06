@@ -11,6 +11,39 @@ from app.strategies.registry import list_strategies
 REGISTRY_PATH = os.path.join("data", "strategy_registry.json")
 
 
+DEFAULT_VALIDATION_THRESHOLDS = {
+    "overall": {
+        "min_cagr": 0.05,
+        "max_mdd": 0.25,
+        "min_win_rate": 0.52,
+        "min_trades": 30,
+    },
+    "by_regime": {
+        "BULL": {"min_cagr": 0.08},
+        "BEAR": {"max_mdd": 0.20},
+        "SIDEWAYS": {"min_win_rate": 0.50},
+        "HIGH_VOL": {"max_mdd": 0.18},
+    },
+}
+
+
+def _merge_validation_thresholds(raw: Dict[str, Any] | None) -> Dict[str, Any]:
+    raw = raw or {}
+    out = deepcopy(DEFAULT_VALIDATION_THRESHOLDS)
+
+    if "overall" not in raw and any(k in raw for k in ["min_cagr", "max_mdd", "min_win_rate", "min_trades"]):
+        out["overall"].update(raw)
+        return out
+
+    out["overall"].update(raw.get("overall", {}))
+
+    raw_by_regime = raw.get("by_regime", {})
+    for regime in ["BULL", "BEAR", "SIDEWAYS", "HIGH_VOL"]:
+        out["by_regime"][regime].update(raw_by_regime.get(regime, {}))
+
+    return out
+
+
 def _ensure_registry_dir() -> None:
     os.makedirs(os.path.dirname(REGISTRY_PATH), exist_ok=True)
 
@@ -21,6 +54,7 @@ def _default_state() -> Dict[str, Any]:
         "validated": False,
         "in_production": False,
         "last_validation": None,
+        "validation_thresholds": deepcopy(DEFAULT_VALIDATION_THRESHOLDS),
         "notes": "",
     }
 
@@ -32,6 +66,7 @@ def _normalize_registry(raw: Dict[str, Any]) -> Dict[str, Any]:
     for spec in specs:
         state = deepcopy(_default_state())
         state.update(raw.get(spec.strategy_id, {}) if isinstance(raw, dict) else {})
+        state["validation_thresholds"] = _merge_validation_thresholds(state.get("validation_thresholds"))
         out[spec.strategy_id] = state
 
     return out
@@ -107,13 +142,21 @@ def update_validation_result(strategy_id: str, payload: Dict[str, Any]) -> Dict[
         raise KeyError(f"Unknown strategy_id={strategy_id}")
 
     state = registry[strategy_id]
-    state["validated"] = bool(payload.get("validated", False))
+    passed = bool(payload.get("passed", payload.get("validated", False)))
+    state["validated"] = passed
+
+    thresholds_payload = payload.get("thresholds")
+    if thresholds_payload:
+        state["validation_thresholds"] = _merge_validation_thresholds(thresholds_payload)
+
     state["last_validation"] = {
         "run_ts": payload.get("run_ts") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "universe": payload.get("universe"),
         "date_range": payload.get("date_range"),
-        "metrics": payload.get("metrics", {}),
-        "thresholds": payload.get("thresholds", {}),
+        "overall": payload.get("overall", payload.get("metrics", {})),
+        "by_regime": payload.get("by_regime", {}),
+        "thresholds": _merge_validation_thresholds(payload.get("thresholds", state.get("validation_thresholds"))),
+        "passed": passed,
     }
     if not state["validated"]:
         state["in_production"] = False
@@ -125,3 +168,10 @@ def update_validation_result(strategy_id: str, payload: Dict[str, Any]) -> Dict[
 def get_production_strategy_ids() -> list[str]:
     registry = load_registry()
     return [sid for sid, state in registry.items() if state.get("in_production", False)]
+
+
+def get_strategy_thresholds(strategy_id: str) -> dict:
+    registry = load_registry()
+    if strategy_id not in registry:
+        raise KeyError(f"Unknown strategy_id={strategy_id}")
+    return _merge_validation_thresholds(registry[strategy_id].get("validation_thresholds"))

@@ -18,11 +18,17 @@ from optimizer import BacktestOptimizer, get_period_dates
 from sentiment_analyzer import SentimentAnalyzer
 from stock_ontology import build_stock_ontology, StockOntology
 
-from .data import DATA_DIR_DEFAULT, load_kospi_index, load_kospi_list, load_stock_data, load_finance_data
+from .data import DATA_DIR_DEFAULT, load_kospi_index, load_kospi_list, load_stock_data, load_finance_data, load_marketcap_history
 from .data_pipeline import build_stock_master_df
+from .marketcap_bump import (
+    build_marketcap_rank_history,
+    render_marketcap_bump_chart,
+    summarize_rank_changes,
+)
 from .signals import build_signals
 from .strategies.registry import get_strategy, list_strategies
-from .strategies.registry_store import get_production_strategy_ids, load_registry
+from .strategies.market_regime import classify_market_regime
+from .strategies.registry_store import get_production_strategy_ids, get_strategy_thresholds, load_registry
 from .strategies.validation import validate_strategy
 from .strategies.registry_store import update_validation_result
 from .ui_components import render_action_row, render_progress_steps
@@ -106,6 +112,14 @@ def load_sector_info_cached(data_dir: str = "data") -> pd.DataFrame:
             pass
 
     return pd.DataFrame(columns=["code", "name", "sector"])
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_market_regime_cached(data_dir: str = "data") -> pd.DataFrame:
+    index_df = load_kospi_index(data_dir)
+    if index_df is None or index_df.empty:
+        return pd.DataFrame(columns=["date", "close", "return_20d", "vol_20d", "regime"])
+    return classify_market_regime(index_df)
 
 
 def render_sidebar(current_tab: str = "시그널") -> dict:
@@ -315,20 +329,59 @@ def build_latest_table(
     top_n: int,
     finance_df: pd.DataFrame = None,
     price_df: pd.DataFrame = None,
+    stock_master_df: pd.DataFrame = None,
     data_dir: str = "data",
 ) -> tuple[pd.DataFrame, list[str]]:
     latest = signals[(signals["date"] == selected_date) & (signals["signal"] != "")].copy()
-    latest = latest.head(int(top_n))
+
+    if latest.empty:
+        return latest, []
+
+    latest["code"] = latest["code"].astype(str).str.zfill(6)
+
+    # Use cached stock master context first (sector power/rank/state + adjusted score).
+    if stock_master_df is not None and not stock_master_df.empty:
+        context_cols = [
+            "code",
+            "sector",
+            "sector_power",
+            "sector_rank",
+            "sector_state",
+            "final_score",
+            "final_score_adjusted",
+            "buy_count",
+        ]
+        context_cols = [c for c in context_cols if c in stock_master_df.columns]
+        if context_cols:
+            master_map = stock_master_df[context_cols].copy()
+            master_map["code"] = master_map["code"].astype(str).str.zfill(6)
+            master_map = master_map.sort_values("code").drop_duplicates(subset=["code"], keep="last")
+            latest = latest.merge(master_map, on="code", how="left", suffixes=("", "_master"))
+
+            for col in ["sector", "sector_power", "sector_rank", "sector_state", "final_score", "final_score_adjusted", "buy_count"]:
+                master_col = f"{col}_master"
+                if master_col in latest.columns:
+                    if col in latest.columns:
+                        latest[col] = latest[col].where(latest[col].notna(), latest[master_col])
+                    else:
+                        latest[col] = latest[master_col]
+                    latest = latest.drop(columns=[master_col])
 
     # 섹터 정보 + 최근 섹터 수급 랭킹 병합 (섹터분석과 동일한 거래대금 원천 로직)
     if not latest.empty:
-        sector_map = load_sector_info_cached(data_dir).copy()
-        if not sector_map.empty and "code" in sector_map.columns and "sector" in sector_map.columns:
-            sector_map["code"] = sector_map["code"].astype(str).str.zfill(6)
-            sector_map["sector"] = sector_map["sector"].astype(str).str.strip()
-            sector_map = sector_map[sector_map["sector"] != ""].drop_duplicates(subset=["code"], keep="last")
-            latest["code"] = latest["code"].astype(str).str.zfill(6)
-            latest = latest.merge(sector_map[["code", "sector"]], on="code", how="left")
+        if "sector" not in latest.columns or latest["sector"].isna().any():
+            sector_map = load_sector_info_cached(data_dir).copy()
+            if not sector_map.empty and "code" in sector_map.columns and "sector" in sector_map.columns:
+                sector_map["code"] = sector_map["code"].astype(str).str.zfill(6)
+                sector_map["sector"] = sector_map["sector"].astype(str).str.strip()
+                sector_map = sector_map[sector_map["sector"] != ""].drop_duplicates(subset=["code"], keep="last")
+                latest = latest.merge(sector_map[["code", "sector"]], on="code", how="left", suffixes=("", "_fallback"))
+                if "sector_fallback" in latest.columns:
+                    if "sector" in latest.columns:
+                        latest["sector"] = latest["sector"].where(latest["sector"].notna(), latest["sector_fallback"])
+                    else:
+                        latest["sector"] = latest["sector_fallback"]
+                    latest = latest.drop(columns=["sector_fallback"])
 
             if price_df is not None and not price_df.empty:
                 sector_flow_map = _build_recent_sector_flow_rank_map(
@@ -339,6 +392,25 @@ def build_latest_table(
                 )
                 if not sector_flow_map.empty:
                     latest = latest.merge(sector_flow_map, on="sector", how="left")
+
+    latest["final_score"] = pd.to_numeric(latest.get("final_score"), errors="coerce")
+    latest["final_score_adjusted"] = pd.to_numeric(latest.get("final_score_adjusted"), errors="coerce")
+    latest["final_score_adjusted"] = latest["final_score_adjusted"].fillna(latest["final_score"])
+
+    # Candidate ranking priority: BUY first -> adjusted score desc -> spike ratio desc.
+    latest["_signal_priority"] = np.where(latest["signal"] == "BUY", 0, 1)
+    latest["_spike_sort"] = pd.to_numeric(latest.get("spike_ratio"), errors="coerce").fillna(-1e9)
+    latest = latest.sort_values(
+        ["_signal_priority", "final_score_adjusted", "_spike_sort"],
+        ascending=[True, False, False],
+    )
+    latest = latest.head(int(top_n))
+    latest = latest.drop(columns=["_signal_priority", "_spike_sort"], errors="ignore")
+
+    if "sector_rank" in latest.columns:
+        latest["sector_rank"] = pd.to_numeric(latest["sector_rank"], errors="coerce").astype("Int64")
+    if "sector_power" in latest.columns:
+        latest["sector_power"] = pd.to_numeric(latest["sector_power"], errors="coerce")
 
     # 재무 데이터 병합
     if finance_df is not None and not finance_df.empty:
@@ -387,6 +459,9 @@ def build_latest_table(
         "date",
         "code",
         "sector",
+        "sector_rank",
+        "sector_state",
+        "sector_power",
         "sector_flow_rank",
         "name",
         "open",
@@ -406,6 +481,8 @@ def build_latest_table(
     
     if "spike_ratio" in latest.columns:
         cols.insert(-1, "spike_ratio")
+
+    cols.insert(-1, "final_score_adjusted")
     
     cols = [c for c in cols if c in latest.columns]
 
@@ -473,6 +550,17 @@ def render_table(latest: pd.DataFrame, cols: list[str]) -> None:
             return "color: #b45309; font-weight: 600;"
         return ""
 
+    def color_sector_state(val: str) -> str:
+        if val == "LEADING":
+            return "background-color: #dcfce7; color: #166534; font-weight: 700;"
+        if val == "STRONG":
+            return "background-color: #dbeafe; color: #1d4ed8; font-weight: 700;"
+        if val == "ROTATION":
+            return "background-color: #fef9c3; color: #854d0e; font-weight: 700;"
+        if val == "WEAK":
+            return "background-color: #fee2e2; color: #b91c1c; font-weight: 700;"
+        return ""
+
     format_map = {
         "open": "{:,.0f}",
         "close": "{:,.0f}",
@@ -485,6 +573,8 @@ def render_table(latest: pd.DataFrame, cols: list[str]) -> None:
         "pbr": "{:.2f}",
         "dvr": "{:.2f}%",
         "foreigner_ratio": "{:.2f}%",
+        "sector_power": "{:.1f}",
+        "final_score_adjusted": "{:.1f}",
     }
     if "spike_ratio" in latest_copy.columns:
         format_map["spike_ratio"] = "{:.0%}"
@@ -506,6 +596,9 @@ def render_table(latest: pd.DataFrame, cols: list[str]) -> None:
     
     if "change_rate" in latest_copy.columns:
         styled = styled.applymap(color_change_rate, subset=["change_rate"])
+
+    if "sector_state" in latest_copy.columns:
+        styled = styled.applymap(color_sector_state, subset=["sector_state"])
     
     st.markdown(styled.hide(axis="index").to_html(escape=False), unsafe_allow_html=True)
 
@@ -2540,6 +2633,148 @@ def render_sector_analysis_page(
                 },
             )
 
+    st.markdown("##### 📈 시총 상위종목 변화")
+    st.caption("Top N 시가총액 종목의 순위 변화를 주간/월간으로 확인합니다")
+
+    mc_col1, mc_col2, mc_col3 = st.columns(3)
+    with mc_col1:
+        freq_label = st.selectbox(
+            "집계 주기",
+            options=["주간", "월간"],
+            index=0,
+            key="marketcap_bump_freq",
+        )
+    with mc_col2:
+        top_n_marketcap = int(
+            st.selectbox(
+                "Top N",
+                options=[10, 20, 30],
+                index=0,
+                key="marketcap_bump_top_n",
+            )
+        )
+    with mc_col3:
+        color_mode_label = st.selectbox(
+            "색상 모드",
+            options=["종목별", "섹터별"],
+            index=0,
+            key="marketcap_bump_color_mode",
+        )
+
+    freq_code = "W" if freq_label == "주간" else "M"
+    color_mode = "stock" if color_mode_label == "종목별" else "sector"
+
+    marketcap_df = load_marketcap_history(params.get("data_dir", "data"))
+    rank_history_df = build_marketcap_rank_history(
+        marketcap_df=marketcap_df,
+        sector_map_df=sector_df[["code", "sector"]].copy(),
+        freq=freq_code,
+        top_n=top_n_marketcap,
+    )
+
+    if rank_history_df.empty:
+        st.info("시가총액 랭킹 데이터를 만들 수 없습니다. 데이터 수집 후 다시 시도해주세요.")
+    else:
+        fig_mc = render_marketcap_bump_chart(rank_history_df, color_mode=color_mode)
+        st.plotly_chart(fig_mc, use_container_width=True)
+
+        change_summary = summarize_rank_changes(rank_history_df)
+        latest_date = change_summary.get("latest_date")
+        prev_date = change_summary.get("prev_date")
+
+        latest_df = rank_history_df.copy()
+        latest_df["date"] = pd.to_datetime(latest_df["date"], errors="coerce")
+        latest_df = latest_df[latest_df["date"] == latest_df["date"].max()].copy()
+
+        sector_count = int(latest_df["sector"].nunique()) if not latest_df.empty else 0
+        sector_stat = (
+            latest_df.groupby("sector", as_index=False)
+            .agg(count_in_top_n=("code", "nunique"), avg_rank=("rank", "mean"))
+            .sort_values(["count_in_top_n", "avg_rank"], ascending=[False, True])
+            .reset_index(drop=True)
+        ) if not latest_df.empty else pd.DataFrame(columns=["sector", "count_in_top_n", "avg_rank"])
+
+        top_sector = "-"
+        if not sector_stat.empty:
+            top_sector = f"{sector_stat.iloc[0]['sector']} ({int(sector_stat.iloc[0]['count_in_top_n'])})"
+
+        top3_names = "-"
+        if not latest_df.empty:
+            top3_rows = latest_df.sort_values("rank").head(3)
+            top3_names = ", ".join(
+                [
+                    f"{int(r['rank'])}위 {r['name']}"
+                    for _, r in top3_rows.iterrows()
+                ]
+            )
+
+        sum1, sum2, sum3 = st.columns(3)
+        with sum1:
+            st.metric("현재 Top N 포함 섹터 수", sector_count)
+        with sum2:
+            st.metric("최다 대표 섹터", top_sector)
+        with sum3:
+            st.metric("현재 Top 3", top3_names)
+
+        st.caption(
+            f"비교 구간: {prev_date.strftime('%Y-%m-%d') if pd.notna(prev_date) else '-'} "
+            f"→ {latest_date.strftime('%Y-%m-%d') if pd.notna(latest_date) else '-'}"
+        )
+
+        entry_col, exit_col = st.columns(2)
+        with entry_col:
+            st.markdown("**신규 진입 종목**")
+            new_entries = change_summary.get("new_entries", [])
+            if not new_entries:
+                st.caption("없음")
+            else:
+                entry_df = pd.DataFrame(new_entries)
+                st.dataframe(
+                    entry_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "code": st.column_config.TextColumn("코드"),
+                        "name": st.column_config.TextColumn("종목"),
+                        "sector": st.column_config.TextColumn("섹터"),
+                        "current_rank": st.column_config.NumberColumn("현재순위", format="%d"),
+                    },
+                )
+
+        with exit_col:
+            st.markdown("**이탈 종목**")
+            exits = change_summary.get("exits", [])
+            if not exits:
+                st.caption("없음")
+            else:
+                exit_df = pd.DataFrame(exits)
+                st.dataframe(
+                    exit_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "code": st.column_config.TextColumn("코드"),
+                        "name": st.column_config.TextColumn("종목"),
+                        "sector": st.column_config.TextColumn("섹터"),
+                        "previous_rank": st.column_config.NumberColumn("이전순위", format="%d"),
+                    },
+                )
+
+        st.markdown("**Top N 섹터 구성 요약**")
+        if sector_stat.empty:
+            st.caption("표시할 섹터 구성 데이터가 없습니다.")
+        else:
+            st.dataframe(
+                sector_stat,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "sector": st.column_config.TextColumn("섹터"),
+                    "count_in_top_n": st.column_config.NumberColumn("Top N 내 종목수", format="%d"),
+                    "avg_rank": st.column_config.NumberColumn("평균 랭킹", format="%.2f"),
+                },
+            )
+
 def render_kospi_crawling_page() -> None:
     st.subheader("🔄 KOSPI 데이터 업데이트")
     st.caption("최신 주가 데이터를 수집합니다")
@@ -3151,6 +3386,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             kospi = load_kospi_list(params["data_dir"])
             kospi_index = load_kospi_index(params["data_dir"])
             finance_df = load_finance_data(params["data_dir"])
+            stock_master_df = build_stock_master_df(params["data_dir"])
 
         # 시그널 생성 (운영 전략만)
         with st.spinner("🔍 시그널 분석 중..."):
@@ -3257,6 +3493,51 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         buy_count = int((selected_signals["signal"] == "BUY").sum())
         sell_count = int((selected_signals["signal"] == "SELL").sum())
         total_count = int(len(selected_signals))
+
+        sector_summary_precomputed = pd.DataFrame()
+        strongest_sector_name = "-"
+        strongest_sector_power = "-"
+        max_buy_sector_name = "-"
+        max_buy_count = "-"
+        leading_sector_count = 0
+        if stock_master_df is not None and not stock_master_df.empty and "sector" in stock_master_df.columns:
+            pre_cols = [
+                "sector",
+                "sector_power",
+                "sector_rank",
+                "sector_state",
+                "buy_count",
+            ]
+            pre_cols = [c for c in pre_cols if c in stock_master_df.columns]
+            if pre_cols:
+                sector_summary_precomputed = (
+                    stock_master_df[pre_cols]
+                    .dropna(subset=["sector"])
+                    .sort_values("sector")
+                    .drop_duplicates(subset=["sector"], keep="last")
+                )
+                if not sector_summary_precomputed.empty:
+                    if "sector_rank" in sector_summary_precomputed.columns:
+                        sector_summary_precomputed["sector_rank"] = pd.to_numeric(
+                            sector_summary_precomputed["sector_rank"], errors="coerce"
+                        )
+                        strongest_row = sector_summary_precomputed.sort_values("sector_rank", ascending=True).iloc[0]
+                    else:
+                        strongest_row = sector_summary_precomputed.sort_values("sector_power", ascending=False).iloc[0]
+
+                    strongest_sector_name = str(strongest_row.get("sector", "-"))
+                    power_val = pd.to_numeric(strongest_row.get("sector_power"), errors="coerce")
+                    strongest_sector_power = f"{power_val:.1f}" if pd.notna(power_val) else "-"
+
+                    if "buy_count" in sector_summary_precomputed.columns:
+                        buy_sorted = sector_summary_precomputed.sort_values("buy_count", ascending=False)
+                        buy_row = buy_sorted.iloc[0]
+                        max_buy_sector_name = str(buy_row.get("sector", "-"))
+                        max_buy_raw = pd.to_numeric(buy_row.get("buy_count"), errors="coerce")
+                        max_buy_count = int(max_buy_raw) if pd.notna(max_buy_raw) else 0
+
+                    if "sector_state" in sector_summary_precomputed.columns:
+                        leading_sector_count = int((sector_summary_precomputed["sector_state"] == "LEADING").sum())
 
         buy_alpha = min(0.35, 0.08 + (buy_count * 0.02))
         sell_alpha = min(0.35, 0.08 + (sell_count * 0.02))
@@ -3419,6 +3700,47 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         ).strip()
         st.markdown(dashboard_html, unsafe_allow_html=True)
 
+        compact_sector_html = textwrap.dedent(
+            f"""
+            <div class="sv-chip-row" style="margin-top:10px; margin-bottom:6px;">
+                <span class="sv-pill neutral">Strongest Sector: {strongest_sector_name} (Power {strongest_sector_power})</span>
+                <span class="sv-pill buy">Most BUY Signals: {max_buy_sector_name} ({max_buy_count})</span>
+                <span class="sv-pill neutral">LEADING Sectors: {leading_sector_count}</span>
+            </div>
+            """
+        ).strip()
+        st.markdown(compact_sector_html, unsafe_allow_html=True)
+
+        # Regime-aware informational hint (no auto strategy switching).
+        regime_df = load_market_regime_cached(params.get("data_dir", "data"))
+        current_regime = "UNKNOWN"
+        if regime_df is not None and not regime_df.empty and "date" in regime_df.columns:
+            regime_work = regime_df.copy()
+            regime_work["date"] = pd.to_datetime(regime_work["date"], errors="coerce").dt.normalize()
+            regime_work = regime_work.dropna(subset=["date"]).sort_values("date")
+            target_dt = pd.to_datetime(selected_date).normalize()
+            regime_work = regime_work[regime_work["date"] <= target_dt]
+            if not regime_work.empty and "regime" in regime_work.columns:
+                current_regime = str(regime_work.iloc[-1]["regime"])
+
+        strongest_for_regime = []
+        for sid in production_ids:
+            state = registry.get(sid, {})
+            lv = state.get("last_validation") if isinstance(state, dict) else None
+            if not isinstance(lv, dict):
+                continue
+            by_regime = lv.get("by_regime", {})
+            regime_metrics = by_regime.get(current_regime, {}) if isinstance(by_regime, dict) else {}
+            if not isinstance(regime_metrics, dict) or not regime_metrics:
+                continue
+            cagr = float(regime_metrics.get("cagr", 0.0))
+            win_rate = float(regime_metrics.get("win_rate", 0.0))
+            strongest_for_regime.append((sid, cagr, win_rate))
+
+        strongest_for_regime = sorted(strongest_for_regime, key=lambda x: (x[1], x[2]), reverse=True)
+        top_hint = ", ".join([f"{sid}(CAGR {cagr:.1%})" for sid, cagr, _ in strongest_for_regime[:3]]) if strongest_for_regime else "-"
+        st.caption(f"시장 국면: {current_regime} | 해당 국면 강점 전략(Production): {top_hint}")
+
         if "pending_view_mode" in st.session_state:
             st.session_state.signal_view_mode = st.session_state.pop("pending_view_mode")
         elif focus_code:
@@ -3444,6 +3766,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             params["top_n"],
             finance_df,
             df,
+            stock_master_df,
             data_dir=params.get("data_dir", "data"),
         )
 
@@ -3464,15 +3787,27 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 clean_name = re.sub(r"<[^>]+>", "", str(raw_name))
                 code = row.get("code", "")
                 spike_ratio = row.get("spike_ratio", None)
+                sector_name = row.get("sector", "-")
+                sector_rank = row.get("sector_rank", "-")
+                sector_state = row.get("sector_state", "-")
+                sector_power = pd.to_numeric(row.get("sector_power"), errors="coerce")
+                adjusted_score = pd.to_numeric(row.get("final_score_adjusted"), errors="coerce")
                 badge = "급등 비율 정보 없음"
                 if pd.notna(spike_ratio):
                     badge = f"급등 비율 {spike_ratio:.0%}"
+                sector_power_text = f"{sector_power:.1f}" if pd.notna(sector_power) else "-"
+                adjusted_score_text = f"{adjusted_score:.1f}" if pd.notna(adjusted_score) else "-"
                 buy_pick_html = textwrap.dedent(
                     f"""
                     <div class="sv-highlight">
                         <div class="sv-kicker">Buy Pick</div>
                         <div class="sv-title">{html.escape(clean_name)} ({html.escape(str(code))})</div>
                         <div class="sv-sub">{badge}</div>
+                        <div class="sv-sub">Sector: {html.escape(str(sector_name))}</div>
+                        <div class="sv-sub">Sector Rank: {html.escape(str(sector_rank))}</div>
+                        <div class="sv-sub">Sector State: {html.escape(str(sector_state))}</div>
+                        <div class="sv-sub">Sector Power: {sector_power_text}</div>
+                        <div class="sv-sub">Adjusted Score: {adjusted_score_text}</div>
                     </div>
                     """
                 ).strip()
@@ -3823,21 +4158,17 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 st.caption("검증 게이트: 시뮬레이션에서 전략 성능 검증 후 설정에서 Production 승격")
             with validation_col2:
                 if st.button("✅ Validate 전략", key="validate_selected_strategy", use_container_width=True):
+                    threshold_policy = get_strategy_thresholds(selected_strategy_id)
                     validation_result = validate_strategy(
                         strategy_id=selected_strategy_id,
                         params=strategy_params_for_sim,
                         universe="All KOSPI",
                         start_date=str(start_date),
                         end_date=str(end_date),
-                        thresholds={
-                            "min_cagr": 0.05,
-                            "max_mdd": 0.25,
-                            "min_win_rate": 0.52,
-                            "min_trades": 30,
-                        },
+                        thresholds=threshold_policy,
                     )
                     update_validation_result(selected_strategy_id, validation_result)
-                    if validation_result.get("validated"):
+                    if validation_result.get("passed", validation_result.get("validated")):
                         st.success("전략 검증 통과: Settings에서 Production 승격 가능합니다.")
                     else:
                         st.warning("전략 검증 미통과: 기준치 충족 후 다시 검증하세요.")
