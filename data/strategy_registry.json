@@ -1,6 +1,8 @@
 {
   "turnover_spike": {
+    "name": "Turnover Spike",
     "enabled": true,
+    "status": "draft",
     "validated": false,
     "in_production": false,
     "last_validation": null,

@@ -28,7 +28,15 @@ from .marketcap_bump import (
 from .signals import build_signals
 from .strategies.registry import get_strategy, list_strategies
 from .strategies.market_regime import classify_market_regime
-from .strategies.registry_store import get_production_strategy_ids, get_strategy_thresholds, load_registry
+from .strategies.registry_store import (
+    get_approved_strategies,
+    get_production_strategies,
+    get_production_strategy_ids,
+    get_strategy_thresholds,
+    load_registry,
+    set_production,
+    set_strategy_status,
+)
 from .strategies.validation import validate_strategy
 from .strategies.registry_store import update_validation_result
 from .ui_components import render_action_row, render_progress_steps
@@ -229,6 +237,63 @@ def generate_strategy_signals_cached(
     return signals
 
 
+def merge_strategy_signals(signals: pd.DataFrame) -> pd.DataFrame:
+    """Merge multiple strategy outputs into a single consensus signal per date/code."""
+    if signals is None or signals.empty:
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "code",
+                "signal",
+                "signal_strength",
+                "triggered_strategies",
+                "buy_count",
+                "sell_count",
+            ]
+        )
+
+    work = signals.copy()
+    work["date"] = pd.to_datetime(work["date"], errors="coerce")
+    work["code"] = work["code"].astype(str).str.zfill(6)
+    work = work.dropna(subset=["date", "code", "signal"])
+    if work.empty:
+        return pd.DataFrame(columns=["date", "code", "signal", "signal_strength", "triggered_strategies"])
+
+    work["is_buy"] = (work["signal"] == "BUY").astype(int)
+    work["is_sell"] = (work["signal"] == "SELL").astype(int)
+
+    merged = (
+        work.groupby(["date", "code"], as_index=False)
+        .agg(
+            buy_count=("is_buy", "sum"),
+            sell_count=("is_sell", "sum"),
+            triggered_strategies=(
+                "strategy_id",
+                lambda s: ", ".join(sorted(set([str(x) for x in s if pd.notna(x)]))),
+            ),
+            confidence=("confidence", "mean"),
+        )
+    )
+
+    keep_first_cols = ["name", "open", "high", "low", "close", "volume", "sector", "spike_ratio", "features_json"]
+    available_first_cols = [c for c in keep_first_cols if c in work.columns]
+    if available_first_cols:
+        first_df = work.sort_values(["date", "code"]).groupby(["date", "code"], as_index=False)[available_first_cols].first()
+        merged = merged.merge(first_df, on=["date", "code"], how="left")
+
+    merged["signal_strength"] = merged["buy_count"] - merged["sell_count"]
+    merged["signal"] = np.where(
+        merged["signal_strength"] > 0,
+        "BUY",
+        np.where(merged["signal_strength"] < 0, "SELL", ""),
+    )
+    merged["strategy_id"] = merged["triggered_strategies"]
+    merged["strategy_name"] = merged["triggered_strategies"]
+    merged["strategy_version"] = "merged"
+
+    return merged.sort_values(["date", "signal_strength"], ascending=[False, False]).reset_index(drop=True)
+
+
 def _get_runtime_strategy_params(strategy_id: str, params: dict, rolling_days: int | None = None, volume_threshold: float | None = None) -> dict:
     strategy = get_strategy(strategy_id)
     strategy_params = dict(strategy.spec.default_params)
@@ -396,13 +461,14 @@ def build_latest_table(
     latest["final_score"] = pd.to_numeric(latest.get("final_score"), errors="coerce")
     latest["final_score_adjusted"] = pd.to_numeric(latest.get("final_score_adjusted"), errors="coerce")
     latest["final_score_adjusted"] = latest["final_score_adjusted"].fillna(latest["final_score"])
+    latest["signal_strength"] = pd.to_numeric(latest.get("signal_strength"), errors="coerce").fillna(0.0)
 
-    # Candidate ranking priority: BUY first -> adjusted score desc -> spike ratio desc.
+    # Candidate ranking priority: BUY first -> signal strength desc -> adjusted score desc -> spike ratio desc.
     latest["_signal_priority"] = np.where(latest["signal"] == "BUY", 0, 1)
     latest["_spike_sort"] = pd.to_numeric(latest.get("spike_ratio"), errors="coerce").fillna(-1e9)
     latest = latest.sort_values(
-        ["_signal_priority", "final_score_adjusted", "_spike_sort"],
-        ascending=[True, False, False],
+        ["_signal_priority", "signal_strength", "final_score_adjusted", "_spike_sort"],
+        ascending=[True, False, False, False],
     )
     latest = latest.head(int(top_n))
     latest = latest.drop(columns=["_signal_priority", "_spike_sort"], errors="ignore")
@@ -478,6 +544,11 @@ def build_latest_table(
         cols.append("change_rate")
     
     cols.append("signal")
+
+    if "signal_strength" in latest.columns:
+        cols.insert(-1, "signal_strength")
+    if "triggered_strategies" in latest.columns:
+        cols.insert(-1, "triggered_strategies")
     
     if "spike_ratio" in latest.columns:
         cols.insert(-1, "spike_ratio")
@@ -575,6 +646,7 @@ def render_table(latest: pd.DataFrame, cols: list[str]) -> None:
         "foreigner_ratio": "{:.2f}%",
         "sector_power": "{:.1f}",
         "final_score_adjusted": "{:.1f}",
+        "signal_strength": "{:+.0f}",
     }
     if "spike_ratio" in latest_copy.columns:
         format_map["spike_ratio"] = "{:.0%}"
@@ -3388,22 +3460,61 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             finance_df = load_finance_data(params["data_dir"])
             stock_master_df = build_stock_master_df(params["data_dir"])
 
-        # 시그널 생성 (운영 전략만)
+        # 시그널 생성 (Strategy Lifecycle + Signal Filter)
         with st.spinner("🔍 시그널 분석 중..."):
             registry = load_registry()
-            production_ids = get_production_strategy_ids()
+            production_ids = get_production_strategies()
+            approved_ids = get_approved_strategies()
+            strategy_specs = list_strategies()
+            all_strategy_ids = [spec.strategy_id for spec in strategy_specs]
 
-            fallback_mode = False
-            if not production_ids:
-                fallback_mode = True
-                st.warning("No validated strategy in production. Please validate one in Simulation.")
-                production_ids = ["turnover_spike"]
+            lifecycle_mode = st.radio(
+                "Strategy Mode",
+                ["Production", "Approved", "All"],
+                horizontal=True,
+                index=0,
+                key="signal_strategy_mode_selector",
+            )
+
+            if lifecycle_mode == "Production":
+                candidate_ids = [sid for sid in production_ids if sid in all_strategy_ids]
+            elif lifecycle_mode == "Approved":
+                candidate_ids = [sid for sid in approved_ids if sid in all_strategy_ids]
+            else:
+                candidate_ids = [sid for sid in all_strategy_ids if registry.get(sid, {}).get("enabled", True)]
+
+            if not candidate_ids and lifecycle_mode != "All":
+                st.warning(f"{lifecycle_mode} 전략이 없습니다. 승인/프로덕션 상태를 확인하거나 All 모드를 사용하세요.")
+            if not candidate_ids and lifecycle_mode == "All":
+                candidate_ids = [sid for sid in all_strategy_ids if sid in registry]
+
+            previous_selection = st.session_state.get("signal_selected_strategy_ids")
+            if not isinstance(previous_selection, list):
+                previous_selection = production_ids if production_ids else candidate_ids
+
+            st.caption("전략 선택")
+            selected_strategy_ids = []
+            if candidate_ids:
+                selector_cols = st.columns(min(3, len(candidate_ids)))
+                for idx, sid in enumerate(candidate_ids):
+                    spec = next((s for s in strategy_specs if s.strategy_id == sid), None)
+                    label = f"{spec.name if spec else sid} ({sid})"
+                    with selector_cols[idx % len(selector_cols)]:
+                        checked = st.checkbox(
+                            label,
+                            value=(sid in previous_selection),
+                            key=f"signal_mode_{lifecycle_mode}_sid_{sid}",
+                        )
+                    if checked:
+                        selected_strategy_ids.append(sid)
+
+            st.session_state["signal_selected_strategy_ids"] = selected_strategy_ids
 
             all_signals = []
             active_strategy_labels = []
             last_validation_labels = []
 
-            for strategy_id in production_ids:
+            for strategy_id in selected_strategy_ids:
                 try:
                     strategy = get_strategy(strategy_id)
                 except Exception:
@@ -3427,32 +3538,26 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                     last_validation_labels.append(f"{strategy.spec.strategy_id}: {lv.get('run_ts')}")
 
             if all_signals:
-                signals = pd.concat(all_signals, ignore_index=True)
+                raw_signals = pd.concat(all_signals, ignore_index=True)
             else:
-                signals = pd.DataFrame(columns=["date", "code", "signal", "confidence", "features_json", "strategy_id", "strategy_name", "strategy_version"])
+                raw_signals = pd.DataFrame(columns=["date", "code", "signal", "confidence", "features_json", "strategy_id", "strategy_name", "strategy_version"])
+
+            signals = merge_strategy_signals(raw_signals)
 
             if not signals.empty:
                 signals = signals.merge(kospi, on="code", how="left")
-                if "spike_ratio" in signals.columns:
-                    signals = signals.sort_values(["date", "spike_ratio"], ascending=[False, False])
+                if "signal_strength" in signals.columns:
+                    signals = signals.sort_values(["date", "signal_strength"], ascending=[False, False])
                 else:
                     signals = signals.sort_values(["date"], ascending=[False])
                 signals = apply_signal_filters(signals, params["signal_filter"])
 
             if active_strategy_labels:
-                mode_label = "(Fallback)" if fallback_mode else "(Production)"
-                st.caption(f"검증된 전략만 반영 {mode_label}: " + ", ".join(active_strategy_labels))
+                st.caption(f"활성 전략({lifecycle_mode}): " + ", ".join(active_strategy_labels))
             if last_validation_labels:
                 st.caption("Last validation: " + " | ".join(last_validation_labels))
-
-        if not signals.empty and "strategy_id" in signals.columns:
-            strategy_filter_options = ["All"] + sorted(signals["strategy_id"].dropna().astype(str).unique().tolist())
-            selected_strategy_filter = st.selectbox("전략 필터", strategy_filter_options, index=0, key="signal_strategy_filter")
-            if selected_strategy_filter != "All":
-                signals = signals[signals["strategy_id"] == selected_strategy_filter]
-            strategy_counts = signals["strategy_id"].value_counts().to_dict()
-            if strategy_counts:
-                st.caption("전략별 시그널 수: " + ", ".join([f"{k}:{v}" for k, v in strategy_counts.items()]))
+            if not selected_strategy_ids:
+                st.info("선택된 전략이 없어 시그널이 비어 있습니다.")
 
         selected_date = select_date(signals)
         if selected_date is None:
@@ -4153,9 +4258,16 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 }
                 st.session_state["simulation_last_param_hash"] = param_hash
 
-            validation_col1, validation_col2 = st.columns([2, 1])
+            validation_col1, validation_col2, validation_col3 = st.columns([2, 1, 1])
+            selected_state = load_registry().get(selected_strategy_id, {})
+            can_approve = bool(selected_state.get("validated", False))
             with validation_col1:
                 st.caption("검증 게이트: 시뮬레이션에서 전략 성능 검증 후 설정에서 Production 승격")
+                activate_in_main_signals = st.checkbox(
+                    "Activate in Main Signals",
+                    value=False,
+                    key=f"activate_main_signals_{selected_strategy_id}",
+                )
             with validation_col2:
                 if st.button("✅ Validate 전략", key="validate_selected_strategy", use_container_width=True):
                     threshold_policy = get_strategy_thresholds(selected_strategy_id)
@@ -4173,6 +4285,20 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                     else:
                         st.warning("전략 검증 미통과: 기준치 충족 후 다시 검증하세요.")
                     st.json(validation_result)
+            with validation_col3:
+                if st.button(
+                    "🟢 Approve Strategy",
+                    key=f"approve_strategy_{selected_strategy_id}",
+                    use_container_width=True,
+                    disabled=not can_approve,
+                ):
+                    try:
+                        set_strategy_status(selected_strategy_id, "approved")
+                        if activate_in_main_signals:
+                            set_production(selected_strategy_id, True)
+                        st.success("전략 승인 완료")
+                    except Exception as exc:
+                        st.error(f"전략 승인 실패: {exc}")
 
             render_backtest_curve(equity_df, kospi_index, start_date_dt)
             if not equity_df.empty:
