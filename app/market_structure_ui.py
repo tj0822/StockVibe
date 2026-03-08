@@ -4,8 +4,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from app.data import load_marketcap_history, load_stock_data
+from app.data import load_kospi_index, load_marketcap_history, load_stock_data
 from app.data_pipeline import build_stock_master_df
+from app.market_regime import (
+    render_regime_summary,
+    run_market_regime_engine,
+    save_market_regime_snapshot,
+)
 from app.market_structure import (
     build_market_structure_watchlists,
     build_topn_sector_composition,
@@ -183,12 +188,23 @@ def render_market_structure_page() -> None:
     st.divider()
 
     stock_master_df = _load_stock_master_cached(data_dir)
+    kospi_index_df = load_kospi_index(data_dir)
     sector_rank_df = _load_sector_rank_history_cached(data_dir)
     marketcap_rank_snapshot_df = _load_marketcap_rank_history_cached(data_dir, freq="W", top_n=10)
 
     if stock_master_df is None or stock_master_df.empty:
         st.warning("시장구조 대시보드를 위한 stock master 데이터가 없습니다.")
         return
+
+    regime_result = run_market_regime_engine(
+        stock_master_df=stock_master_df,
+        kospi_index_df=kospi_index_df,
+        sector_rank_df=sector_rank_df,
+        marketcap_rank_df=marketcap_rank_snapshot_df,
+    )
+    save_market_regime_snapshot(regime_result)
+    render_regime_summary(regime_result)
+    st.divider()
 
     insights = generate_market_structure_insights(
         stock_master_df,
@@ -281,7 +297,16 @@ def render_market_structure_page() -> None:
     with c_ctrl1:
         period_weeks = st.selectbox("조회 기간", options=[8, 12, 20], index=1, format_func=lambda x: f"{x}주", key="ms_period_weeks")
     with c_ctrl2:
-        view_mode = st.selectbox("표시 모드", options=["전체", "Top 15 only", "Bottom 15 only"], index=0, key="ms_sector_view_mode")
+        top_n_view = int(
+            st.slider(
+                "Top N",
+                min_value=5,
+                max_value=30,
+                value=10,
+                step=1,
+                key="ms_sector_view_top_n",
+            )
+        )
 
     sector_plot_df = sector_rank_df.copy()
     if not sector_plot_df.empty:
@@ -293,12 +318,8 @@ def render_market_structure_page() -> None:
 
         latest_date = sector_plot_df["date"].max()
         latest_rank = sector_plot_df[sector_plot_df["date"] == latest_date][["sector", "rank"]].copy()
-        if view_mode == "Top 15 only":
-            selected_sectors = latest_rank.sort_values("rank").head(15)["sector"].tolist()
-            sector_plot_df = sector_plot_df[sector_plot_df["sector"].isin(selected_sectors)]
-        elif view_mode == "Bottom 15 only":
-            selected_sectors = latest_rank.sort_values("rank", ascending=False).head(15)["sector"].tolist()
-            sector_plot_df = sector_plot_df[sector_plot_df["sector"].isin(selected_sectors)]
+        selected_sectors = latest_rank.sort_values("rank").head(top_n_view)["sector"].tolist()
+        sector_plot_df = sector_plot_df[sector_plot_df["sector"].isin(selected_sectors)]
 
     if sector_plot_df.empty:
         st.info("주간 섹터 랭킹 데이터가 부족합니다.")

@@ -4,8 +4,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from app.data import load_marketcap_history
+from app.data import load_kospi_index, load_marketcap_history
 from app.data_pipeline import build_stock_master_df
+from app.market_regime import (
+    render_regime_summary,
+    run_market_regime_engine,
+    save_market_regime_snapshot,
+)
 from app.market_structure_ui import _load_sector_rank_history_cached
 from app.marketcap_bump import build_marketcap_rank_history
 from app.market_thermometer import (
@@ -66,12 +71,23 @@ def render_market_thermometer() -> None:
     st.caption("시장 온도, 섹터 열지도, 로테이션, 리더십 집중도를 한 화면에서 빠르게 확인합니다.")
 
     stock_master_df = _load_stock_master_cached(data_dir)
+    kospi_index_df = load_kospi_index(data_dir)
     sector_rank_df = _load_sector_rank_history_cached(data_dir)
     marketcap_rank_df = _load_marketcap_rank_cached(data_dir)
 
     if stock_master_df is None or stock_master_df.empty:
         st.warning("시장 체온계를 표시할 데이터가 없습니다.")
         return
+
+    regime_result = run_market_regime_engine(
+        stock_master_df=stock_master_df,
+        kospi_index_df=kospi_index_df,
+        sector_rank_df=sector_rank_df,
+        marketcap_rank_df=marketcap_rank_df,
+    )
+    save_market_regime_snapshot(regime_result)
+    render_regime_summary(regime_result)
+    st.divider()
 
     # Section 1
     st.markdown("#### 🌡 Market Temperature")
