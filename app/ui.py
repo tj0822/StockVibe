@@ -25,6 +25,7 @@ from .marketcap_bump import (
     render_marketcap_bump_chart,
     summarize_rank_changes,
 )
+from .market_structure_ui import _load_sector_rank_history_cached
 from .signals import build_signals
 from .strategies.registry import get_strategy, list_strategies
 from .strategies.market_regime import classify_market_regime
@@ -3463,34 +3464,20 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         # 시그널 생성 (Strategy Lifecycle + Signal Filter)
         with st.spinner("🔍 시그널 분석 중..."):
             registry = load_registry()
-            production_ids = get_production_strategies()
-            approved_ids = get_approved_strategies()
             strategy_specs = list_strategies()
             all_strategy_ids = [spec.strategy_id for spec in strategy_specs]
 
-            lifecycle_mode = st.radio(
-                "Strategy Mode",
-                ["Production", "Approved", "All"],
-                horizontal=True,
-                index=0,
-                key="signal_strategy_mode_selector",
-            )
-
-            if lifecycle_mode == "Production":
-                candidate_ids = [sid for sid in production_ids if sid in all_strategy_ids]
-            elif lifecycle_mode == "Approved":
-                candidate_ids = [sid for sid in approved_ids if sid in all_strategy_ids]
-            else:
-                candidate_ids = [sid for sid in all_strategy_ids if registry.get(sid, {}).get("enabled", True)]
-
-            if not candidate_ids and lifecycle_mode != "All":
-                st.warning(f"{lifecycle_mode} 전략이 없습니다. 승인/프로덕션 상태를 확인하거나 All 모드를 사용하세요.")
-            if not candidate_ids and lifecycle_mode == "All":
-                candidate_ids = [sid for sid in all_strategy_ids if sid in registry]
+            candidate_ids = [
+                sid for sid in all_strategy_ids
+                if registry.get(sid, {}).get("enabled", True)
+            ]
+            if not candidate_ids:
+                candidate_ids = all_strategy_ids[:]
 
             previous_selection = st.session_state.get("signal_selected_strategy_ids")
+            # 이전 선택이 없으면 전체 전략을 기본 선택
             if not isinstance(previous_selection, list):
-                previous_selection = production_ids if production_ids else candidate_ids
+                previous_selection = candidate_ids[:]
 
             st.caption("전략 선택")
             selected_strategy_ids = []
@@ -3503,7 +3490,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                         checked = st.checkbox(
                             label,
                             value=(sid in previous_selection),
-                            key=f"signal_mode_{lifecycle_mode}_sid_{sid}",
+                            key=f"signal_strategy_sid_{sid}",
                         )
                     if checked:
                         selected_strategy_ids.append(sid)
@@ -3553,7 +3540,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 signals = apply_signal_filters(signals, params["signal_filter"])
 
             if active_strategy_labels:
-                st.caption(f"활성 전략({lifecycle_mode}): " + ", ".join(active_strategy_labels))
+                st.caption("활성 전략: " + ", ".join(active_strategy_labels))
             if last_validation_labels:
                 st.caption("Last validation: " + " | ".join(last_validation_labels))
             if not selected_strategy_ids:
@@ -3829,7 +3816,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 current_regime = str(regime_work.iloc[-1]["regime"])
 
         strongest_for_regime = []
-        for sid in production_ids:
+        for sid in selected_strategy_ids:
             state = registry.get(sid, {})
             lv = state.get("last_validation") if isinstance(state, dict) else None
             if not isinstance(lv, dict):
@@ -3844,7 +3831,105 @@ def run_app(current_tab: str = "📊 시그널") -> None:
 
         strongest_for_regime = sorted(strongest_for_regime, key=lambda x: (x[1], x[2]), reverse=True)
         top_hint = ", ".join([f"{sid}(CAGR {cagr:.1%})" for sid, cagr, _ in strongest_for_regime[:3]]) if strongest_for_regime else "-"
-        st.caption(f"시장 국면: {current_regime} | 해당 국면 강점 전략(Production): {top_hint}")
+        st.caption(f"시장 국면: {current_regime} | 해당 국면 강점 전략(선택 전략 기준): {top_hint}")
+
+        # Ontology Layer: 시장/섹터/종목/전략/시그널 통합
+        ontology_df = pd.DataFrame()
+        if stock_master_df is not None and not stock_master_df.empty and "code" in stock_master_df.columns:
+            sector_rank_df = _load_sector_rank_history_cached(params.get("data_dir", "data"))
+
+            ontology_source = stock_master_df.copy()
+            if selected_signals is not None and not selected_signals.empty and "code" in selected_signals.columns:
+                signal_cols = ["code", "signal", "signal_strength", "triggered_strategies"]
+                signal_cols = [c for c in signal_cols if c in selected_signals.columns]
+                signal_snapshot = (
+                    selected_signals[signal_cols]
+                    .sort_values("code")
+                    .drop_duplicates(subset=["code"], keep="last")
+                )
+                if not signal_snapshot.empty:
+                    ontology_source = ontology_source.merge(signal_snapshot, on="code", how="left", suffixes=("", "_sig"))
+                    if "signal_sig" in ontology_source.columns:
+                        ontology_source["signal"] = ontology_source["signal_sig"].combine_first(ontology_source.get("signal"))
+                    if "signal_strength_sig" in ontology_source.columns and "signal_strength" not in ontology_source.columns:
+                        ontology_source["signal_strength"] = ontology_source["signal_strength_sig"]
+                    if "triggered_strategies" in ontology_source.columns and "strategy" not in ontology_source.columns:
+                        ontology_source["strategy"] = ontology_source["triggered_strategies"]
+
+            ontology = StockOntology()
+            ontology_df = ontology.build_ontology_df(
+                stock_master_df=ontology_source,
+                sector_rank_df=sector_rank_df,
+                regime={"regime": current_regime},
+            )
+
+            if "return_1m" in ontology_source.columns and len(ontology_source) == len(ontology_df):
+                ontology_df["return_1m"] = pd.to_numeric(ontology_source["return_1m"], errors="coerce").fillna(0.0)
+            if "signal_strength" in ontology_source.columns and len(ontology_source) == len(ontology_df):
+                ontology_df["signal_strength"] = pd.to_numeric(ontology_source["signal_strength"], errors="coerce").fillna(0.0)
+
+        if ontology_df is not None and not ontology_df.empty:
+            ontology = StockOntology()
+            priority_df = ontology.compute_priority_score(ontology_df)
+
+            regime_upper = str(current_regime).upper()
+            buy_factor = 1.00
+            sell_factor = 1.00
+            if "BEAR" in regime_upper or "RISK_OFF" in regime_upper:
+                buy_factor = 0.85
+                sell_factor = 1.05
+            elif "BULL" in regime_upper or "RISK_ON" in regime_upper:
+                buy_factor = 1.05
+                sell_factor = 0.90
+
+            signal_upper = priority_df.get("signal", "").astype(str).str.upper()
+            regime_factor = np.where(signal_upper == "BUY", buy_factor, np.where(signal_upper == "SELL", sell_factor, 1.0))
+            priority_df["regime_adjusted_priority"] = priority_df["priority"] * regime_factor
+
+            buy_candidates_df = ontology.infer_buy_candidates(priority_df)
+            sector_opportunity_df = ontology.build_sector_opportunity(priority_df)
+
+            st.markdown("### 🧠 Ontology 투자 인사이트")
+            o_col1, o_col2, o_col3 = st.columns(3)
+
+            with o_col1:
+                st.caption("Top Buy Candidates")
+                if buy_candidates_df.empty:
+                    st.info("조건을 만족하는 BUY 후보가 없습니다.")
+                else:
+                    st.dataframe(
+                        buy_candidates_df[
+                            ["stock", "sector", "priority", "sector_power", "final_score_adjusted", "momentum_score", "signal", "strategy"]
+                        ].head(10),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+            with o_col2:
+                st.caption("Sector Opportunities")
+                if sector_opportunity_df.empty:
+                    st.info("섹터 기회 데이터가 없습니다.")
+                else:
+                    st.dataframe(
+                        sector_opportunity_df[["sector", "avg_priority", "avg_return", "sector_power"]].head(10),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+            with o_col3:
+                st.caption("Regime-adjusted Priority")
+                regime_top = priority_df.sort_values("regime_adjusted_priority", ascending=False).head(10)
+                st.dataframe(
+                    regime_top[
+                        ["stock", "sector", "market_regime", "priority", "regime_adjusted_priority", "signal", "strategy"]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            st.caption(
+                f"현재 국면({current_regime}) 보정계수 · BUY x{buy_factor:.2f}, SELL x{sell_factor:.2f}"
+            )
 
         if "pending_view_mode" in st.session_state:
             st.session_state.signal_view_mode = st.session_state.pop("pending_view_mode")

@@ -122,14 +122,17 @@ def render_sidebar_menu() -> tuple[str, str]:
     st.sidebar.title("📊 StockVibe Pro")
     st.sidebar.markdown("---")
     
-    selected = st.sidebar.radio("메뉴", ["🏠 메인 대시보드", "📈 종목분석", "🏭 섹터분석", "📡 시장구조", "🌡 시장 체온계", "💼 포트폴리오", "⚙️ 설정"])
+    selected = st.sidebar.radio("메뉴", ["🏠 메인 대시보드", "📈 종목분석", "🏭 섹터분석", "📡 시장구조", "💰 Money Flow", "🔮 Sector Prediction", "🔮 Future Sector Prediction", "📈 투자 후보", "💼 포트폴리오", "⚙️ 설정"])
     
     page_map = {
         "🏠 메인 대시보드": "main",
         "📈 종목분석": "analysis",
         "🏭 섹터분석": "sector-analysis",
         "📡 시장구조": "market-structure",
-        "🌡 시장 체온계": "market-thermometer",
+        "💰 Money Flow": "money-flow",
+        "🔮 Sector Prediction": "sector-prediction",
+        "🔮 Future Sector Prediction": "future-sector-prediction",
+        "📈 투자 후보": "investment-candidates",
         "💼 포트폴리오": "portfolio",
         "⚙️ 설정": "settings"
     }
@@ -3047,7 +3050,10 @@ def run_phase4_app():
             "📈 종목분석": "analysis",
             "🏭 섹터분석": "sector-analysis",
             "📡 시장구조": "market-structure",
-            "🌡 시장 체온계": "market-thermometer",
+            "💰 Money Flow": "money-flow",
+            "🔮 Sector Prediction": "sector-prediction",
+            "🔮 Future Sector Prediction": "future-sector-prediction",
+            "📈 투자 후보": "investment-candidates",
             "💼 포트폴리오": "portfolio",
             "⚙️ 설정": "settings"
         }
@@ -3065,7 +3071,10 @@ def run_phase4_app():
         "analysis": "종목분석",
         "sector-analysis": "섹터분석",
         "market-structure": "시장구조",
-        "market-thermometer": "시장 체온계",
+        "money-flow": "Money Flow",
+        "sector-prediction": "Sector Prediction",
+        "future-sector-prediction": "Future Sector Prediction",
+        "investment-candidates": "투자 후보",
         "portfolio": "포트폴리오",
         "settings": "설정",
     }
@@ -3129,6 +3138,22 @@ def run_phase4_app():
         from app.market_thermometer_ui import render_market_thermometer
 
         render_market_thermometer()
+    elif page == "money-flow":
+        from app.money_flow_ui import render_money_flow_page
+
+        render_money_flow_page()
+    elif page == "sector-prediction":
+        from app.sector_prediction_ui import render_sector_prediction_page
+
+        render_sector_prediction_page()
+    elif page == "future-sector-prediction":
+        from app.future_sector_prediction_ui import render_future_sector_prediction_page
+
+        render_future_sector_prediction_page()
+    elif page == "investment-candidates":
+        from app.investment_candidates_ui import render_investment_candidates_page
+
+        render_investment_candidates_page()
     else:
         # 기존 메인 대시보드
         run_app(selected_main_tab)

@@ -1835,9 +1835,31 @@
         "date": "2026-03-04 09:23:00",
         "return_pct": -13.13,
         "avg_buy_price": 136300.0
+      },
+      {
+        "type": "BUY",
+        "quantity": 23,
+        "price": 132000.0,
+        "date": "2026-03-06 08:02:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 25,
+        "price": 121300.0,
+        "date": "2026-03-09 09:55:00",
+        "return_pct": 0
+      },
+      {
+        "type": "SELL",
+        "quantity": 48,
+        "price": 117531.0,
+        "date": "2026-03-09 12:55:00",
+        "return_pct": -7.04,
+        "avg_buy_price": 126427.0
       }
     ],
-    "deleted_date": "2026-03-04 20:51:08"
+    "deleted_date": "2026-03-17 22:17:24"
   },
   "103140": {
     "name": "풍산",

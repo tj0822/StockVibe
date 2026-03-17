@@ -1,20 +1,4 @@
 {
-  "096770": {
-    "name": "SK이노베이션",
-    "quantity": 23,
-    "avg_price": 132000.0,
-    "trades": [
-      {
-        "type": "BUY",
-        "quantity": 23,
-        "price": 132000.0,
-        "date": "2026-03-06 08:02:00",
-        "return_pct": 0
-      }
-    ],
-    "purchase_date": "2026-03-06 08:02:00",
-    "last_updated": "2026-03-06 23:00:07"
-  },
   "006400": {
     "name": "삼성SDI",
     "quantity": 7,
@@ -30,5 +14,140 @@
     ],
     "purchase_date": "2026-03-06 09:04:00",
     "last_updated": "2026-03-06 23:00:07"
+  },
+  "251270": {
+    "name": "넷마블",
+    "quantity": 56,
+    "avg_price": 53300.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 56,
+        "price": 53300.0,
+        "date": "2026-03-09 08:00:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-03-09 08:00:00",
+    "last_updated": "2026-03-17 22:17:24"
+  },
+  "005380": {
+    "name": "현대차",
+    "quantity": 3,
+    "avg_price": 506000.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 3,
+        "price": 506000.0,
+        "date": "2026-03-09 14:32:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-03-09 14:32:00",
+    "last_updated": "2026-03-17 22:17:24"
+  },
+  "017960": {
+    "name": "한국카본",
+    "quantity": 65,
+    "avg_price": 46600.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 65,
+        "price": 46600.0,
+        "date": "2026-03-12 08:01:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-03-12 08:01:00",
+    "last_updated": "2026-03-17 22:17:24"
+  },
+  "042660": {
+    "name": "한화오션",
+    "quantity": 23,
+    "avg_price": 133200.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 23,
+        "price": 133200.0,
+        "date": "2026-03-12 08:42:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-03-12 08:42:00",
+    "last_updated": "2026-03-17 22:17:24"
+  },
+  "112610": {
+    "name": "씨에스윈드",
+    "quantity": 53,
+    "avg_price": 55500.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 53,
+        "price": 55500.0,
+        "date": "2026-03-13 08:01:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-03-13 08:01:00",
+    "last_updated": "2026-03-17 22:17:24"
+  },
+  "006360": {
+    "name": "GS건설",
+    "quantity": 258,
+    "avg_price": 23311.627906976744,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 126,
+        "price": 23900.0,
+        "date": "2026-03-16 08:06:00",
+        "return_pct": 0
+      },
+      {
+        "type": "BUY",
+        "quantity": 132,
+        "price": 22750.0,
+        "date": "2026-03-17 11:08:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-03-16 08:06:00",
+    "last_updated": "2026-03-17 22:17:24"
+  },
+  "007340": {
+    "name": "DN오토모티브",
+    "quantity": 82,
+    "avg_price": 36650.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 82,
+        "price": 36650.0,
+        "date": "2026-03-17 08:05:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-03-17 08:05:00",
+    "last_updated": "2026-03-17 22:17:24"
+  },
+  "001040": {
+    "name": "CJ",
+    "quantity": 16,
+    "avg_price": 191800.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 16,
+        "price": 191800.0,
+        "date": "2026-03-17 08:08:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-03-17 08:08:00",
+    "last_updated": "2026-03-17 22:17:24"
   }
 }

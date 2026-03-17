@@ -73,6 +73,173 @@ class StockOntology:
         self.price_events: List[PriceEvent] = []
         self.finance_events: List[FinanceEvent] = []
         self.relationships: List[Dict] = []
+
+    def build_ontology_df(
+        self,
+        stock_master_df: pd.DataFrame,
+        sector_rank_df: pd.DataFrame,
+        regime,
+    ) -> pd.DataFrame:
+        """시장/섹터/종목/전략/시그널을 연결한 통합 온톨로지 프레임을 생성한다."""
+        if stock_master_df is None or stock_master_df.empty:
+            return pd.DataFrame(
+                columns=[
+                    "date",
+                    "stock",
+                    "sector",
+                    "sector_power",
+                    "final_score_adjusted",
+                    "momentum_score",
+                    "signal",
+                    "strategy",
+                    "market_regime",
+                ]
+            )
+
+        work = stock_master_df.copy()
+
+        stock_col = "name" if "name" in work.columns else ("stock" if "stock" in work.columns else None)
+        if stock_col is None:
+            work["stock"] = work.get("code", "")
+            stock_col = "stock"
+
+        if "sector" not in work.columns:
+            work["sector"] = "Unknown"
+
+        # sector_power가 없으면 sector_rank 최신값으로 0~100 스케일 근사치 생성
+        if "sector_power" not in work.columns:
+            sector_power_map = {}
+            if sector_rank_df is not None and not sector_rank_df.empty and {"sector", "rank"}.issubset(set(sector_rank_df.columns)):
+                rank_work = sector_rank_df.copy()
+                if "date" in rank_work.columns:
+                    rank_work["date"] = pd.to_datetime(rank_work["date"], errors="coerce")
+                    rank_work = rank_work.sort_values("date")
+                    latest_date = rank_work["date"].dropna().max()
+                    if pd.notna(latest_date):
+                        rank_work = rank_work[rank_work["date"] == latest_date]
+                rank_work = rank_work.dropna(subset=["sector", "rank"]).copy()
+                if not rank_work.empty:
+                    rank_work["rank"] = pd.to_numeric(rank_work["rank"], errors="coerce")
+                    rank_work = rank_work.dropna(subset=["rank"])
+                    max_rank = float(rank_work["rank"].max()) if not rank_work.empty else 1.0
+                    if max_rank <= 1:
+                        rank_work["sector_power"] = 100.0
+                    else:
+                        rank_work["sector_power"] = 100.0 * (1.0 - (rank_work["rank"] - 1.0) / (max_rank - 1.0))
+                    sector_power_map = dict(zip(rank_work["sector"], rank_work["sector_power"]))
+            work["sector_power"] = work["sector"].map(sector_power_map).fillna(50.0)
+
+        work["final_score_adjusted"] = pd.to_numeric(work.get("final_score_adjusted", 0), errors="coerce").fillna(0.0)
+        work["momentum_score"] = pd.to_numeric(work.get("momentum_score", 0), errors="coerce").fillna(0.0)
+        work["signal"] = work.get("signal", "").fillna("").astype(str)
+
+        strategy_col = "triggered_strategies" if "triggered_strategies" in work.columns else "strategy"
+        work["strategy"] = work.get(strategy_col, "").fillna("").astype(str)
+
+        if "date" in work.columns:
+            work["date"] = pd.to_datetime(work["date"], errors="coerce").dt.normalize()
+            work["date"] = work["date"].fillna(pd.Timestamp.today().normalize())
+        else:
+            work["date"] = pd.Timestamp.today().normalize()
+
+        market_regime = "UNKNOWN"
+        if isinstance(regime, dict):
+            market_regime = str(
+                regime.get("market_regime")
+                or regime.get("primary_regime")
+                or regime.get("regime")
+                or "UNKNOWN"
+            )
+        elif regime is not None:
+            market_regime = str(regime)
+
+        ontology_df = pd.DataFrame(
+            {
+                "date": work["date"],
+                "stock": work[stock_col],
+                "sector": work["sector"],
+                "sector_power": pd.to_numeric(work["sector_power"], errors="coerce").fillna(0.0),
+                "final_score_adjusted": work["final_score_adjusted"],
+                "momentum_score": work["momentum_score"],
+                "signal": work["signal"],
+                "strategy": work["strategy"],
+                "market_regime": market_regime,
+            }
+        )
+
+        return ontology_df
+
+    def compute_priority_score(self, df: pd.DataFrame) -> pd.DataFrame:
+        """우선순위 점수를 계산하여 priority 컬럼을 추가한다."""
+        if df is None or df.empty:
+            return df
+
+        work = df.copy()
+        work["sector_power"] = pd.to_numeric(work.get("sector_power", 0), errors="coerce").fillna(0.0)
+        work["final_score_adjusted"] = pd.to_numeric(work.get("final_score_adjusted", 0), errors="coerce").fillna(0.0)
+        work["momentum_score"] = pd.to_numeric(work.get("momentum_score", 0), errors="coerce").fillna(0.0)
+
+        if "signal_strength" in work.columns:
+            signal_strength = pd.to_numeric(work["signal_strength"], errors="coerce").fillna(0.0)
+        else:
+            signal_series = work.get("signal", "").fillna("").astype(str).str.upper()
+            signal_strength = signal_series.map({"BUY": 100.0, "SELL": -100.0}).fillna(0.0)
+
+        work["signal_strength"] = signal_strength
+        work["priority"] = (
+            0.3 * work["sector_power"]
+            + 0.3 * work["final_score_adjusted"]
+            + 0.2 * work["momentum_score"]
+            + 0.2 * work["signal_strength"]
+        )
+        return work
+
+    def infer_buy_candidates(self, df: pd.DataFrame) -> pd.DataFrame:
+        """조건 기반 매수 후보를 추론하고 priority 상위 종목을 반환한다."""
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        work = self.compute_priority_score(df)
+        filtered = work[
+            (work.get("signal", "").astype(str).str.upper() == "BUY")
+            & (pd.to_numeric(work.get("sector_power", 0), errors="coerce").fillna(0.0) > 60)
+            & (pd.to_numeric(work.get("final_score_adjusted", 0), errors="coerce").fillna(0.0) > 60)
+        ].copy()
+
+        if filtered.empty:
+            return filtered
+
+        return filtered.sort_values("priority", ascending=False).head(20).reset_index(drop=True)
+
+    def build_sector_opportunity(self, df: pd.DataFrame) -> pd.DataFrame:
+        """섹터 단위 기회 지표(avg_priority, avg_return, sector_power)를 생성한다."""
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["sector", "avg_priority", "avg_return", "sector_power"])
+
+        work = self.compute_priority_score(df)
+
+        if "avg_return" in work.columns:
+            return_col = "avg_return"
+        elif "return_1m" in work.columns:
+            return_col = "return_1m"
+        elif "return" in work.columns:
+            return_col = "return"
+        else:
+            work["_tmp_return"] = 0.0
+            return_col = "_tmp_return"
+
+        sector_df = (
+            work.groupby("sector", dropna=False)
+            .agg(
+                avg_priority=("priority", "mean"),
+                avg_return=(return_col, "mean"),
+                sector_power=("sector_power", "mean"),
+            )
+            .reset_index()
+            .sort_values("avg_priority", ascending=False)
+            .reset_index(drop=True)
+        )
+        return sector_df
     
     def add_news_event(self, event: NewsEvent):
         """뉴스 이벤트 추가"""
