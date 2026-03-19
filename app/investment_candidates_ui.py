@@ -10,7 +10,9 @@ from app.market_regime import run_market_regime_engine
 from app.market_structure_ui import _load_sector_rank_history_cached
 from app.marketcap_bump import build_marketcap_rank_history
 from app.money_flow_engine import MoneyFlowEngine
+from app.outcome_tracker import log_decision
 from app.sector_prediction_engine import SectorPredictionEngine
+from app.settings import UserSettings
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -69,6 +71,8 @@ def render_investment_candidates_page() -> None:
     data_dir = "data"
     st.title("📈 투자 후보")
     st.caption("시장/섹터/전략/재무/모멘텀 신호를 통합한 최종 투자 후보 랭킹입니다.")
+    settings = UserSettings(data_dir).load_settings()
+    use_adaptive_weights = bool(settings.get("use_adaptive_weights", False))
 
     stock_master_df = _load_stock_master_cached(data_dir)
     stock_df = load_stock_data(data_dir)
@@ -138,7 +142,11 @@ def render_investment_candidates_page() -> None:
         sector_rank_df=sector_rank_df,
         regime=current_regime,
     )
-    scored_df = engine.compute_investment_score(investment_df)
+    scored_df = engine.compute_investment_score(
+        investment_df,
+        use_adaptive_weights=use_adaptive_weights,
+        data_dir=data_dir,
+    )
     buy_df = engine.filter_buy_candidates(scored_df)
     ranked_df = engine.rank_candidates(buy_df)
 
@@ -146,6 +154,30 @@ def render_investment_candidates_page() -> None:
     if ranked_df.empty:
         st.info("현재 규칙을 만족하는 투자 후보가 없습니다.")
         return
+
+    decision_date = str(regime_result.get("as_of_date", pd.Timestamp.now().strftime("%Y-%m-%d")))
+    for _, row in ranked_df.iterrows():
+        log_decision(
+            {
+                "source": "investment_candidates",
+                "decision_date": decision_date,
+                "code": row.get("code", ""),
+                "stock": row.get("stock", ""),
+                "sector": row.get("sector", ""),
+                "signal": row.get("signal", "BUY"),
+                "triggered_strategy": row.get("triggered_strategy", ""),
+                "market_regime": current_regime,
+                "investment_score": row.get("investment_score", None),
+                "sector_power": row.get("sector_power", None),
+                "financial_score": row.get("financial_score", None),
+                "momentum_score": row.get("momentum_score", None),
+                "signal_strength": row.get("signal_strength", None),
+                "strategy_fit": row.get("strategy_fit", None),
+                "money_flow_score": row.get("money_flow_score", None),
+                "sector_prediction_score": row.get("sector_prediction_score", None),
+                "confidence": regime_result.get("confidence", None),
+            }
+        )
 
     display_cols = ["rank", "stock", "sector", "investment_score", "sector_prediction_score", "signal", "triggered_strategy"]
     st.dataframe(
@@ -162,6 +194,7 @@ def render_investment_candidates_page() -> None:
             "triggered_strategy": st.column_config.TextColumn("triggered_strategy"),
         },
     )
+    st.caption(f"적응형 가중치 사용: {'ON' if use_adaptive_weights else 'OFF'}")
 
     st.divider()
     st.markdown("### 📝 Insight Card")

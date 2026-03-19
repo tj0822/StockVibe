@@ -61,6 +61,9 @@ class UserSettings:
         'concentration_critical_pct': 50.0,
         'compliant_score_threshold': 70.0,
         'watch_score_threshold': 60.0,
+
+        # 학습 가중치
+        'use_adaptive_weights': False,
     }
     
     def __init__(self, data_dir: str = "data"):

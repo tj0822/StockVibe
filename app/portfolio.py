@@ -14,6 +14,7 @@ import numpy as np
 
 class PortfolioManager:
     """포트폴리오 관리 클래스"""
+    DEFAULT_INITIAL_CASH = 50_000_000.0
     
     def __init__(self, data_dir: str = "data"):
         self.data_dir = data_dir
@@ -21,6 +22,7 @@ class PortfolioManager:
         self.watchlist_file = os.path.join(data_dir, "watchlist.json")
         self.asset_history_file = os.path.join(data_dir, "asset_history.json")
         self.cash_file = os.path.join(data_dir, "cash.json")
+        self.user_settings_file = os.path.join(data_dir, "user_settings.json")
         self.trading_history_file = os.path.join(data_dir, "trading_history.json")  # 거래 이력 보관
         
         # 데이터 디렉토리 생성
@@ -208,6 +210,9 @@ class PortfolioManager:
             log_file = os.path.join(self.data_dir, 'trading_input_log.json')
             if os.path.exists(log_file):
                 os.remove(log_file)
+
+            # 4. 예수금 초기화
+            self.save_cash(self._get_initial_cash())
             
             print("[DEBUG] 완전 초기화 완료: 포트폴리오, 거래 이력, 입력 로그 모두 삭제됨")
             return True
@@ -295,6 +300,11 @@ class PortfolioManager:
                 portfolio[code]['avg_price'] = price
             
             portfolio[code]['quantity'] = new_qty
+
+            # 현금 반영: 매수 금액 차감
+            current_cash = float(self.load_cash())
+            current_cash -= float(quantity) * float(price)
+            self.save_cash(current_cash)
             
             # 거래 기록에 수익률 저장 (BUY는 항상 0)
             trade_record['return_pct'] = 0
@@ -320,6 +330,11 @@ class PortfolioManager:
             # 수량 감소
             new_qty = max(0, current_qty - quantity)
             portfolio[code]['quantity'] = new_qty
+
+            # 현금 반영: 매도 금액 증가
+            current_cash = float(self.load_cash())
+            current_cash += float(quantity) * float(price)
+            self.save_cash(current_cash)
             
             # 손익 계산
             profit_loss_total = quantity * (price - avg_buy_price)
@@ -439,7 +454,85 @@ class PortfolioManager:
             with open(self.cash_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 return data.get('amount', 0.0)
-        return 0.0
+        return self._get_initial_cash()
+
+    def _load_cash_info(self) -> Dict:
+        """현금 데이터(amount, last_updated) 조회"""
+        if os.path.exists(self.cash_file):
+            with open(self.cash_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return {
+                'amount': float(data.get('amount', 0.0)),
+                'last_updated': data.get('last_updated')
+            }
+        return {
+            'amount': float(self._get_initial_cash()),
+            'last_updated': None
+        }
+
+    def _get_initial_cash(self) -> float:
+        """초기 예수금 조회 (user_settings.json -> 기본값)"""
+        try:
+            if os.path.exists(self.user_settings_file):
+                with open(self.user_settings_file, 'r', encoding='utf-8') as f:
+                    settings = json.load(f)
+                raw = settings.get('initial_cash')
+                if raw is not None:
+                    parsed = float(raw)
+                    if parsed >= 0:
+                        return parsed
+        except Exception:
+            pass
+        return float(self.DEFAULT_INITIAL_CASH)
+
+    def _parse_dt(self, value: str):
+        """YYYY-mm-dd HH:MM:SS 또는 YYYY-mm-dd 날짜 문자열을 datetime으로 변환"""
+        if not value or not isinstance(value, str):
+            return None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _latest_trade_datetime_in_portfolio(self):
+        """현재 포트폴리오에 남아있는 종목의 최신 거래 시각"""
+        portfolio = self.load_portfolio()
+        latest_dt = None
+        for _, info in portfolio.items():
+            for trade in info.get('trades', []):
+                trade_dt = self._parse_dt(trade.get('date'))
+                if trade_dt is not None and (latest_dt is None or trade_dt > latest_dt):
+                    latest_dt = trade_dt
+        return latest_dt
+
+    def _estimate_cash_from_current_portfolio_trades(self) -> float:
+        """현재 보유 종목의 거래기록 기준으로 예수금 추정"""
+        initial_cash = self._get_initial_cash()
+        portfolio = self.load_portfolio()
+
+        net_buy_flow = 0.0
+        for _, info in portfolio.items():
+            trades = info.get('trades', [])
+            if trades:
+                for trade in trades:
+                    ttype = str(trade.get('type', '')).upper()
+                    qty = float(pd.to_numeric(trade.get('quantity', 0), errors='coerce') or 0.0)
+                    price = float(pd.to_numeric(trade.get('price', 0), errors='coerce') or 0.0)
+                    if qty <= 0 or price <= 0:
+                        continue
+                    if ttype == 'BUY':
+                        net_buy_flow += qty * price
+                    elif ttype == 'SELL':
+                        net_buy_flow -= qty * price
+            else:
+                qty = float(pd.to_numeric(info.get('quantity', 0), errors='coerce') or 0.0)
+                avg_price = float(pd.to_numeric(info.get('avg_price', 0), errors='coerce') or 0.0)
+                if qty > 0 and avg_price > 0:
+                    net_buy_flow += qty * avg_price
+
+        return float(initial_cash - net_buy_flow)
     
     def save_cash(self, amount: float) -> bool:
         """현금 예수금 저장"""
@@ -466,7 +559,10 @@ class PortfolioManager:
             if current_price is None:
                 current_price = current_prices.get(code_key)
 
-            quantity = info['quantity']
+            quantity_raw = pd.to_numeric(info.get('quantity', 0), errors='coerce')
+            quantity = int(quantity_raw) if pd.notna(quantity_raw) else 0
+            if quantity <= 0:
+                continue
             avg_price = info['avg_price']
 
             if current_price is None or pd.isna(current_price) or float(current_price) <= 0:
@@ -521,12 +617,13 @@ class PortfolioManager:
         summaries = []
         
         for code, info in portfolio.items():
-            if info.get('quantity', 0) == 0:
+            quantity_raw = pd.to_numeric(info.get('quantity', 0), errors='coerce')
+            quantity = int(quantity_raw) if pd.notna(quantity_raw) else 0
+            if quantity <= 0:
                 # 수량이 0이면 스킵 (완전 매도된 종목)
                 continue
             
             name = info['name']
-            quantity = info['quantity']
             avg_price = info['avg_price']
             trades = info.get('trades', [])
             
@@ -548,6 +645,8 @@ class PortfolioManager:
             # 1. 사용자 제공 현재가
             if current_prices and code in current_prices:
                 current_price = current_prices[code]
+            elif current_prices:
+                current_price = current_prices.get(str(code).zfill(6))
             
             # 2. 최근 거래가 사용 (현재가가 없으면 거래 이력의 마지막 가격 사용)
             if current_price is None and trades:
@@ -591,23 +690,22 @@ class PortfolioManager:
         return df
     
     def get_portfolio_summary(self, current_prices: Dict[str, float]) -> Dict:
-        """포트폴리오 요약 통계 (현금 포함)"""
+        """포트폴리오 요약 통계 (현금 제외, 평가금액 기준)"""
         df = self.calculate_portfolio_value(current_prices)
-        cash = self.load_cash()
         
         if df.empty:
             return {
                 'stock_value': 0,
-                'total_value': cash,  # 현금만
+                'total_value': 0,
                 'total_profit': 0,
                 'total_profit_rate': 0,
                 'total_purchase': 0,
                 'num_stocks': 0,
-                'cash': cash
+                'cash': 0
             }
         
         stock_value = df['평가금액'].sum()
-        total_value = stock_value + cash
+        total_value = stock_value
         
         return {
             'stock_value': stock_value,
@@ -615,8 +713,8 @@ class PortfolioManager:
             'total_profit': df['평가손익'].sum(),
             'total_profit_rate': (df['평가손익'].sum() / df['매입금액'].sum() * 100) if df['매입금액'].sum() > 0 else 0,
             'total_purchase': df['매입금액'].sum(),
-            'num_stocks': len(df),
-            'cash': cash
+            'num_stocks': int(df['종목코드'].astype(str).nunique()) if '종목코드' in df.columns else len(df),
+            'cash': 0
         }
     
     def get_sector_allocation(self, sector_info: Dict[str, str]) -> pd.DataFrame:

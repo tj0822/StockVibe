@@ -20,13 +20,20 @@ from stock_ontology import build_stock_ontology, StockOntology
 
 from .data import DATA_DIR_DEFAULT, load_kospi_index, load_kospi_list, load_stock_data, load_finance_data, load_marketcap_history
 from .data_pipeline import build_stock_master_df
+from .decision_orchestrator import DecisionOrchestrator
+from .investment_engine import InvestmentEngine
+from .market_regime import run_market_regime_engine
 from .marketcap_bump import (
     build_marketcap_rank_history,
     render_marketcap_bump_chart,
     summarize_rank_changes,
 )
 from .market_structure_ui import _load_sector_rank_history_cached
+from .money_flow_engine import MoneyFlowEngine
+from .outcome_tracker import log_decision
+from .sector_prediction_engine import SectorPredictionEngine
 from .signals import build_signals
+from .settings import UserSettings
 from .strategies.registry import get_strategy, list_strategies
 from .strategies.market_regime import classify_market_regime
 from .strategies.registry_store import (
@@ -129,6 +136,217 @@ def load_market_regime_cached(data_dir: str = "data") -> pd.DataFrame:
     if index_df is None or index_df.empty:
         return pd.DataFrame(columns=["date", "close", "return_20d", "vol_20d", "regime"])
     return classify_market_regime(index_df)
+
+
+def _render_decision_orchestrator_card(
+    price_df: pd.DataFrame,
+    kospi_df: pd.DataFrame,
+    kospi_index_df: pd.DataFrame,
+    stock_master_df: pd.DataFrame,
+    selected_date: pd.Timestamp,
+    selected_signals: pd.DataFrame,
+    data_dir: str = "data",
+) -> None:
+    if price_df is None or price_df.empty or stock_master_df is None or stock_master_df.empty:
+        return
+
+    settings = UserSettings(data_dir).load_settings()
+    use_adaptive_weights = bool(settings.get("use_adaptive_weights", False))
+
+    selected_ts = pd.to_datetime(selected_date, errors="coerce")
+    if pd.isna(selected_ts):
+        return
+
+    selected_ts = selected_ts.normalize()
+
+    px = price_df.copy()
+    px["date"] = pd.to_datetime(px["date"], errors="coerce").dt.normalize()
+    px = px.dropna(subset=["date"])
+    px = px[px["date"] <= selected_ts].copy()
+    if px.empty:
+        return
+
+    stock_master = stock_master_df.copy()
+    stock_master["code"] = stock_master["code"].astype(str).str.zfill(6)
+
+    signal_snapshot = pd.DataFrame()
+    if selected_signals is not None and not selected_signals.empty and "code" in selected_signals.columns:
+        keep_cols = [c for c in ["code", "signal", "signal_strength", "triggered_strategies"] if c in selected_signals.columns]
+        if keep_cols:
+            signal_snapshot = selected_signals[keep_cols].copy()
+            signal_snapshot["code"] = signal_snapshot["code"].astype(str).str.zfill(6)
+            signal_snapshot = signal_snapshot.drop_duplicates(subset=["code"], keep="last")
+
+    if not signal_snapshot.empty:
+        stock_master = stock_master.merge(signal_snapshot, on="code", how="left", suffixes=("", "_sig"))
+        if "signal_sig" in stock_master.columns:
+            stock_master["signal"] = stock_master["signal_sig"].combine_first(stock_master.get("signal"))
+        if "signal_strength_sig" in stock_master.columns:
+            stock_master["signal_strength"] = pd.to_numeric(stock_master["signal_strength_sig"], errors="coerce").fillna(
+                pd.to_numeric(stock_master.get("signal_strength"), errors="coerce").fillna(0.0)
+            )
+        if "triggered_strategies" in stock_master.columns:
+            stock_master["triggered_strategy"] = stock_master["triggered_strategies"]
+
+    sector_rank_df = _load_sector_rank_history_cached(data_dir)
+    if sector_rank_df is not None and not sector_rank_df.empty and "date" in sector_rank_df.columns:
+        sector_rank_df = sector_rank_df.copy()
+        sector_rank_df["date"] = pd.to_datetime(sector_rank_df["date"], errors="coerce")
+        sector_rank_df = sector_rank_df[sector_rank_df["date"] <= selected_ts]
+
+    marketcap_df = load_marketcap_history(data_dir)
+    marketcap_rank_df = build_marketcap_rank_history(
+        marketcap_df=marketcap_df,
+        sector_map_df=stock_master[["code", "sector"]].copy() if "sector" in stock_master.columns else pd.DataFrame(columns=["code", "sector"]),
+        freq="W",
+        top_n=10,
+    )
+    if marketcap_rank_df is not None and not marketcap_rank_df.empty and "date" in marketcap_rank_df.columns:
+        marketcap_rank_df = marketcap_rank_df.copy()
+        marketcap_rank_df["date"] = pd.to_datetime(marketcap_rank_df["date"], errors="coerce")
+        marketcap_rank_df = marketcap_rank_df[marketcap_rank_df["date"] <= selected_ts]
+
+    kospi_index_slice = kospi_index_df.copy() if kospi_index_df is not None else pd.DataFrame()
+    if not kospi_index_slice.empty and "date" in kospi_index_slice.columns:
+        kospi_index_slice["date"] = pd.to_datetime(kospi_index_slice["date"], errors="coerce")
+        kospi_index_slice = kospi_index_slice[kospi_index_slice["date"] <= selected_ts]
+
+    regime_result = run_market_regime_engine(
+        stock_master_df=stock_master,
+        kospi_index_df=kospi_index_slice,
+        sector_rank_df=sector_rank_df,
+        marketcap_rank_df=marketcap_rank_df,
+    )
+
+    flow_input = px.copy()
+    flow_input["code"] = flow_input["code"].astype(str).str.zfill(6)
+
+    sector_map = stock_master[["code", "sector"]].copy() if "sector" in stock_master.columns else pd.DataFrame(columns=["code", "sector"])
+    if not sector_map.empty:
+        sector_map["code"] = sector_map["code"].astype(str).str.zfill(6)
+        sector_map = sector_map.drop_duplicates(subset=["code"], keep="last")
+        flow_input = flow_input.merge(sector_map, on="code", how="left")
+
+    if kospi_df is not None and not kospi_df.empty and {"code", "name"}.issubset(kospi_df.columns):
+        name_map = kospi_df[["code", "name"]].copy()
+        name_map["code"] = name_map["code"].astype(str).str.zfill(6)
+        name_map = name_map.drop_duplicates(subset=["code"], keep="last")
+        flow_input = flow_input.merge(name_map, on="code", how="left")
+
+    money_engine = MoneyFlowEngine()
+    stock_flow_df = money_engine.compute_stock_money_flow(flow_input)
+    stock_flow_df = money_engine.compute_flow_score(stock_flow_df)
+    sector_flow_df = money_engine.compute_sector_money_flow(stock_flow_df)
+    sector_flow_df = money_engine.compute_flow_score(sector_flow_df)
+
+    if not stock_flow_df.empty:
+        flow_merge = stock_flow_df[["code", "flow_score"]].copy()
+        flow_merge["code"] = flow_merge["code"].astype(str).str.zfill(6)
+        stock_master = stock_master.merge(flow_merge, on="code", how="left")
+        stock_master["money_flow_score"] = pd.to_numeric(stock_master.get("flow_score"), errors="coerce").fillna(50.0)
+    else:
+        stock_master["money_flow_score"] = pd.to_numeric(stock_master.get("money_flow_score"), errors="coerce").fillna(50.0)
+
+    pred_engine = SectorPredictionEngine()
+    pred_features_df = pred_engine.compute_sector_features(sector_flow_df, sector_rank_df, stock_master)
+    pred_df = pred_engine.compute_prediction_score(pred_features_df)
+    pred_df = pred_engine.classify_sector_state(pred_df)
+
+    if not pred_df.empty and "sector" in stock_master.columns:
+        pred_merge = pred_df[["sector", "prediction_score", "sector_state_pred"]].copy().drop_duplicates(subset=["sector"], keep="last")
+        stock_master = stock_master.merge(pred_merge, on="sector", how="left")
+        stock_master["sector_prediction_score"] = pd.to_numeric(stock_master.get("prediction_score"), errors="coerce").fillna(50.0)
+    else:
+        stock_master["sector_prediction_score"] = pd.to_numeric(stock_master.get("sector_prediction_score"), errors="coerce").fillna(50.0)
+
+    investment_engine = InvestmentEngine()
+    investment_df = investment_engine.build_investment_df(
+        stock_master_df=stock_master,
+        sector_rank_df=sector_rank_df,
+        regime=regime_result,
+    )
+    investment_df = investment_engine.compute_investment_score(
+        investment_df,
+        use_adaptive_weights=use_adaptive_weights,
+        data_dir=data_dir,
+    )
+    buy_df = investment_engine.filter_buy_candidates(investment_df)
+    ranked_df = investment_engine.rank_candidates(buy_df if not buy_df.empty else investment_df)
+
+    orchestrator = DecisionOrchestrator()
+    orchestrator_data = orchestrator.collect_inputs(
+        regime=regime_result,
+        money_flow={"stock_flow_df": stock_flow_df, "sector_flow_df": sector_flow_df},
+        sector_prediction=pred_df,
+        investment_df=ranked_df if not ranked_df.empty else investment_df,
+    )
+    decision = orchestrator.build_final_decision(orchestrator_data)
+
+    decision_date = selected_ts.strftime("%Y-%m-%d")
+    for _, row in (ranked_df.head(5) if not ranked_df.empty else investment_df.head(5)).iterrows():
+        log_decision(
+            {
+                "source": "decision_orchestrator",
+                "decision_date": decision_date,
+                "code": row.get("code", ""),
+                "stock": row.get("stock", ""),
+                "sector": row.get("sector", ""),
+                "signal": row.get("signal", "BUY"),
+                "triggered_strategy": row.get("triggered_strategy", ""),
+                "market_regime": row.get("market_regime", regime_result.get("primary_regime", "UNKNOWN")),
+                "market_bias": decision.get("market_bias", "NEUTRAL"),
+                "investment_score": row.get("investment_score", None),
+                "sector_power": row.get("sector_power", None),
+                "financial_score": row.get("financial_score", None),
+                "momentum_score": row.get("momentum_score", None),
+                "signal_strength": row.get("signal_strength", None),
+                "strategy_fit": row.get("strategy_fit", None),
+                "money_flow_score": row.get("money_flow_score", None),
+                "sector_prediction_score": row.get("sector_prediction_score", None),
+                "confidence": decision.get("confidence", None),
+            }
+        )
+
+    sectors = decision.get("recommended_sectors", [])
+    strategies = decision.get("recommended_strategies", [])
+    top_candidates = decision.get("top_candidates", [])
+
+    with st.container(border=True):
+        st.markdown("#### 🧠 AI 투자 판단")
+        row1 = st.columns(4)
+        with row1[0]:
+            st.metric("Market Bias", str(decision.get("market_bias", "-")))
+        with row1[1]:
+            st.metric("Risk", str(decision.get("risk_level", "-")))
+        with row1[2]:
+            st.metric("Confidence", f"{float(decision.get('confidence', 0.0)):.1f}")
+        with row1[3]:
+            st.metric("Top Candidates", str(len(top_candidates)))
+        st.caption(f"Adaptive Weights: {'ON' if use_adaptive_weights else 'OFF'}")
+
+        row2 = st.columns(2)
+        with row2[0]:
+            st.markdown("**Recommended Sectors**")
+            if sectors:
+                st.markdown("- " + "\n- ".join([str(item) for item in sectors]))
+            else:
+                st.caption("없음")
+        with row2[1]:
+            st.markdown("**Recommended Strategies**")
+            if strategies:
+                st.markdown("- " + "\n- ".join([str(item) for item in strategies]))
+            else:
+                st.caption("없음")
+
+        if top_candidates:
+            st.markdown("**Top Candidates**")
+            candidate_text = [
+                f"{item.get('stock', '-')} · {item.get('sector', '-')} · {item.get('signal', '-') } · {float(item.get('score', 0.0)):.1f}"
+                for item in top_candidates[:3]
+            ]
+            st.caption(" | ".join(candidate_text))
+
+        st.info(str(decision.get("explanation", "-")))
 
 
 def render_sidebar(current_tab: str = "시그널") -> dict:
@@ -3832,6 +4050,16 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         strongest_for_regime = sorted(strongest_for_regime, key=lambda x: (x[1], x[2]), reverse=True)
         top_hint = ", ".join([f"{sid}(CAGR {cagr:.1%})" for sid, cagr, _ in strongest_for_regime[:3]]) if strongest_for_regime else "-"
         st.caption(f"시장 국면: {current_regime} | 해당 국면 강점 전략(선택 전략 기준): {top_hint}")
+
+        _render_decision_orchestrator_card(
+            price_df=df,
+            kospi_df=kospi,
+            kospi_index_df=kospi_index,
+            stock_master_df=stock_master_df,
+            selected_date=selected_date,
+            selected_signals=selected_signals,
+            data_dir=params.get("data_dir", "data"),
+        )
 
         # Ontology Layer: 시장/섹터/종목/전략/시그널 통합
         ontology_df = pd.DataFrame()

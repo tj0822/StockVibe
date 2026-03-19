@@ -4,6 +4,7 @@ from typing import Any
 
 import pandas as pd
 
+from app.adaptive_weights import DEFAULT_WEIGHTS, load_adaptive_weights
 from app.strategies.registry_store import load_registry
 
 
@@ -119,6 +120,7 @@ class InvestmentEngine:
 
         out = pd.DataFrame(
             {
+                "code": work["code"] if "code" in work.columns else "",
                 "stock": work[stock_col],
                 "sector": work["sector"],
                 "sector_power": pd.to_numeric(work["sector_power"], errors="coerce").fillna(0.0),
@@ -136,23 +138,23 @@ class InvestmentEngine:
         )
         return out
 
-    def compute_investment_score(self, df: pd.DataFrame) -> pd.DataFrame:
+    def compute_investment_score(
+        self,
+        df: pd.DataFrame,
+        weights: dict[str, float] | None = None,
+        use_adaptive_weights: bool = False,
+        data_dir: str = "data",
+    ) -> pd.DataFrame:
         """투자 점수 계산.
 
-        score =
-            existing_score +
-            0.1 * sector_prediction_score
-
-        where existing_score =
-            0.2  * sector_power +
-            0.2  * financial_score +
-            0.15 * momentum_score +
-            0.15 * signal_strength +
-            0.1  * strategy_fit +
-            0.2  * money_flow_score
+        기본 가중치 또는 저장된 적응형 가중치를 사용한다.
         """
         if df is None or df.empty:
             return df
+
+        resolved_weights = dict(weights or DEFAULT_WEIGHTS)
+        if use_adaptive_weights:
+            resolved_weights = load_adaptive_weights(f"{data_dir}/adaptive_weights.json")
 
         work = df.copy()
         work["sector_power"] = pd.to_numeric(self._series_or_default(work, "sector_power", 0.0), errors="coerce").fillna(0.0)
@@ -163,15 +165,15 @@ class InvestmentEngine:
         work["money_flow_score"] = pd.to_numeric(self._series_or_default(work, "money_flow_score", 50.0), errors="coerce").fillna(50.0)
         work["sector_prediction_score"] = pd.to_numeric(self._series_or_default(work, "sector_prediction_score", 50.0), errors="coerce").fillna(50.0)
 
-        existing_score = (
-            0.2 * work["sector_power"]
-            + 0.2 * work["financial_score"]
-            + 0.15 * work["momentum_score"]
-            + 0.15 * work["signal_strength"]
-            + 0.1 * work["strategy_fit"]
-            + 0.2 * work["money_flow_score"]
+        work["investment_score"] = (
+            float(resolved_weights.get("sector_power", DEFAULT_WEIGHTS["sector_power"])) * work["sector_power"]
+            + float(resolved_weights.get("financial_score", DEFAULT_WEIGHTS["financial_score"])) * work["financial_score"]
+            + float(resolved_weights.get("momentum_score", DEFAULT_WEIGHTS["momentum_score"])) * work["momentum_score"]
+            + float(resolved_weights.get("signal_strength", DEFAULT_WEIGHTS["signal_strength"])) * work["signal_strength"]
+            + float(resolved_weights.get("strategy_fit", DEFAULT_WEIGHTS["strategy_fit"])) * work["strategy_fit"]
+            + float(resolved_weights.get("money_flow_score", DEFAULT_WEIGHTS["money_flow_score"])) * work["money_flow_score"]
+            + float(resolved_weights.get("sector_prediction_score", DEFAULT_WEIGHTS["sector_prediction_score"])) * work["sector_prediction_score"]
         )
-        work["investment_score"] = existing_score + (0.1 * work["sector_prediction_score"])
         return work
 
     def filter_buy_candidates(self, df: pd.DataFrame) -> pd.DataFrame:

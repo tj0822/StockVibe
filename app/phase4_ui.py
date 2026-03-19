@@ -122,7 +122,7 @@ def render_sidebar_menu() -> tuple[str, str]:
     st.sidebar.title("📊 StockVibe Pro")
     st.sidebar.markdown("---")
     
-    selected = st.sidebar.radio("메뉴", ["🏠 메인 대시보드", "📈 종목분석", "🏭 섹터분석", "📡 시장구조", "💰 Money Flow", "🔮 Sector Prediction", "🔮 Future Sector Prediction", "📈 투자 후보", "💼 포트폴리오", "⚙️ 설정"])
+    selected = st.sidebar.radio("메뉴", ["🏠 메인 대시보드", "📈 종목분석", "🏭 섹터분석", "📡 시장구조", "💰 Money Flow", "🔮 Sector Prediction", "🔮 Future Sector Prediction", "📈 투자 후보", "🧠 Learning", "💼 포트폴리오", "⚙️ 설정"])
     
     page_map = {
         "🏠 메인 대시보드": "main",
@@ -133,6 +133,7 @@ def render_sidebar_menu() -> tuple[str, str]:
         "🔮 Sector Prediction": "sector-prediction",
         "🔮 Future Sector Prediction": "future-sector-prediction",
         "📈 투자 후보": "investment-candidates",
+        "🧠 Learning": "learning",
         "💼 포트폴리오": "portfolio",
         "⚙️ 설정": "settings"
     }
@@ -1110,7 +1111,7 @@ def _render_portfolio_current(kospi_dict, price_df, finance_df, stock_master_df:
                 compliance_ratio = float((enriched_holdings["strategy_compliance"] == "COMPLIANT").mean() * 100.0)
 
             render_kpi_row([
-                {"label": "총 자산", "value": f"₩{float(portfolio_summary.get('total_value', 0)):,.0f}"},
+                {"label": "총 평가금액", "value": f"₩{float(portfolio_summary.get('total_value', 0)):,.0f}"},
                 {"label": "포트폴리오 수익률", "value": f"{float(portfolio_summary.get('total_profit_rate', 0)):+.2f}%"},
                 {"label": "상위 섹터 집중도", "value": f"{top_sector_weight:.1f}%"},
                 {"label": "COMPLIANT 비율", "value": f"{compliance_ratio:.1f}%"},
@@ -1125,7 +1126,7 @@ def _render_portfolio_current(kospi_dict, price_df, finance_df, stock_master_df:
             with kpi_cols[2]:
                 st.metric("WEAK 노출", f"{weak_exposure:.1f}%")
             with kpi_cols[3]:
-                st.metric("종목 수", len(enriched_holdings))
+                st.metric("종목 수", int(portfolio_summary.get("num_stocks", len(enriched_holdings))))
 
             if top_sector_weight > threshold_cfg["concentration_critical_pct"]:
                 st.error(f"🚨 상위 섹터 집중도 {top_sector_weight:.1f}% (>{threshold_cfg['concentration_critical_pct']:.1f}%)")
@@ -1511,7 +1512,7 @@ def page_portfolio():
             if st.button("[INIT] 포트폴리오 초기화", use_container_width=True, help="모든 거래 이력 삭제"):
                 # 직접 초기화 실행
                 try:
-                    portfolio_mgr.clear_portfolio()
+                    portfolio_mgr.full_reset()
                     # 캐시 비우기
                     st.cache_data.clear()
                     # 세션 상태 초기화
@@ -2311,6 +2312,11 @@ def page_settings():
             value=float(current_settings.get('watch_score_threshold', 60.0)),
             step=1.0,
         )
+        use_adaptive_weights = st.checkbox(
+            "적응형 투자 가중치 사용",
+            value=convert_to_bool(current_settings.get('use_adaptive_weights', False)),
+            help="학습 엔진이 제안한 가중치를 투자 점수 계산에 선택적으로 반영합니다.",
+        )
         
         if st.button("저장", key="save_defaults"):
             settings_mgr.set('default_period', default_period)
@@ -2319,6 +2325,7 @@ def page_settings():
             settings_mgr.set('concentration_critical_pct', concentration_critical_pct)
             settings_mgr.set('compliant_score_threshold', compliant_score_threshold)
             settings_mgr.set('watch_score_threshold', watch_score_threshold)
+            settings_mgr.set('use_adaptive_weights', use_adaptive_weights)
             st.success("설정이 저장되었습니다!")
     
     with tab3:
@@ -3055,6 +3062,7 @@ def run_phase4_app():
             "🔮 Sector Prediction": "sector-prediction",
             "🔮 Future Sector Prediction": "future-sector-prediction",
             "📈 투자 후보": "investment-candidates",
+            "🧠 Learning": "learning",
             "💼 포트폴리오": "portfolio",
             "⚙️ 설정": "settings"
         }
@@ -3076,6 +3084,7 @@ def run_phase4_app():
         "sector-prediction": "Sector Prediction",
         "future-sector-prediction": "Future Sector Prediction",
         "investment-candidates": "투자 후보",
+        "learning": "Learning Engine",
         "portfolio": "포트폴리오",
         "settings": "설정",
     }
@@ -3155,6 +3164,10 @@ def run_phase4_app():
         from app.investment_candidates_ui import render_investment_candidates_page
 
         render_investment_candidates_page()
+    elif page == "learning":
+        from app.learning_ui import render_learning_page
+
+        render_learning_page()
     else:
         # 기존 메인 대시보드
         run_app(selected_main_tab)
