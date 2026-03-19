@@ -1075,8 +1075,9 @@ def _render_portfolio_current(kospi_dict, price_df, finance_df, stock_master_df:
         current_prices = {}
         if not price_df.empty:
             for code in portfolio.keys():
-                code_str = str(code)
-                stock_data = price_df[price_df['code'].astype(str) == code_str].sort_values('date')
+                code_str = str(code).zfill(6)
+                price_code = price_df['code'].astype(str).str.zfill(6)
+                stock_data = price_df[price_code == code_str].sort_values('date')
                 if len(stock_data) > 0:
                     current_prices[code] = stock_data.iloc[-1]['close']
         

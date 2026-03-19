@@ -31,22 +31,6 @@
     "purchase_date": "2026-03-09 08:00:00",
     "last_updated": "2026-03-17 22:17:24"
   },
-  "005380": {
-    "name": "현대차",
-    "quantity": 3,
-    "avg_price": 506000.0,
-    "trades": [
-      {
-        "type": "BUY",
-        "quantity": 3,
-        "price": 506000.0,
-        "date": "2026-03-09 14:32:00",
-        "return_pct": 0
-      }
-    ],
-    "purchase_date": "2026-03-09 14:32:00",
-    "last_updated": "2026-03-17 22:17:24"
-  },
   "017960": {
     "name": "한국카본",
     "quantity": 65,
@@ -149,5 +133,37 @@
     ],
     "purchase_date": "2026-03-17 08:08:00",
     "last_updated": "2026-03-17 22:17:24"
+  },
+  "011170": {
+    "name": "롯데케미칼",
+    "quantity": 37,
+    "avg_price": 80800.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 37,
+        "price": 80800.0,
+        "date": "2026-03-19 08:01:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-03-19 08:01:00",
+    "last_updated": "2026-03-19 20:48:42"
+  },
+  "003030": {
+    "name": "세아제강지주",
+    "quantity": 18,
+    "avg_price": 169000.0,
+    "trades": [
+      {
+        "type": "BUY",
+        "quantity": 18,
+        "price": 169000.0,
+        "date": "2026-03-19 08:46:00",
+        "return_pct": 0
+      }
+    ],
+    "purchase_date": "2026-03-19 08:46:00",
+    "last_updated": "2026-03-19 20:48:42"
   }
 }

@@ -460,9 +460,24 @@ class PortfolioManager:
         
         data = []
         for code, info in portfolio.items():
-            current_price = current_prices.get(code, 0)
+            # 가격 키를 코드 정규화(앞자리 0 포함)로 조회하고, 없으면 평균단가/최근 거래가로 fallback
+            code_key = str(code).zfill(6)
+            current_price = current_prices.get(code)
+            if current_price is None:
+                current_price = current_prices.get(code_key)
+
             quantity = info['quantity']
             avg_price = info['avg_price']
+
+            if current_price is None or pd.isna(current_price) or float(current_price) <= 0:
+                trades = info.get('trades', [])
+                if trades:
+                    trades_sorted = sorted(trades, key=lambda x: x.get('date', ''))
+                    current_price = trades_sorted[-1].get('price', avg_price)
+                else:
+                    current_price = avg_price
+
+            current_price = float(current_price)
             
             # 금액 계산
             purchase_value = quantity * avg_price  # 매입금액
