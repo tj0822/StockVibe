@@ -100,5 +100,39 @@
         "pure_breakout"
       ]
     }
+  },
+  {
+    "as_of_date": "2026-03-24",
+    "primary_regime": "SIDEWAYS",
+    "secondary_regime": "RISK_ON",
+    "volatility_regime": "HIGH_VOL",
+    "confidence": 61.0,
+    "features": {
+      "kospi_return_20d": -0.05,
+      "kospi_return_60d": 0.3814,
+      "kospi_vol_20d": 0.0497,
+      "above_ma20_ratio": 0.434,
+      "above_ma60_ratio": 0.2717,
+      "buy_sell_ratio": 2.7606,
+      "leading_sector_count": 4,
+      "rotation_strength": 3.4615,
+      "market_temperature": 54.78,
+      "top_sector_concentration": 0.2,
+      "vol_threshold": 0.02,
+      "as_of_date": "2026-03-24"
+    },
+    "interpretation": {
+      "summary": "뚜렷한 방향성보다 섹터별 순환과 선별 대응이 중요한 국면입니다.",
+      "risk_note": "변동성이 높아 추격 매수보다 분할 진입과 손절 규율이 중요합니다."
+    },
+    "strategy_guidance": {
+      "recommended": [
+        "mean_reversion",
+        "quality_filter"
+      ],
+      "avoid": [
+        "pure_breakout"
+      ]
+    }
   }
 ]
