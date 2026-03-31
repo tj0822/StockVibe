@@ -197,7 +197,7 @@ def compute_market_concentration(marketcap_rank_df: pd.DataFrame) -> Dict:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_market_leaders(marketcap_rank_df: pd.DataFrame, stock_master_df: pd.DataFrame) -> pd.DataFrame:
-    cols = ["rank", "name", "sector", "market_cap", "final_score_adjusted", "signal", "sector_state"]
+    cols = ["rank", "code", "name", "sector", "market_cap", "final_score_adjusted", "signal", "sector_state"]
 
     if marketcap_rank_df is None or marketcap_rank_df.empty:
         return pd.DataFrame(columns=cols)

@@ -2,8 +2,7 @@
 종목별 일괄 백테스트 분석 모듈
 """
 import pandas as pd
-import numpy as np
-from typing import Dict, List, Tuple, Callable
+from typing import Dict, List, Callable
 import streamlit as st
 
 

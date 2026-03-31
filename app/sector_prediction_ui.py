@@ -9,6 +9,7 @@ from app.data_pipeline import build_stock_master_df
 from app.market_structure_ui import _load_sector_rank_history_cached
 from app.money_flow_engine import MoneyFlowEngine
 from app.sector_prediction_engine import SectorPredictionEngine
+from app.ui_utils import add_naver_link_column
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -167,8 +168,9 @@ def render_sector_prediction_page() -> None:
     if leaders_df.empty:
         st.info("조건을 만족하는 리더 종목이 없습니다.")
     else:
+        leaders_df = add_naver_link_column(leaders_df, code_col="code", link_col="naver_stock_url")
         st.dataframe(
-            leaders_df[["sector", "stock", "momentum_score", "money_flow_score", "leader_strength"]],
+            leaders_df[["sector", "stock", "momentum_score", "money_flow_score", "leader_strength", "naver_stock_url"]],
             hide_index=True,
             use_container_width=True,
             column_config={
@@ -177,6 +179,7 @@ def render_sector_prediction_page() -> None:
                 "momentum_score": st.column_config.NumberColumn("Momentum", format="%.1f"),
                 "money_flow_score": st.column_config.NumberColumn("Money Flow", format="%.1f"),
                 "leader_strength": st.column_config.NumberColumn("Leader Strength", format="%.1f"),
+                "naver_stock_url": st.column_config.LinkColumn("네이버 증권", display_text="바로가기"),
             },
         )
 

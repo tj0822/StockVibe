@@ -1,7 +1,7 @@
 """주식 온톨로지 및 예측 모듈"""
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from technical_indicators import analyze_technical_indicators, get_technical_score
@@ -186,12 +186,204 @@ class StockOntology:
             signal_strength = signal_series.map({"BUY": 100.0, "SELL": -100.0}).fillna(0.0)
 
         work["signal_strength"] = signal_strength
+
+        # 뉴스 임팩트 점수 (없으면 0)
+        work["news_impact_score"] = pd.to_numeric(work.get("news_impact_score", 0), errors="coerce").fillna(0.0)
+
         work["priority"] = (
             0.3 * work["sector_power"]
             + 0.3 * work["final_score_adjusted"]
             + 0.2 * work["momentum_score"]
             + 0.2 * work["signal_strength"]
+            + 0.15 * work["news_impact_score"]
         )
+        return work
+
+    def build_news_impact_map(self, stock_news_map: Dict[str, List[Dict]], stock_sector_map: Optional[Dict[str, str]] = None) -> Dict[str, Dict]:
+        """종목별 뉴스 데이터를 기반으로 임팩트 점수와 근거를 생성한다."""
+        if not stock_news_map:
+            return {}
+
+        impact_map: Dict[str, Dict] = {}
+
+        for stock_code, news_items in stock_news_map.items():
+            if not news_items:
+                impact_map[str(stock_code)] = {
+                    "news_impact_score": 0.0,
+                    "news_positive_count": 0,
+                    "news_negative_count": 0,
+                    "news_neutral_count": 0,
+                    "dominant_news_event": "NONE",
+                    "news_impact_reason": "관련 뉴스 없음",
+                }
+                continue
+
+            weighted_score = 0.0
+            pos_count = 0
+            neg_count = 0
+            neu_count = 0
+            reasons: List[str] = []
+            event_count: Dict[str, int] = {"M&A": 0, "ORDER": 0, "REGULATION": 0, "EARNINGS": 0, "GENERAL": 0}
+
+            sector_text = ""
+            if stock_sector_map is not None:
+                sector_text = str(stock_sector_map.get(str(stock_code).zfill(6), "") or "")
+            if not sector_text:
+                sector_text = str(news_items[0].get("sector", "") or "")
+
+            for idx, item in enumerate(news_items[:8]):
+                title = str(item.get("title", "") or "")
+                body = str(item.get("body", "") or "")
+                text = f"{title} {body}".strip()
+                if not text:
+                    continue
+
+                sentiment = simple_sentiment_analysis(text)
+                recency_weight = max(0.4, 1.0 - (idx * 0.1))
+                event_type = self._detect_event_type(text)
+                event_count[event_type] = event_count.get(event_type, 0) + 1
+
+                event_weight = self._get_event_weight(event_type)
+                sector_weight = self._get_sector_weight(sector_text, event_type)
+                unit_weight = 10.0 * recency_weight * event_weight * sector_weight
+
+                if sentiment == "positive":
+                    weighted_score += unit_weight
+                    pos_count += 1
+                    reasons.append(f"+[{event_type}] {title[:24]}")
+                elif sentiment == "negative":
+                    weighted_score -= unit_weight
+                    neg_count += 1
+                    reasons.append(f"-[{event_type}] {title[:24]}")
+                else:
+                    neu_count += 1
+
+            news_impact_score = float(np.clip(weighted_score, -100.0, 100.0))
+
+            if reasons:
+                impact_reason = " | ".join(reasons[:3])
+            else:
+                impact_reason = "중립/유효 뉴스 중심"
+
+            dominant_event = max(event_count.items(), key=lambda x: x[1])[0] if event_count else "GENERAL"
+
+            impact_map[str(stock_code)] = {
+                "news_impact_score": news_impact_score,
+                "news_positive_count": pos_count,
+                "news_negative_count": neg_count,
+                "news_neutral_count": neu_count,
+                "dominant_news_event": dominant_event,
+                "news_impact_reason": impact_reason,
+            }
+
+        return impact_map
+
+    def _detect_event_type(self, text: str) -> str:
+        """뉴스 텍스트에서 이벤트 타입 분류"""
+        t = str(text or "")
+        event_keywords = {
+            "M&A": ["인수", "합병", "m&a", "지분", "매각", "스핀오프"],
+            "ORDER": ["수주", "계약", "공급", "납품", "수출", "발주"],
+            "REGULATION": ["규제", "승인", "허가", "제재", "정책", "공시", "법안"],
+            "EARNINGS": ["실적", "매출", "영업이익", "순이익", "어닝", "가이던스", "컨센서스"],
+        }
+        for event_type, keywords in event_keywords.items():
+            if any(k.lower() in t.lower() for k in keywords):
+                return event_type
+        return "GENERAL"
+
+    def _get_event_weight(self, event_type: str) -> float:
+        """이벤트 타입별 임팩트 가중치"""
+        weights = {
+            "M&A": 1.25,
+            "ORDER": 1.20,
+            "REGULATION": 1.15,
+            "EARNINGS": 1.30,
+            "GENERAL": 1.00,
+        }
+        return float(weights.get(str(event_type), 1.00))
+
+    def _get_sector_weight(self, sector: str, event_type: str) -> float:
+        """섹터/이벤트 조합별 가중치"""
+        s = str(sector or "").lower()
+        e = str(event_type or "GENERAL")
+
+        # 기본값
+        w = 1.0
+
+        # 섹터 민감도 룰
+        if any(k in s for k in ["반도체", "it", "소프트웨어", "통신"]):
+            if e == "EARNINGS":
+                w = 1.20
+            elif e == "ORDER":
+                w = 1.15
+            elif e == "REGULATION":
+                w = 1.10
+        elif any(k in s for k in ["바이오", "제약", "헬스", "의료"]):
+            if e == "REGULATION":
+                w = 1.35
+            elif e == "M&A":
+                w = 1.10
+            elif e == "EARNINGS":
+                w = 1.10
+        elif any(k in s for k in ["건설", "조선", "기계", "방산"]):
+            if e == "ORDER":
+                w = 1.35
+            elif e == "M&A":
+                w = 1.10
+        elif any(k in s for k in ["금융", "은행", "증권", "보험"]):
+            if e == "REGULATION":
+                w = 1.25
+            elif e == "EARNINGS":
+                w = 1.15
+        elif any(k in s for k in ["자동차", "배터리", "2차전지", "화학"]):
+            if e == "EARNINGS":
+                w = 1.20
+            elif e == "REGULATION":
+                w = 1.10
+
+        return float(w)
+
+    def attach_news_impact(self, df: pd.DataFrame, stock_news_map: Dict[str, List[Dict]]) -> pd.DataFrame:
+        """온톨로지 프레임에 뉴스 임팩트 점수/근거를 결합한다."""
+        if df is None or df.empty:
+            return df
+
+        work = df.copy()
+        if "code" not in work.columns:
+            return work
+
+        work["code"] = work["code"].astype(str).str.zfill(6)
+        stock_sector_map = {}
+        if "sector" in work.columns:
+            stock_sector_map = dict(
+                zip(
+                    work["code"].astype(str).str.zfill(6),
+                    work["sector"].astype(str),
+                )
+            )
+
+        impact_map = self.build_news_impact_map(stock_news_map, stock_sector_map=stock_sector_map)
+        if not impact_map:
+            work["news_impact_score"] = 0.0
+            work["news_impact_reason"] = "관련 뉴스 없음"
+            work["news_positive_count"] = 0
+            work["news_negative_count"] = 0
+            return work
+
+        impact_rows = []
+        for stock_code, values in impact_map.items():
+            row = {"code": str(stock_code).zfill(6)}
+            row.update(values)
+            impact_rows.append(row)
+
+        impact_df = pd.DataFrame(impact_rows)
+        work = work.merge(impact_df, on="code", how="left")
+        work["news_impact_score"] = pd.to_numeric(work.get("news_impact_score", 0), errors="coerce").fillna(0.0)
+        work["news_impact_reason"] = work.get("news_impact_reason", "관련 뉴스 없음").fillna("관련 뉴스 없음")
+        work["news_positive_count"] = pd.to_numeric(work.get("news_positive_count", 0), errors="coerce").fillna(0).astype(int)
+        work["news_negative_count"] = pd.to_numeric(work.get("news_negative_count", 0), errors="coerce").fillna(0).astype(int)
+        work["dominant_news_event"] = work.get("dominant_news_event", "NONE").fillna("NONE")
         return work
 
     def infer_buy_candidates(self, df: pd.DataFrame) -> pd.DataFrame:

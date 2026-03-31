@@ -7,7 +7,6 @@ import datetime as dt
 import streamlit as st
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
 
 class CrawlingKospi:
     def __init__(self):

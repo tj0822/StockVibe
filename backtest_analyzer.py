@@ -6,7 +6,7 @@
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 
 
 def run_backtest_batch(stocks_data: List[Dict], 
@@ -242,7 +242,7 @@ if __name__ == "__main__":
     print("🧪 ABLATION TEST EXAMPLE - Factor Weight Impact Analysis")
     print("=" * 80)
     
-    from financial_utils import StockScoringEngine, get_default_weights
+    from financial_utils import StockScoringEngine
     
     # 테스트 데이터 (예시)
     sample_stock = {

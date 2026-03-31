@@ -4,8 +4,6 @@
 """
 
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
 from collections import defaultdict, Counter
 import streamlit as st
 from naver_news_crawler import NaverNewsCrawler

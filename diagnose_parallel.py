@@ -97,7 +97,7 @@ import sys
 sys.path.insert(0, 'd:\\workspace\\StockVibe')
 
 try:
-    from optimizer import BacktestOptimizer, _test_combination_worker
+    from optimizer import _test_combination_worker
     print("\n✅ optimizer 모듈 임포트 성공")
     
     # worker 함수 pickleable 확인

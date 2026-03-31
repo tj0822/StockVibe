@@ -13,6 +13,7 @@ from app.money_flow_engine import MoneyFlowEngine
 from app.outcome_tracker import log_decision
 from app.sector_prediction_engine import SectorPredictionEngine
 from app.settings import UserSettings
+from app.ui_utils import add_naver_link_column, make_naver_stock_url
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -35,6 +36,7 @@ def _load_marketcap_rank_cached(data_dir: str = "data") -> pd.DataFrame:
 
 def _render_why_this_stock(row: pd.Series) -> None:
     stock = str(row.get("stock", "-"))
+    code = str(row.get("code", "")).strip()
     sector = str(row.get("sector", "-"))
     sector_power = float(pd.to_numeric(row.get("sector_power", 0.0), errors="coerce"))
     financial_score = float(pd.to_numeric(row.get("financial_score", 0.0), errors="coerce"))
@@ -62,6 +64,8 @@ def _render_why_this_stock(row: pd.Series) -> None:
         reasons.append("Composite score remains competitive versus peers.")
 
     st.markdown(f"**Why this stock? · {stock}**")
+    if code:
+        st.link_button("🔗 네이버 증권", make_naver_stock_url(code), use_container_width=False)
     st.caption(f"Sector: {sector} | Regime: {regime} | Triggered strategy: {strategy}")
     for reason in reasons:
         st.write(f"- {reason}")
@@ -179,7 +183,8 @@ def render_investment_candidates_page() -> None:
             }
         )
 
-    display_cols = ["rank", "stock", "sector", "investment_score", "sector_prediction_score", "signal", "triggered_strategy"]
+    ranked_df = add_naver_link_column(ranked_df, code_col="code", link_col="naver_stock_url")
+    display_cols = ["rank", "stock", "sector", "investment_score", "sector_prediction_score", "signal", "triggered_strategy", "naver_stock_url"]
     st.dataframe(
         ranked_df[display_cols],
         hide_index=True,
@@ -192,6 +197,7 @@ def render_investment_candidates_page() -> None:
             "sector_prediction_score": st.column_config.NumberColumn("sector_prediction_score", format="%.2f"),
             "signal": st.column_config.TextColumn("signal"),
             "triggered_strategy": st.column_config.TextColumn("triggered_strategy"),
+            "naver_stock_url": st.column_config.LinkColumn("네이버 증권", display_text="바로가기"),
         },
     )
     st.caption(f"적응형 가중치 사용: {'ON' if use_adaptive_weights else 'OFF'}")

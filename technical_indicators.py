@@ -1,7 +1,6 @@
 """기술적 지표 계산 모듈"""
 import pandas as pd
-import numpy as np
-from typing import Dict, Optional
+from typing import Dict
 
 
 def calculate_moving_averages(df: pd.DataFrame, periods: list = [5, 20, 60, 120]) -> pd.DataFrame:

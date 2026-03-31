@@ -8,6 +8,28 @@ import streamlit as st
 import pandas as pd
 
 
+def make_naver_stock_url(code: str) -> str:
+    """종목코드로 네이버 증권 종목 메인 URL 생성"""
+    code_str = str(code or "").strip().zfill(6)
+    return f"https://finance.naver.com/item/main.naver?code={code_str}"
+
+
+def add_naver_link_column(
+    df: pd.DataFrame,
+    code_col: str = "code",
+    link_col: str = "naver_stock_url",
+) -> pd.DataFrame:
+    """DataFrame에 네이버 증권 URL 컬럼 추가"""
+    if df is None or df.empty:
+        return df
+    if code_col not in df.columns:
+        return df
+
+    work = df.copy()
+    work[link_col] = work[code_col].astype(str).str.zfill(6).map(make_naver_stock_url)
+    return work
+
+
 def display_score_breakdown(score_result: dict, stock_name: str = ""):
     """
     점수 분석 결과를 Streamlit UI에 표시

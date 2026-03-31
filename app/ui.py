@@ -14,11 +14,11 @@ from datetime import datetime
 from crawling_kospi import CrawlingKospi
 from naver_news_crawler import NaverNewsCrawler
 from kakao_message import KakaoMessageSender
-from optimizer import BacktestOptimizer, get_period_dates
-from sentiment_analyzer import SentimentAnalyzer
-from stock_ontology import build_stock_ontology, StockOntology
+from optimizer import BacktestOptimizer
+from stock_ontology import StockOntology
 
 from .data import DATA_DIR_DEFAULT, load_kospi_index, load_kospi_list, load_stock_data, load_finance_data, load_marketcap_history
+from .llm_insight_engine import LLMInsightEngine
 from .data_pipeline import build_stock_master_df
 from .decision_orchestrator import DecisionOrchestrator
 from .investment_engine import InvestmentEngine
@@ -37,9 +37,6 @@ from .settings import UserSettings
 from .strategies.registry import get_strategy, list_strategies
 from .strategies.market_regime import classify_market_regime
 from .strategies.registry_store import (
-    get_approved_strategies,
-    get_production_strategies,
-    get_production_strategy_ids,
     get_strategy_thresholds,
     load_registry,
     set_production,
@@ -48,12 +45,19 @@ from .strategies.registry_store import (
 from .strategies.validation import validate_strategy
 from .strategies.registry_store import update_validation_result
 from .ui_components import render_action_row, render_progress_steps
+from .ui_utils import make_naver_stock_url
+from .openai_config import (
+    FREEMIUM_MODELS,
+    PREMIUM_MODELS,
+    CUSTOM_MODELS,
+    ALL_MODELS,
+    get_default_model,
+)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)  # 1시간 캐시
 def get_cached_ai_prediction(code: str, price_df_hash: int, finance_df_hash: int, news_data_str: str, data_refresh_time: str):
     """AI 예측 캐싱 (데이터 갱신 시 자동 무효화)"""
-    from stock_ontology import build_stock_ontology
     import json
     
     # news_data 복원
@@ -65,10 +69,11 @@ def get_cached_ai_prediction(code: str, price_df_hash: int, finance_df_hash: int
     return None  # placeholder
 
 
-def get_news_data_for_stock(code: str):
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_news_data_for_stock(code: str, max_news: int = 5, include_body: bool = True):
     """주식 뉴스 데이터 가져오기 (캐싱)"""
     crawler = NaverNewsCrawler()
-    news_df = crawler.get_recent_news(code)
+    news_df = crawler.get_recent_news(code, max_news=max_news)
     
     news_data = []
     if not news_df.empty:
@@ -78,9 +83,17 @@ def get_news_data_for_stock(code: str):
         news_rows = news_df.to_dict(orient="records")
         
         for news_row in news_rows:
+            news_url = news_row.get('news_url', '')
+            body_text = ''
+            if include_body and news_url and isinstance(news_url, str) and news_url.startswith('http'):
+                try:
+                    body_text = crawler.get_news_body(news_url)
+                except Exception:
+                    body_text = ''
+
             news_data.append({
                 'title': news_row.get('제목', ''),
-                'body': '',
+                'body': (body_text or '')[:1000],
                 'date': news_row.get('날짜', ''),
                 'source': news_row.get('출처', '')
             })
@@ -90,11 +103,26 @@ def get_news_data_for_stock(code: str):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_kospi_stocks_cached() -> dict:
+    # 1) 온라인 크롤링 우선
     try:
         crawler = CrawlingKospi()
-        return crawler.GetKospi200()
+        kospi_dict = crawler.GetKospi200()
+        if kospi_dict:
+            return kospi_dict
     except Exception:
-        return {}
+        pass
+
+    # 2) 실패 시 로컬 데이터 폴백 (data/kospi_list.pkl)
+    try:
+        kospi_df = load_kospi_list(DATA_DIR_DEFAULT)
+        if kospi_df is not None and not kospi_df.empty and {"code", "name"}.issubset(kospi_df.columns):
+            kospi_df = kospi_df.copy()
+            kospi_df["code"] = kospi_df["code"].astype(str).str.zfill(6)
+            return dict(zip(kospi_df["code"], kospi_df["name"]))
+    except Exception:
+        pass
+
+    return {}
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -146,9 +174,13 @@ def _render_decision_orchestrator_card(
     selected_date: pd.Timestamp,
     selected_signals: pd.DataFrame,
     data_dir: str = "data",
+    params: dict = None,
 ) -> None:
     if price_df is None or price_df.empty or stock_master_df is None or stock_master_df.empty:
         return
+
+    if params is None:
+        params = {}
 
     settings = UserSettings(data_dir).load_settings()
     use_adaptive_weights = bool(settings.get("use_adaptive_weights", False))
@@ -346,7 +378,57 @@ def _render_decision_orchestrator_card(
             ]
             st.caption(" | ".join(candidate_text))
 
-        st.info(str(decision.get("explanation", "-")))
+        # LLM 인사이트 생성
+        try:
+            llm_model = params.get("openai_insight_model", os.getenv("OPENAI_INSIGHT_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-3.5-turbo")
+            llm_engine = LLMInsightEngine(
+                model=llm_model,
+                cache_dir=os.path.join(data_dir, "llm_insight_cache")
+            )
+            
+            # 섹터 강도 정보 준비
+            sector_strength = {}
+            if not stock_master.empty and "sector" in stock_master.columns and "sector_power" in stock_master.columns:
+                sector_strength_df = (
+                    stock_master[["sector", "sector_power"]]
+                    .dropna(subset=["sector", "sector_power"])
+                    .drop_duplicates(subset=["sector"], keep="last")
+                )
+                sector_strength = dict(zip(sector_strength_df["sector"], sector_strength_df["sector_power"]))
+            
+            # LLM 인사이트 생성
+            llm_insights = llm_engine.generate_comprehensive_insights(
+                top_candidates=top_candidates[:5],
+                decision=decision,
+                regime=regime_result,
+                sector_strength=sector_strength,
+                date=decision_date,
+            )
+            
+            # 결과 표시
+            with st.expander(f"🤖 AI 인사이트 (LLM · {llm_model})", expanded=True):
+                col_exp1, col_exp2 = st.columns(2)
+                
+                with col_exp1:
+                    st.markdown("##### 📌 종목 선정 근거")
+                    st.caption(llm_insights["stock_explanation"])
+                    
+                    st.markdown("##### 📰 시장 심리")
+                    st.caption(llm_insights["sentiment_summary"])
+                
+                with col_exp2:
+                    st.markdown("##### 🔮 시장 국면")
+                    st.caption(llm_insights["regime_explanation"])
+                    
+                    st.markdown("##### 💡 기본 판단")
+                    st.caption(str(decision.get("explanation", "-")))
+        
+        except Exception as e:
+            # LLM 실패 시 기본 설명만 표시
+            st.info(str(decision.get("explanation", "-")))
+            with st.expander("⚠️ LLM 인사이트 생성 실패", expanded=False):
+                st.caption(f"모델: {params.get('openai_insight_model', os.getenv('OPENAI_INSIGHT_MODEL') or os.getenv('OPENAI_MODEL') or 'gpt-3.5-turbo')}")
+                st.caption(f"오류: {str(e)[:100]}")
 
 
 def render_sidebar(current_tab: str = "시그널") -> dict:
@@ -369,6 +451,75 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
         # 적용된 파라미터 값 사용 (있으면)
         default_window = st.session_state.get('applied_turnover_window', 10)
         default_multiplier = st.session_state.get('applied_turnover_multiplier', 3.0)
+        
+        # OpenAI 모델 설정 (용도별)
+        with st.expander("🤖 OpenAI 모델 설정 (용도별 선택)", expanded=False):
+            st.markdown("### 📊 **인사이트 생성** (종목 선정 근거, 뉴스 감성, 시장 국면)")
+            st.caption(f"기본값: `{os.getenv('OPENAI_INSIGHT_MODEL', 'gpt-3.5-turbo')}`")
+            
+            all_models = list(ALL_MODELS.keys())
+            default_insight = os.getenv('OPENAI_INSIGHT_MODEL', 'gpt-3.5-turbo')
+            try:
+                default_insight_idx = all_models.index(default_insight)
+            except ValueError:
+                default_insight_idx = 0
+            
+            insight_model = st.selectbox(
+                "인사이트 생성용 모델 선택",
+                options=all_models,
+                index=default_insight_idx,
+                format_func=lambda x: f"{x} — {ALL_MODELS.get(x, '')}",
+                help="💡 종목 선정 근거, 뉴스 감성 분석, 시장 국면 해설에 사용되는 모델\n빠른 요약이 필요하면 무료/저가, 정교한 분석이 필요하면 유료 모델 추천",
+                key="openai_insight_model_select",
+            )
+            
+            st.markdown("---")
+            st.markdown("### 🔍 **AI 투자 분석** (재무/기술 분석, 패턴 해석, 추론)")
+            st.caption(f"기본값: `{os.getenv('OPENAI_ANALYZER_MODEL', 'gpt-3.5-turbo')}`")
+            
+            default_analyzer = os.getenv('OPENAI_ANALYZER_MODEL', 'gpt-3.5-turbo')
+            try:
+                default_analyzer_idx = all_models.index(default_analyzer)
+            except ValueError:
+                default_analyzer_idx = 0
+            
+            analyzer_model = st.selectbox(
+                "분석용 모델 선택",
+                options=all_models,
+                index=default_analyzer_idx,
+                format_func=lambda x: f"{x} — {ALL_MODELS.get(x, '')}",
+                help="🔎 개별 종목의 재무/기술적 분석, 시장 패턴 해석에 사용\nreasoning이 중요하면 o3/o4 등 고급 모델, 빠른 응답이 필요하면 gpt-4o-mini 추천",
+                key="openai_analyzer_model_select",
+            )
+            
+            st.markdown("---")
+            st.markdown("### ⚙️ **기본 모델** (일반 응답, 기타 용도)")
+            st.caption(f"기본값: `{os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')}`")
+            
+            default_model = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+            try:
+                default_model_idx = all_models.index(default_model)
+            except ValueError:
+                default_model_idx = 0
+            
+            general_model = st.selectbox(
+                "기본 모델 선택",
+                options=all_models,
+                index=default_model_idx,
+                format_func=lambda x: f"{x} — {ALL_MODELS.get(x, '')}",
+                help="⚙️ 기타 일반적인 API 호출에 사용할 기본 모델",
+                key="openai_general_model_select",
+            )
+            
+            st.markdown("---")
+            st.markdown("### 📋 **현재 설정 요약**")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.info(f"📊 **인사이트**\n`{insight_model}`")
+            with col2:
+                st.warning(f"🔍 **분석**\n`{analyzer_model}`")
+            with col3:
+                st.success(f"⚙️ **기본**\n`{general_model}`")
         
         with st.expander("📊 거래량 분석", expanded=True):
             turnover_window = st.number_input(
@@ -409,6 +560,9 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
         "per_max": None,
         "pbr_max": None,
         "dvr_min": None,
+        "openai_insight_model": insight_model,
+        "openai_analyzer_model": analyzer_model,
+        "openai_general_model": general_model,
     }
 
 
@@ -733,7 +887,7 @@ def build_latest_table(
     if "name" in latest.columns and "code" in latest.columns:
         latest["name"] = latest.apply(
             lambda row: (
-                f'<a href="https://finance.naver.com/item/news.naver?code={row["code"]}" '
+                f'<a href="{make_naver_stock_url(row["code"])}" '
                 f'target="_blank">{row["name"]}</a>'
                 if pd.notna(row["name"]) and pd.notna(row["code"]) else row["name"]
             ),
@@ -779,6 +933,66 @@ def build_latest_table(
     # 재무 데이터는 별도 표시를 위해 컬럼에서 제외
     
     return latest, cols
+
+
+def build_buy_recommendation_reasons(row: pd.Series) -> list[str]:
+    """매수 후보에 대한 추천 근거 문장을 생성한다."""
+    reasons: list[str] = []
+
+    signal = str(row.get("signal", "")).upper()
+    signal_strength = pd.to_numeric(row.get("signal_strength"), errors="coerce")
+    final_score = pd.to_numeric(row.get("final_score_adjusted"), errors="coerce")
+    sector_power = pd.to_numeric(row.get("sector_power"), errors="coerce")
+    spike_ratio = pd.to_numeric(row.get("spike_ratio"), errors="coerce")
+    sector_state = str(row.get("sector_state", "") or "").upper()
+    sector_rank = pd.to_numeric(row.get("sector_rank"), errors="coerce")
+    strategies = str(row.get("triggered_strategies", row.get("strategy", "")) or "")
+
+    if signal == "BUY":
+        reasons.append("현재 시그널이 BUY로 분류되었습니다.")
+
+    if pd.notna(signal_strength):
+        if signal_strength >= 2:
+            reasons.append(f"시그널 강도 {signal_strength:+.0f}로 매수 우위가 뚜렷합니다.")
+        elif signal_strength > 0:
+            reasons.append(f"시그널 강도 {signal_strength:+.0f}로 매수 우위입니다.")
+
+    if pd.notna(final_score):
+        if final_score >= 75:
+            reasons.append(f"종합 점수 {final_score:.1f}점으로 상위권 조건을 충족합니다.")
+        elif final_score >= 60:
+            reasons.append(f"종합 점수 {final_score:.1f}점으로 기준 이상입니다.")
+
+    if pd.notna(sector_power):
+        if sector_power >= 70:
+            reasons.append(f"섹터 파워 {sector_power:.1f}로 업종 수급이 강합니다.")
+        elif sector_power >= 60:
+            reasons.append(f"섹터 파워 {sector_power:.1f}로 업종 모멘텀이 유지됩니다.")
+
+    if sector_state in {"LEADING", "STRONG"}:
+        reasons.append(f"섹터 상태가 {sector_state}로 상대 강세 구간입니다.")
+
+    if pd.notna(sector_rank) and sector_rank <= 10:
+        reasons.append(f"섹터 순위 {int(sector_rank)}위로 상위 업종입니다.")
+
+    if pd.notna(spike_ratio) and spike_ratio >= 2.0:
+        reasons.append(f"거래량 급증 비율 {spike_ratio:.0%}로 수급 유입 신호가 확인됩니다.")
+
+    if strategies:
+        reasons.append(f"트리거 전략: {strategies}")
+
+    # 온톨로지 뉴스 임팩트 컬럼이 존재할 때 추가 근거 제공
+    news_impact = pd.to_numeric(row.get("news_impact_score"), errors="coerce")
+    news_reason = str(row.get("news_impact_reason", "") or "").strip()
+    if pd.notna(news_impact) and news_impact > 0:
+        reasons.append(f"뉴스 임팩트 점수 {news_impact:.1f}로 우호적 뉴스 흐름입니다.")
+    if news_reason:
+        reasons.append(f"뉴스 근거: {news_reason}")
+
+    if not reasons:
+        reasons.append("기본 점수/시그널 조건을 충족해 매수 후보로 분류되었습니다.")
+
+    return reasons[:7]
 
 
 def render_table(latest: pd.DataFrame, cols: list[str]) -> None:
@@ -1090,10 +1304,10 @@ def render_table_with_finance(
                                     filtered_finance = stock_finance
                         
                         if len(filtered_prices) > 0:
-                            # 탭으로 구분
-                            tab1, tab2, tab3 = st.tabs(["💹 주가/거래량", "📊 밸류에이션", "💰 수익성"])
+                            # 차트 내부 세부 탭
+                            chart_tab1, chart_tab2, chart_tab3 = st.tabs(["💹 주가/거래량", "📊 밸류에이션", "💰 수익성"])
                             
-                            with tab1:
+                            with chart_tab1:
                                 # Plotly를 사용한 캔들스틱 + 거래량 차트 (이중축)
                                 fig = make_subplots(
                                     rows=2, cols=1,
@@ -1169,7 +1383,7 @@ def render_table_with_finance(
                                     avg_volume = filtered_prices['volume'].mean()
                                     st.metric("평균 거래량", f"{avg_volume:,.0f}")
                             
-                            with tab2:
+                            with chart_tab2:
                                 # 밸류에이션 지표 (PER, PBR)
                                 if filtered_finance is not None:
                                     chart_data = filtered_finance.set_index('date')[['per', 'pbr']].dropna(how='all')
@@ -1189,7 +1403,7 @@ def render_table_with_finance(
                                 else:
                                     st.info("재무 데이터가 없습니다.")
                             
-                            with tab3:
+                            with chart_tab3:
                                 # 수익성 지표 (EPS, BPS, 배당수익률)
                                 if filtered_finance is not None:
                                     chart_cols = []
@@ -4059,6 +4273,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             selected_date=selected_date,
             selected_signals=selected_signals,
             data_dir=params.get("data_dir", "data"),
+            params=params,
         )
 
         # Ontology Layer: 시장/섹터/종목/전략/시그널 통합
@@ -4090,6 +4305,29 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 sector_rank_df=sector_rank_df,
                 regime={"regime": current_regime},
             )
+
+            # 뉴스 임팩트 결합: 성능을 위해 우선순위 후보 일부만 조회
+            if not ontology_df.empty and "code" in ontology_source.columns:
+                ontology_df["code"] = ontology_source["code"].astype(str).str.zfill(6).values
+                top_codes = (
+                    ontology_source.sort_values("final_score_adjusted", ascending=False)["code"]
+                    .astype(str)
+                    .str.zfill(6)
+                    .head(8)
+                    .tolist()
+                )
+                stock_news_map = {}
+                if top_codes:
+                    max_workers = min(6, len(top_codes))
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        results = executor.map(
+                            lambda c: (c, get_news_data_for_stock(c, max_news=3, include_body=False)),
+                            top_codes,
+                        )
+                        for stock_code, news_items in results:
+                            stock_news_map[stock_code] = news_items
+
+                ontology_df = ontology.attach_news_impact(ontology_df, stock_news_map)
 
             if "return_1m" in ontology_source.columns and len(ontology_source) == len(ontology_df):
                 ontology_df["return_1m"] = pd.to_numeric(ontology_source["return_1m"], errors="coerce").fillna(0.0)
@@ -4127,7 +4365,10 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 else:
                     st.dataframe(
                         buy_candidates_df[
-                            ["stock", "sector", "priority", "sector_power", "final_score_adjusted", "momentum_score", "signal", "strategy"]
+                            [
+                                "stock", "sector", "priority", "news_impact_score", "news_impact_reason",
+                                "dominant_news_event", "sector_power", "final_score_adjusted", "momentum_score", "signal", "strategy"
+                            ]
                         ].head(10),
                         use_container_width=True,
                         hide_index=True,
@@ -4149,7 +4390,10 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                 regime_top = priority_df.sort_values("regime_adjusted_priority", ascending=False).head(10)
                 st.dataframe(
                     regime_top[
-                        ["stock", "sector", "market_regime", "priority", "regime_adjusted_priority", "signal", "strategy"]
+                        [
+                            "stock", "sector", "market_regime", "priority", "news_impact_score",
+                            "dominant_news_event", "regime_adjusted_priority", "signal", "strategy"
+                        ]
                     ],
                     use_container_width=True,
                     hide_index=True,
@@ -4230,6 +4474,11 @@ def run_app(current_tab: str = "📊 시그널") -> None:
                     """
                 ).strip()
                 st.markdown(buy_pick_html, unsafe_allow_html=True)
+                st.link_button("🔗 네이버 증권 바로가기", make_naver_stock_url(code), use_container_width=False)
+
+                st.markdown("##### 🧾 추천 근거")
+                for reason in build_buy_recommendation_reasons(row):
+                    st.markdown(f"- {reason}")
 
             if view_mode == "📊 테이블":
                 st.caption(f"조회 결과: 총 {len(latest)}개 종목")

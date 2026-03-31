@@ -7,6 +7,7 @@ import streamlit as st
 from app.data import load_kospi_list, load_stock_data
 from app.data_pipeline import build_stock_master_df
 from app.money_flow_engine import MoneyFlowEngine
+from app.ui_utils import add_naver_link_column
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -95,8 +96,9 @@ def render_money_flow_page() -> None:
     if top_stocks_df.empty:
         st.info("유입 상위 종목 데이터가 없습니다.")
     else:
+        top_stocks_df = add_naver_link_column(top_stocks_df, code_col="code", link_col="naver_stock_url")
         st.dataframe(
-            top_stocks_df[["rank", "stock", "sector", "money_flow", "flow_change", "flow_momentum", "flow_score"]],
+            top_stocks_df[["rank", "stock", "sector", "money_flow", "flow_change", "flow_momentum", "flow_score", "naver_stock_url"]],
             hide_index=True,
             use_container_width=True,
             column_config={
@@ -107,6 +109,7 @@ def render_money_flow_page() -> None:
                 "flow_change": st.column_config.NumberColumn("Flow Change(%)", format="%.2f"),
                 "flow_momentum": st.column_config.NumberColumn("Flow Momentum", format="%.2f"),
                 "flow_score": st.column_config.NumberColumn("Flow Score", format="%.2f"),
+                "naver_stock_url": st.column_config.LinkColumn("네이버 증권", display_text="바로가기"),
             },
         )
 

@@ -5,11 +5,10 @@
 - 전략 백테스팅
 """
 import pandas as pd
-import numpy as np
 import json
 import os
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict
 
 class BacktestingEngine:
     """백테스팅 엔진"""

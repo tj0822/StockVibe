@@ -1,6 +1,5 @@
 """뉴스 감성분석 모듈"""
 import re
-from typing import Literal, Optional
 import torch
 
 

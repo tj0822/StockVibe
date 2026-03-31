@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 from app.portfolio import PortfolioManager
-import json
 
 pm = PortfolioManager()
 

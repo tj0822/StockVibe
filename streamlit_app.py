@@ -1,4 +1,8 @@
 import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
 from app.phase4_ui import run_phase4_app
 
 # 페이지 설정

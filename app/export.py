@@ -7,7 +7,7 @@
 import pandas as pd
 import os
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict
 import io
 import plotly.graph_objects as go
 

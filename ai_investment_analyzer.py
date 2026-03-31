@@ -8,20 +8,23 @@ import hashlib
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-import pandas as pd
 import streamlit as st
-import traceback
+from dotenv import load_dotenv
+
+
+load_dotenv(override=True)
 
 
 class AIInvestmentAnalyzer:
     """OpenAI API를 이용한 투자 분석"""
     
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, model: str = None):
         """
         초기화
         
         Args:
             api_key: OpenAI API 키 (None이면 환경변수에서 로드)
+            model: OpenAI 모델명 (None이면 환경변수에서 로드)
         """
         # openai 패키지 lazy loading
         try:
@@ -35,6 +38,8 @@ class AIInvestmentAnalyzer:
         
         if api_key is None:
             api_key = os.getenv("OPENAI_API_KEY")
+
+        self.model = model or os.getenv("OPENAI_ANALYZER_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-3.5-turbo"
         
         if not api_key:
             raise ValueError("OpenAI API 키가 없습니다. OPENAI_API_KEY 환경변수를 설정하세요.")
@@ -172,7 +177,7 @@ class AIInvestmentAnalyzer:
             """
             
             response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=self.model,
                 messages=[
                     {"role": "system", "content": "당신은 경험이 많은 증권 애널리스트입니다."},
                     {"role": "user", "content": prompt}
@@ -278,7 +283,7 @@ class AIInvestmentAnalyzer:
             """
             
             response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=self.model,
                 messages=[
                     {"role": "system", "content": "당신은 기술적 분석 전문가입니다."},
                     {"role": "user", "content": prompt}
@@ -394,7 +399,7 @@ class AIInvestmentAnalyzer:
             """
             
             response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=self.model,
                 messages=[
                     {"role": "system", "content": "당신은 칭찬받는 투자 자문가입니다. 객관적이고 균형잡힌 조언을 제공합니다."},
                     {"role": "user", "content": prompt}

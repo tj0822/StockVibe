@@ -134,5 +134,39 @@
         "pure_breakout"
       ]
     }
+  },
+  {
+    "as_of_date": "2026-03-31",
+    "primary_regime": "BEAR",
+    "secondary_regime": "RISK_ON",
+    "volatility_regime": "HIGH_VOL",
+    "confidence": 75.0,
+    "features": {
+      "kospi_return_20d": -0.1277,
+      "kospi_return_60d": 0.1971,
+      "kospi_vol_20d": 0.0474,
+      "above_ma20_ratio": 0.2528,
+      "above_ma60_ratio": 0.2151,
+      "buy_sell_ratio": 2.7606,
+      "leading_sector_count": 4,
+      "rotation_strength": 3.1154,
+      "market_temperature": 48.45,
+      "top_sector_concentration": 0.2,
+      "vol_threshold": 0.02,
+      "as_of_date": "2026-03-31"
+    },
+    "interpretation": {
+      "summary": "방어 성향이 우세한 구간으로 리스크 관리가 중요한 국면입니다.",
+      "risk_note": "변동성이 높아 추격 매수보다 분할 진입과 손절 규율이 중요합니다."
+    },
+    "strategy_guidance": {
+      "recommended": [
+        "defensive_low_vol",
+        "risk_control"
+      ],
+      "avoid": [
+        "momentum_chase"
+      ]
+    }
   }
 ]

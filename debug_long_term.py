@@ -4,7 +4,6 @@
 import sys
 sys.path.insert(0, 'd:\\workspace\\StockVibe')
 
-import pandas as pd
 from app.data import load_finance_data, load_stock_data
 from long_term_analyzer import LongTermAnalyzer
 

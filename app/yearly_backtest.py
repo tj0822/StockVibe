@@ -2,8 +2,7 @@
 연도별 개별 종목 시뮬레이션 분석 모듈
 """
 import pandas as pd
-import numpy as np
-from typing import Dict, List, Callable, Tuple
+from typing import Dict, List, Callable
 import streamlit as st
 
 

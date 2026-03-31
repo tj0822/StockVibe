@@ -3,7 +3,6 @@
 """거래 중복 감지 테스트"""
 
 from app.portfolio import PortfolioManager
-import json
 
 def test_duplicate_detection():
     print("=" * 70)

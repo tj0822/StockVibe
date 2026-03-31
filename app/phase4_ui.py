@@ -11,10 +11,10 @@ import plotly.graph_objects as go
 # Phase 4 모듈 import
 from app.portfolio import PortfolioManager
 from app.comparison import ComparisonAnalyzer
-from app.export import DataExporter, ReportGenerator, ChartExporter
-from app.advanced_charts import CandlePatternRecognizer, CorrelationAnalyzer, VolumeAnalyzer
-from app.alerts import AlertManager, AutoRefreshManager
-from app.settings import UserSettings, ThemeManager, DisplaySettings
+from app.export import DataExporter, ReportGenerator
+from app.advanced_charts import CandlePatternRecognizer, VolumeAnalyzer
+from app.alerts import AlertManager
+from app.settings import UserSettings
 from app.data_pipeline import build_stock_master_df
 from app.portfolio_insights import (
     build_rebalance_suggestions,
@@ -31,6 +31,7 @@ from app.strategies.registry_store import (
     set_enabled,
 )
 from app.ui_components import render_kpi_row, render_header
+from app.ui_utils import make_naver_stock_url
 
 # 기존 모듈
 from crawling_kospi import CrawlingKospi
@@ -40,7 +41,7 @@ from long_term_analyzer import LongTermAnalyzer, create_investment_portfolio_rec
 
 # 산업 트렌드 분석 (선택적 import)
 try:
-    from industry_trend_analyzer import IndustryTrendAnalyzer, get_industry_trend_recommendation
+    from industry_trend_analyzer import IndustryTrendAnalyzer
     HAS_INDUSTRY_TREND = True
 except ImportError as e:
     HAS_INDUSTRY_TREND = False
@@ -527,9 +528,11 @@ def page_ai_analysis():
         """)
         return
     
+    analyzer_model = os.getenv("OPENAI_ANALYZER_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-3.5-turbo"
+
     # AI 분석기 초기화
     try:
-        analyzer = AIInvestmentAnalyzer(api_key)
+        analyzer = AIInvestmentAnalyzer(api_key, model=analyzer_model)
     except Exception as e:
         st.error(f"❌ AI 분석기 초기화 실패: {e}")
         return
@@ -662,6 +665,7 @@ def page_ai_analysis():
                 st.rerun()
             
             st.info(f"선택된 종목: **{st.session_state.ai_stock_name} ({st.session_state.ai_stock_code})**")
+            st.link_button("🔗 네이버 증권", make_naver_stock_url(st.session_state.ai_stock_code), use_container_width=False)
         
         else:
             st.warning("⚠️ 현재 BUY 신호가 있는 종목이 없습니다.")
@@ -696,6 +700,7 @@ def page_ai_analysis():
                 st.rerun()
             
             st.info(f"선택된 종목: **{st.session_state.ai_stock_name} ({st.session_state.ai_stock_code})**")
+            st.link_button("🔗 네이버 증권", make_naver_stock_url(st.session_state.ai_stock_code), use_container_width=False)
         else:
             st.error("❌ KOSPI 200 종목을 로드할 수 없습니다.")
     
@@ -798,6 +803,7 @@ def page_ai_analysis():
     # 현재 선택된 종목 정보 표시
     st.markdown("---")
     st.info(f"📌 **분석할 종목**: {st.session_state.ai_stock_name} ({st.session_state.ai_stock_code})")
+    st.link_button("🔗 네이버 증권 바로가기", make_naver_stock_url(st.session_state.ai_stock_code), use_container_width=False)
     st.markdown("---")
     
     # 재무 데이터 입력
@@ -874,7 +880,7 @@ def page_ai_analysis():
             
             try:
                 # 기초 분석
-                st.markdown("### 📊 기초 분석 결과")
+                st.markdown(f"### 📊 기초 분석 결과 (LLM · {analyzer_model})")
                 try:
                     fundamental = analyzer.analyze_fundamental(st.session_state.ai_stock_code, st.session_state.ai_stock_name, financial_data)
                     
@@ -909,7 +915,7 @@ def page_ai_analysis():
                 st.markdown("---")
                 
                 # 기술 분석
-                st.markdown("### 📈 기술 분석 결과")
+                st.markdown(f"### 📈 기술 분석 결과 (LLM · {analyzer_model})")
                 try:
                     technical = analyzer.analyze_technical(st.session_state.ai_stock_code, st.session_state.ai_stock_name, price_data)
                     
@@ -939,7 +945,7 @@ def page_ai_analysis():
                 st.markdown("---")
                 
                 # 종합 추천
-                st.markdown("### 🎯 종합 투자 추천")
+                st.markdown(f"### 🎯 종합 투자 추천 (LLM · {analyzer_model})")
                 try:
                     recommendation = analyzer.generate_recommendation(
                         st.session_state.ai_stock_code, st.session_state.ai_stock_name, 

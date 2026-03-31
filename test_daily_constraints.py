@@ -3,7 +3,6 @@
 """거래 제약 조건 시뮬레이션 테스트"""
 
 from app.portfolio import PortfolioManager
-import pandas as pd
 
 def test_daily_trading_constraints():
     print("=" * 80)

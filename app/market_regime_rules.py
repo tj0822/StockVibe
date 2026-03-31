@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict
 
 
 def classify_primary_regime(features: dict) -> str:

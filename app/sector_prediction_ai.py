@@ -122,12 +122,13 @@ class SectorPredictionAI:
 
     def predict_leader_stocks(self, stock_df: pd.DataFrame) -> pd.DataFrame:
         if stock_df is None or stock_df.empty:
-            return pd.DataFrame(columns=["sector", "stock", "momentum_score", "money_flow_score", "financial_score", "leader_strength"])
+            return pd.DataFrame(columns=["sector", "code", "stock", "momentum_score", "money_flow_score", "financial_score", "leader_strength"])
 
         work = stock_df.copy()
         work["sector"] = self._series_or_default(work, "sector", "Unknown").astype(str)
         stock_col = "name" if "name" in work.columns else ("stock" if "stock" in work.columns else "code")
         work["stock"] = self._series_or_default(work, stock_col, "").astype(str)
+        work["code"] = self._series_or_default(work, "code", "").astype(str).str.zfill(6)
         work["momentum_score"] = pd.to_numeric(self._series_or_default(work, "momentum_score", 0.0), errors="coerce").fillna(0.0)
         work["money_flow_score"] = pd.to_numeric(self._series_or_default(work, "money_flow_score", 50.0), errors="coerce").fillna(50.0)
         if "financial_score" in work.columns:
@@ -141,7 +142,7 @@ class SectorPredictionAI:
             & (work["financial_score"] > 60)
         ].copy()
         if leaders.empty:
-            return pd.DataFrame(columns=["sector", "stock", "momentum_score", "money_flow_score", "financial_score", "leader_strength"])
+            return pd.DataFrame(columns=["sector", "code", "stock", "momentum_score", "money_flow_score", "financial_score", "leader_strength"])
 
         leaders["leader_strength"] = (
             0.4 * leaders["momentum_score"]
@@ -149,7 +150,7 @@ class SectorPredictionAI:
             + 0.3 * leaders["financial_score"]
         )
         leaders = leaders.sort_values(["sector", "leader_strength"], ascending=[True, False]).groupby("sector", as_index=False).head(3)
-        return leaders[["sector", "stock", "momentum_score", "money_flow_score", "financial_score", "leader_strength"]].reset_index(drop=True)
+        return leaders[["sector", "code", "stock", "momentum_score", "money_flow_score", "financial_score", "leader_strength"]].reset_index(drop=True)
 
     def predict_future_sectors(self, df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:

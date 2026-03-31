@@ -8,8 +8,7 @@ import pandas as pd
 import json
 import os
 from datetime import datetime
-from typing import Dict, List, Optional
-import streamlit as st
+from typing import Dict, List
 import numpy as np
 
 class PortfolioManager:
@@ -1674,7 +1673,6 @@ class PortfolioManager:
         Returns:
             {종목명: 결과 메시지} 형식의 결과
         """
-        from datetime import datetime
         
         results = {}
         

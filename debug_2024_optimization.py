@@ -4,7 +4,6 @@
 import pandas as pd
 import os
 import sys
-from datetime import datetime
 
 # 데이터 파일 경로
 data_dir = "data"
@@ -169,9 +168,7 @@ print("5. 최적화 조합 테스트 (단일 조합)")
 print("=" * 80)
 
 try:
-    from app.ui import run_turnover_strategy_backtest
     from optimizer import _test_combination_worker
-    import json
     
     # 테스트 파라미터
     test_combo = (1, 10, 2.0, -7.0)  # max_daily_buys, rolling_days, volume_threshold, add_buy_threshold_pct

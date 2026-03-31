@@ -2,8 +2,7 @@
 중장기 투자 추천 시스템 - 재무 및 뉴스 기반 분석
 """
 import pandas as pd
-import numpy as np
-from typing import Dict, List, Tuple
+from typing import Dict
 import logging
 
 logger = logging.getLogger(__name__)

@@ -20,6 +20,7 @@ from app.market_thermometer import (
     compute_sector_rotation_strength,
     get_market_leaders,
 )
+from app.ui_utils import add_naver_link_column
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -207,8 +208,9 @@ def render_market_thermometer() -> None:
     if leaders_df.empty:
         st.info("시총 리더 테이블 데이터가 없습니다.")
     else:
+        leaders_df = add_naver_link_column(leaders_df, code_col="code", link_col="naver_stock_url")
         st.dataframe(
-            leaders_df[["rank", "name", "sector", "sector_state", "signal", "final_score_adjusted"]],
+            leaders_df[["rank", "name", "sector", "sector_state", "signal", "final_score_adjusted", "naver_stock_url"]],
             hide_index=True,
             use_container_width=True,
             column_config={
@@ -218,5 +220,6 @@ def render_market_thermometer() -> None:
                 "sector_state": st.column_config.TextColumn("섹터 상태"),
                 "signal": st.column_config.TextColumn("Signal"),
                 "final_score_adjusted": st.column_config.NumberColumn("Adjusted Score", format="%.1f"),
+                "naver_stock_url": st.column_config.LinkColumn("네이버 증권", display_text="바로가기"),
             },
         )
