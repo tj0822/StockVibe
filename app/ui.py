@@ -15,7 +15,6 @@ from crawling_kospi import CrawlingKospi
 from naver_news_crawler import NaverNewsCrawler
 from kakao_message import KakaoMessageSender
 from optimizer import BacktestOptimizer
-from stock_ontology import StockOntology
 
 from .data import DATA_DIR_DEFAULT, load_kospi_index, load_kospi_list, load_stock_data, load_finance_data, load_marketcap_history
 from .llm_insight_engine import LLMInsightEngine
@@ -4276,133 +4275,6 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             params=params,
         )
 
-        # Ontology Layer: 시장/섹터/종목/전략/시그널 통합
-        ontology_df = pd.DataFrame()
-        if stock_master_df is not None and not stock_master_df.empty and "code" in stock_master_df.columns:
-            sector_rank_df = _load_sector_rank_history_cached(params.get("data_dir", "data"))
-
-            ontology_source = stock_master_df.copy()
-            if selected_signals is not None and not selected_signals.empty and "code" in selected_signals.columns:
-                signal_cols = ["code", "signal", "signal_strength", "triggered_strategies"]
-                signal_cols = [c for c in signal_cols if c in selected_signals.columns]
-                signal_snapshot = (
-                    selected_signals[signal_cols]
-                    .sort_values("code")
-                    .drop_duplicates(subset=["code"], keep="last")
-                )
-                if not signal_snapshot.empty:
-                    ontology_source = ontology_source.merge(signal_snapshot, on="code", how="left", suffixes=("", "_sig"))
-                    if "signal_sig" in ontology_source.columns:
-                        ontology_source["signal"] = ontology_source["signal_sig"].combine_first(ontology_source.get("signal"))
-                    if "signal_strength_sig" in ontology_source.columns and "signal_strength" not in ontology_source.columns:
-                        ontology_source["signal_strength"] = ontology_source["signal_strength_sig"]
-                    if "triggered_strategies" in ontology_source.columns and "strategy" not in ontology_source.columns:
-                        ontology_source["strategy"] = ontology_source["triggered_strategies"]
-
-            ontology = StockOntology()
-            ontology_df = ontology.build_ontology_df(
-                stock_master_df=ontology_source,
-                sector_rank_df=sector_rank_df,
-                regime={"regime": current_regime},
-            )
-
-            # 뉴스 임팩트 결합: 성능을 위해 우선순위 후보 일부만 조회
-            if not ontology_df.empty and "code" in ontology_source.columns:
-                ontology_df["code"] = ontology_source["code"].astype(str).str.zfill(6).values
-                top_codes = (
-                    ontology_source.sort_values("final_score_adjusted", ascending=False)["code"]
-                    .astype(str)
-                    .str.zfill(6)
-                    .head(8)
-                    .tolist()
-                )
-                stock_news_map = {}
-                if top_codes:
-                    max_workers = min(6, len(top_codes))
-                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                        results = executor.map(
-                            lambda c: (c, get_news_data_for_stock(c, max_news=3, include_body=False)),
-                            top_codes,
-                        )
-                        for stock_code, news_items in results:
-                            stock_news_map[stock_code] = news_items
-
-                ontology_df = ontology.attach_news_impact(ontology_df, stock_news_map)
-
-            if "return_1m" in ontology_source.columns and len(ontology_source) == len(ontology_df):
-                ontology_df["return_1m"] = pd.to_numeric(ontology_source["return_1m"], errors="coerce").fillna(0.0)
-            if "signal_strength" in ontology_source.columns and len(ontology_source) == len(ontology_df):
-                ontology_df["signal_strength"] = pd.to_numeric(ontology_source["signal_strength"], errors="coerce").fillna(0.0)
-
-        if ontology_df is not None and not ontology_df.empty:
-            ontology = StockOntology()
-            priority_df = ontology.compute_priority_score(ontology_df)
-
-            regime_upper = str(current_regime).upper()
-            buy_factor = 1.00
-            sell_factor = 1.00
-            if "BEAR" in regime_upper or "RISK_OFF" in regime_upper:
-                buy_factor = 0.85
-                sell_factor = 1.05
-            elif "BULL" in regime_upper or "RISK_ON" in regime_upper:
-                buy_factor = 1.05
-                sell_factor = 0.90
-
-            signal_upper = priority_df.get("signal", "").astype(str).str.upper()
-            regime_factor = np.where(signal_upper == "BUY", buy_factor, np.where(signal_upper == "SELL", sell_factor, 1.0))
-            priority_df["regime_adjusted_priority"] = priority_df["priority"] * regime_factor
-
-            buy_candidates_df = ontology.infer_buy_candidates(priority_df)
-            sector_opportunity_df = ontology.build_sector_opportunity(priority_df)
-
-            st.markdown("### 🧠 Ontology 투자 인사이트")
-            o_col1, o_col2, o_col3 = st.columns(3)
-
-            with o_col1:
-                st.caption("Top Buy Candidates")
-                if buy_candidates_df.empty:
-                    st.info("조건을 만족하는 BUY 후보가 없습니다.")
-                else:
-                    st.dataframe(
-                        buy_candidates_df[
-                            [
-                                "stock", "sector", "priority", "news_impact_score", "news_impact_reason",
-                                "dominant_news_event", "sector_power", "final_score_adjusted", "momentum_score", "signal", "strategy"
-                            ]
-                        ].head(10),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-            with o_col2:
-                st.caption("Sector Opportunities")
-                if sector_opportunity_df.empty:
-                    st.info("섹터 기회 데이터가 없습니다.")
-                else:
-                    st.dataframe(
-                        sector_opportunity_df[["sector", "avg_priority", "avg_return", "sector_power"]].head(10),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-            with o_col3:
-                st.caption("Regime-adjusted Priority")
-                regime_top = priority_df.sort_values("regime_adjusted_priority", ascending=False).head(10)
-                st.dataframe(
-                    regime_top[
-                        [
-                            "stock", "sector", "market_regime", "priority", "news_impact_score",
-                            "dominant_news_event", "regime_adjusted_priority", "signal", "strategy"
-                        ]
-                    ],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            st.caption(
-                f"현재 국면({current_regime}) 보정계수 · BUY x{buy_factor:.2f}, SELL x{sell_factor:.2f}"
-            )
-
         if "pending_view_mode" in st.session_state:
             st.session_state.signal_view_mode = st.session_state.pop("pending_view_mode")
         elif focus_code:
@@ -4421,7 +4293,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
         st.divider()
         st.subheader(f"📊 결과 · {selected_date.date()} 투자 시그널")
         st.caption(f"현재 보기: {view_mode} · 조건에 맞는 종목만 표시됩니다.")
-        
+
         latest, cols = build_latest_table(
             signals,
             selected_date,
