@@ -835,11 +835,11 @@ def build_latest_table(
     latest["final_score_adjusted"] = latest["final_score_adjusted"].fillna(latest["final_score"])
     latest["signal_strength"] = pd.to_numeric(latest.get("signal_strength"), errors="coerce").fillna(0.0)
 
-    # Candidate ranking priority: BUY first -> signal strength desc -> adjusted score desc -> spike ratio desc.
+    # Candidate ranking priority: BUY first -> spike ratio desc -> signal strength desc -> adjusted score desc.
     latest["_signal_priority"] = np.where(latest["signal"] == "BUY", 0, 1)
     latest["_spike_sort"] = pd.to_numeric(latest.get("spike_ratio"), errors="coerce").fillna(-1e9)
     latest = latest.sort_values(
-        ["_signal_priority", "signal_strength", "final_score_adjusted", "_spike_sort"],
+        ["_signal_priority", "_spike_sort", "signal_strength", "final_score_adjusted"],
         ascending=[True, False, False, False],
     )
     latest = latest.head(int(top_n))
