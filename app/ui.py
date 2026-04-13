@@ -16,7 +16,7 @@ from naver_news_crawler import NaverNewsCrawler
 from kakao_message import KakaoMessageSender
 from optimizer import BacktestOptimizer
 
-from .data import DATA_DIR_DEFAULT, load_kospi_index, load_kospi_list, load_stock_data, load_finance_data, load_marketcap_history
+from .data import DATA_DIR_DEFAULT, load_kospi_index, load_kospi_list, load_stock_data, load_finance_data, load_marketcap_history, get_data_status
 from .llm_insight_engine import LLMInsightEngine
 from .data_pipeline import build_stock_master_df
 from .decision_orchestrator import DecisionOrchestrator
@@ -684,23 +684,32 @@ def _get_runtime_strategy_params(strategy_id: str, params: dict, rolling_days: i
     return strategy_params
 
 
-def select_date(signals: pd.DataFrame) -> pd.Timestamp | None:
-    available_dates = signals["date"].dropna().sort_values().unique()
+def select_date(signals: pd.DataFrame, price_df: pd.DataFrame | None = None) -> pd.Timestamp | None:
+    signal_dates = pd.to_datetime(signals.get("date"), errors="coerce").dropna() if signals is not None else pd.Series(dtype="datetime64[ns]")
+    price_dates = pd.to_datetime(price_df.get("date"), errors="coerce").dropna() if (price_df is not None and not price_df.empty and "date" in price_df.columns) else pd.Series(dtype="datetime64[ns]")
+
+    combined_dates = pd.concat([signal_dates, price_dates], ignore_index=True).dropna()
+    available_dates = pd.DatetimeIndex(combined_dates).normalize().sort_values().unique()
     if len(available_dates) == 0:
-        st.warning("조건에 맞는 시그널이 없습니다.")
+        st.warning("표시 가능한 날짜 데이터가 없습니다.")
         return None
 
-    latest_date = available_dates[-1]
+    latest_date = pd.Timestamp(available_dates[-1])
+    latest_signal_date = signal_dates.max() if not signal_dates.empty else pd.NaT
     col1, col2 = st.columns([3, 1])
     with col1:
         selected_date = st.date_input(
             "📅 기준 날짜",
             value=latest_date.date(),
-            min_value=available_dates[0].date(),
+            min_value=pd.Timestamp(available_dates[0]).date(),
             max_value=latest_date.date(),
         )
     with col2:
-        st.metric("최신 데이터", latest_date.strftime("%Y-%m-%d"))
+        st.metric("최신 가격 데이터", latest_date.strftime("%Y-%m-%d"))
+    if pd.notna(latest_signal_date):
+        st.caption(f"최신 시그널 날짜: {pd.Timestamp(latest_signal_date).strftime('%Y-%m-%d')}")
+    elif signals is not None and not signals.empty:
+        st.caption("최신 시그널 날짜: -")
     return pd.to_datetime(selected_date)
 
 
@@ -3284,6 +3293,44 @@ def render_kospi_crawling_page() -> None:
     st.caption("최신 주가 데이터를 수집합니다")
     st.write("KOSPI 200 종목 리스트와 가격/재무 데이터를 갱신합니다.")
 
+    # 데이터 반영 상태를 즉시 확인할 수 있도록 최신 거래일/오늘 행 수 표시
+    try:
+        price_df = load_stock_data(DATA_DIR_DEFAULT)
+        index_df = load_kospi_index(DATA_DIR_DEFAULT)
+        status = get_data_status(DATA_DIR_DEFAULT)
+
+        latest_price_date = pd.to_datetime(price_df.get("date"), errors="coerce").max() if not price_df.empty else pd.NaT
+        latest_index_date = pd.to_datetime(index_df.get("date"), errors="coerce").max() if not index_df.empty else pd.NaT
+        today = pd.Timestamp.now().normalize()
+
+        today_price_rows = 0
+        if not price_df.empty and "date" in price_df.columns:
+            work_price = price_df.copy()
+            work_price["date"] = pd.to_datetime(work_price["date"], errors="coerce").dt.normalize()
+            today_price_rows = int((work_price["date"] == today).sum())
+
+        today_index_rows = 0
+        if not index_df.empty and "date" in index_df.columns:
+            work_index = index_df.copy()
+            work_index["date"] = pd.to_datetime(work_index["date"], errors="coerce").dt.normalize()
+            today_index_rows = int((work_index["date"] == today).sum())
+
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("가격 최신 거래일", latest_price_date.strftime("%Y-%m-%d") if pd.notna(latest_price_date) else "-")
+        with m2:
+            st.metric("지수 최신 거래일", latest_index_date.strftime("%Y-%m-%d") if pd.notna(latest_index_date) else "-")
+        with m3:
+            st.metric("오늘 가격 행 수", f"{today_price_rows:,}")
+        with m4:
+            st.metric("오늘 지수 행 수", f"{today_index_rows:,}")
+
+        st.caption(
+            f"파일 갱신 시각 · price: {status.get('price_ts', '-')} | finance: {status.get('finance_ts', '-')} | overall: {status.get('last_success_fetch', '-')}"
+        )
+    except Exception as exc:
+        st.warning(f"데이터 상태 확인 중 오류: {exc}")
+
     if st.button("KOSPI 크롤링 실행"):
         with st.spinner("크롤링 중... 잠시만 기다려 주세요."):
             try:
@@ -3977,7 +4024,7 @@ def run_app(current_tab: str = "📊 시그널") -> None:
             if not selected_strategy_ids:
                 st.info("선택된 전략이 없어 시그널이 비어 있습니다.")
 
-        selected_date = select_date(signals)
+        selected_date = select_date(signals, df)
         if selected_date is None:
             st.warning("⚠️ 조건에 맞는 시그널이 없습니다.")
             return
