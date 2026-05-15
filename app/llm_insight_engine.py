@@ -26,28 +26,65 @@ class LLMInsightEngine:
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, cache_dir: str = "data/llm_insight_cache"):
         """
         Args:
-            api_key: OpenAI API 키 (미제공시 환경변수에서 자동 로드)
-            model: OpenAI 모델 (미제공시 환경변수 또는 기본값)
+            api_key: API 키 (OpenAI 또는 Anthropic; 미제공시 환경변수에서 자동 로드)
+            model: 모델명 (claude-* → Anthropic, 그 외 → OpenAI)
             cache_dir: 캐시 저장 디렉토리
         """
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        # 모델 우선순위: 인자 > 환경변수(OPENAI_INSIGHT_MODEL) > 환경변수(OPENAI_MODEL) > 기본값
         self.model = model or os.getenv("OPENAI_INSIGHT_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-3.5-turbo"
+        self.api_key = api_key
         self.cache_dir = cache_dir
-        self.client = None
+        self.client = None          # OpenAI client
+        self.anthropic_client = None  # Anthropic client
         self.cache_expiry_days = 7
-        
-        # 캐시 디렉토리 생성
+
         os.makedirs(self.cache_dir, exist_ok=True)
-    
+
+    def _is_claude_model(self) -> bool:
+        return self.model.startswith("claude-")
+
     def _lazy_load_client(self):
         """OpenAI 클라이언트 lazy load"""
         if self.client is None:
             try:
                 from openai import OpenAI
-                self.client = OpenAI(api_key=self.api_key)
+                self.client = OpenAI(api_key=self.api_key or os.getenv("OPENAI_API_KEY"))
             except ImportError:
                 raise ImportError("openai 패키지가 설치되지 않았습니다. pip install openai를 실행하세요.")
+
+    def _lazy_load_anthropic(self):
+        """Anthropic 클라이언트 lazy load"""
+        if self.anthropic_client is None:
+            try:
+                import anthropic
+                self.anthropic_client = anthropic.Anthropic(
+                    api_key=self.api_key or os.getenv("ANTHROPIC_API_KEY")
+                )
+            except ImportError:
+                raise ImportError("anthropic 패키지가 설치되지 않았습니다. pip install anthropic를 실행하세요.")
+
+    def _call_llm(self, system_prompt: str, user_prompt: str, temperature: float = 0.7, max_tokens: int = 200) -> str:
+        """모델에 따라 Anthropic 또는 OpenAI API 호출"""
+        if self._is_claude_model():
+            self._lazy_load_anthropic()
+            message = self.anthropic_client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            return message.content[0].text.strip()
+        else:
+            self._lazy_load_client()
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content.strip()
     
     def _generate_cache_key(self, insight_type: str, payload: Dict) -> str:
         """
@@ -143,14 +180,13 @@ class LLMInsightEngine:
         
         # LLM 호출
         try:
-            self._lazy_load_client()
-            
             candidate_text = "\n".join([
                 f"- {c.get('stock')} ({c.get('code')}) | {c.get('sector')} | {c.get('signal')} | 점수 {c.get('score', 0):.1f}"
                 for c in top_candidates[:5]
             ])
-            
-            prompt = f"""당신은 투자 분석가입니다. 다음 투자 후보 종목들이 왜 선택되었는지 간단히 설명해주세요 (100자 이내).
+
+            system_prompt = "투자 분석 조수로서 간결하고 객관적인 설명을 제공합니다."
+            user_prompt = f"""당신은 투자 분석가입니다. 다음 투자 후보 종목들이 왜 선택되었는지 간단히 설명해주세요 (100자 이내).
 
 기준일: {date}
 시장 판단: {decision.get('market_bias', 'NEUTRAL')}
@@ -163,27 +199,14 @@ class LLMInsightEngine:
 - 종목 코드나 구체적 주가 예측은 하지 마세요
 - 선택 근거의 핵심만 간결하게 설명하세요
 - 면책조항을 붙이세요"""
-            
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "투자 분석 조수로서 간결하고 객관적인 설명을 제공합니다."
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=200,
-            )
-            
-            explanation = response.choices[0].message.content.strip()
-            
+
+            explanation = self._call_llm(system_prompt, user_prompt, temperature=0.7, max_tokens=200)
+
             # 캐시 저장
             self._save_cache(cache_key, {"explanation": explanation})
-            
+
             return explanation
-        
+
         except Exception as e:
             st.warning(f"⚠️ 종목 설명 생성 실패: {e}")
             return f"추천 종목: {', '.join([c.get('stock') for c in top_candidates[:3]])}"
@@ -271,20 +294,14 @@ class LLMInsightEngine:
             return cached.get("regime_explanation", "")
         
         try:
-            self._lazy_load_client()
-            
             regime_type = regime.get("regime", "UNKNOWN")
             confidence = regime.get("confidence", 0.5)
-            
-            # 섹터 강도 요약
-            sorted_sectors = sorted(
-                sector_strength.items(),
-                key=lambda x: x[1],
-                reverse=True
-            )
+
+            sorted_sectors = sorted(sector_strength.items(), key=lambda x: x[1], reverse=True)
             top_sectors = ", ".join([f"{s}({v:.0f})" for s, v in sorted_sectors[:3]])
-            
-            prompt = f"""당신은 시장 분석가입니다. 현재 시장 국면을 간단히 설명해주세요 (80자 이내).
+
+            system_prompt = "시장 분석가로서 객관적이고 간결한 국면 설명을 제공합니다."
+            user_prompt = f"""당신은 시장 분석가입니다. 현재 시장 국면을 간단히 설명해주세요 (80자 이내).
 
 기준일: {date}
 시장 국면: {regime_type}
@@ -296,27 +313,14 @@ class LLMInsightEngine:
 - "조정 국면 지속, 방어주 중심 쏠림"
 
 주의: 구체적 주가 예측 없이 국면만 설명하세요."""
-            
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "시장 분석가로서 객관적이고 간결한 국면 설명을 제공합니다."
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.6,
-                max_tokens=150,
-            )
-            
-            explanation = response.choices[0].message.content.strip()
-            
+
+            explanation = self._call_llm(system_prompt, user_prompt, temperature=0.6, max_tokens=150)
+
             # 캐시 저장
             self._save_cache(cache_key, {"regime_explanation": explanation})
-            
+
             return explanation
-        
+
         except Exception as e:
             st.warning(f"⚠️ 국면 설명 생성 실패: {e}")
             regime_emoji = "📈" if regime_type == "BULL" else "📉" if regime_type == "BEAR" else "➡️"

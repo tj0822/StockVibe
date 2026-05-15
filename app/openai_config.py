@@ -1,10 +1,10 @@
 """
-OpenAI 모델 설정 및 그룹 정의
-- 무료/저가 모델 (Freemium)
-- 유료 프리미엄 모델 (Premium)
+AI 모델 설정 및 그룹 정의
+- Claude 모델 (Anthropic) — ANTHROPIC_API_KEY 필요
+- 무료/저가 OpenAI 모델 (Freemium)
+- 유료 프리미엄 OpenAI 모델 (Premium)
 - 커스텀/신규 모델 (Custom)
 
-모든 OpenAI API 모델을 자유롭게 추가 가능합니다.
 .env 파일에서 OPENAI_CUSTOM_MODELS에 새 모델을 추가하면 자동으로 인식됩니다.
 """
 
@@ -13,6 +13,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+# ===== Claude 모델 (Anthropic) =====
+CLAUDE_MODELS = {
+    "claude-opus-4-7": "Claude Opus 4.7 (최고 성능, 복잡한 분석)",
+    "claude-sonnet-4-6": "Claude Sonnet 4.6 (균형잡힌 성능, 추천)",
+    "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (빠르고 경제적)",
+}
 
 # ===== 무료/저가 모델 (기본) =====
 FREEMIUM_MODELS = {
@@ -33,6 +40,11 @@ CUSTOM_MODELS = {}
 
 # 전체 모델 맵
 ALL_MODELS = {}
+
+
+def is_claude_model(model_name: str) -> bool:
+    """모델이 Claude(Anthropic) 모델인지 확인"""
+    return model_name.startswith("claude-")
 
 
 def _parse_models_from_env(env_key: str) -> list:
@@ -69,8 +81,9 @@ def _init_models_from_env():
         for model_name in _env_custom:
             CUSTOM_MODELS[model_name] = f"{model_name} ⭐ (신규/실험)"
     
-    # 최종 전체 모델 맵 생성
+    # 최종 전체 모델 맵 생성 (Claude 먼저)
     ALL_MODELS.clear()
+    ALL_MODELS.update(CLAUDE_MODELS)
     ALL_MODELS.update(FREEMIUM_MODELS)
     ALL_MODELS.update(PREMIUM_MODELS)
     ALL_MODELS.update(CUSTOM_MODELS)
@@ -88,6 +101,11 @@ def get_default_model() -> str:
 def get_model_options() -> dict:
     """{모델_이름: 설명} 형식의 전체 모델 옵션 반환"""
     return ALL_MODELS.copy()
+
+
+def get_claude_options() -> dict:
+    """Claude(Anthropic) 모델 옵션 반환"""
+    return CLAUDE_MODELS.copy()
 
 
 def get_freemium_options() -> dict:

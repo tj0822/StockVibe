@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import anthropic; print\\('anthropic installed'\\)\")",
+      "Bash(pip install *)"
+    ]
+  }
+}

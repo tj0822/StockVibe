@@ -27,10 +27,6 @@ from .marketcap_bump import (
     render_marketcap_bump_chart,
     summarize_rank_changes,
 )
-from .market_structure_ui import _load_sector_rank_history_cached
-from .money_flow_engine import MoneyFlowEngine
-from .outcome_tracker import log_decision
-from .sector_prediction_engine import SectorPredictionEngine
 from .signals import build_signals
 from .settings import UserSettings
 from .strategies.registry import get_strategy, list_strategies
@@ -53,7 +49,6 @@ from .openai_config import (
     get_default_model,
 )
 
-
 @st.cache_data(ttl=3600, show_spinner=False)  # 1시간 캐시
 def get_cached_ai_prediction(code: str, price_df_hash: int, finance_df_hash: int, news_data_str: str, data_refresh_time: str):
     """AI 예측 캐싱 (데이터 갱신 시 자동 무효화)"""
@@ -66,7 +61,6 @@ def get_cached_ai_prediction(code: str, price_df_hash: int, finance_df_hash: int
     # Note: price_df와 finance_df는 해시로만 받고 실제로는 전역에서 사용
     # 실제 구현 시에는 별도 처리 필요
     return None  # placeholder
-
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_news_data_for_stock(code: str, max_news: int = 5, include_body: bool = True):
@@ -99,7 +93,6 @@ def get_news_data_for_stock(code: str, max_news: int = 5, include_body: bool = T
     
     return news_data
 
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_kospi_stocks_cached() -> dict:
     # 1) 온라인 크롤링 우선
@@ -123,16 +116,7 @@ def load_kospi_stocks_cached() -> dict:
 
     return {}
 
-
 @st.cache_data(ttl=60, show_spinner=False)
-def load_portfolio_codes_cached() -> set:
-    from app.portfolio import PortfolioManager
-    portfolio_mgr = PortfolioManager()
-    portfolio = portfolio_mgr.load_portfolio()
-    return set(portfolio.keys())
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
 def load_sector_info_cached(data_dir: str = "data") -> pd.DataFrame:
     pkl_path = os.path.join(data_dir, "kospi_sector_info.pkl")
     json_path = os.path.join(data_dir, "kospi_sector_info.json")
@@ -156,14 +140,12 @@ def load_sector_info_cached(data_dir: str = "data") -> pd.DataFrame:
 
     return pd.DataFrame(columns=["code", "name", "sector"])
 
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_market_regime_cached(data_dir: str = "data") -> pd.DataFrame:
     index_df = load_kospi_index(data_dir)
     if index_df is None or index_df.empty:
         return pd.DataFrame(columns=["date", "close", "return_20d", "vol_20d", "regime"])
     return classify_market_regime(index_df)
-
 
 def _render_decision_orchestrator_card(
     price_df: pd.DataFrame,
@@ -180,9 +162,6 @@ def _render_decision_orchestrator_card(
 
     if params is None:
         params = {}
-
-    settings = UserSettings(data_dir).load_settings()
-    use_adaptive_weights = bool(settings.get("use_adaptive_weights", False))
 
     selected_ts = pd.to_datetime(selected_date, errors="coerce")
     if pd.isna(selected_ts):
@@ -219,11 +198,7 @@ def _render_decision_orchestrator_card(
         if "triggered_strategies" in stock_master.columns:
             stock_master["triggered_strategy"] = stock_master["triggered_strategies"]
 
-    sector_rank_df = _load_sector_rank_history_cached(data_dir)
-    if sector_rank_df is not None and not sector_rank_df.empty and "date" in sector_rank_df.columns:
-        sector_rank_df = sector_rank_df.copy()
-        sector_rank_df["date"] = pd.to_datetime(sector_rank_df["date"], errors="coerce")
-        sector_rank_df = sector_rank_df[sector_rank_df["date"] <= selected_ts]
+    sector_rank_df = None
 
     marketcap_df = load_marketcap_history(data_dir)
     marketcap_rank_df = build_marketcap_rank_history(
@@ -249,46 +224,11 @@ def _render_decision_orchestrator_card(
         marketcap_rank_df=marketcap_rank_df,
     )
 
-    flow_input = px.copy()
-    flow_input["code"] = flow_input["code"].astype(str).str.zfill(6)
-
-    sector_map = stock_master[["code", "sector"]].copy() if "sector" in stock_master.columns else pd.DataFrame(columns=["code", "sector"])
-    if not sector_map.empty:
-        sector_map["code"] = sector_map["code"].astype(str).str.zfill(6)
-        sector_map = sector_map.drop_duplicates(subset=["code"], keep="last")
-        flow_input = flow_input.merge(sector_map, on="code", how="left")
-
-    if kospi_df is not None and not kospi_df.empty and {"code", "name"}.issubset(kospi_df.columns):
-        name_map = kospi_df[["code", "name"]].copy()
-        name_map["code"] = name_map["code"].astype(str).str.zfill(6)
-        name_map = name_map.drop_duplicates(subset=["code"], keep="last")
-        flow_input = flow_input.merge(name_map, on="code", how="left")
-
-    money_engine = MoneyFlowEngine()
-    stock_flow_df = money_engine.compute_stock_money_flow(flow_input)
-    stock_flow_df = money_engine.compute_flow_score(stock_flow_df)
-    sector_flow_df = money_engine.compute_sector_money_flow(stock_flow_df)
-    sector_flow_df = money_engine.compute_flow_score(sector_flow_df)
-
-    if not stock_flow_df.empty:
-        flow_merge = stock_flow_df[["code", "flow_score"]].copy()
-        flow_merge["code"] = flow_merge["code"].astype(str).str.zfill(6)
-        stock_master = stock_master.merge(flow_merge, on="code", how="left")
-        stock_master["money_flow_score"] = pd.to_numeric(stock_master.get("flow_score"), errors="coerce").fillna(50.0)
-    else:
-        stock_master["money_flow_score"] = pd.to_numeric(stock_master.get("money_flow_score"), errors="coerce").fillna(50.0)
-
-    pred_engine = SectorPredictionEngine()
-    pred_features_df = pred_engine.compute_sector_features(sector_flow_df, sector_rank_df, stock_master)
-    pred_df = pred_engine.compute_prediction_score(pred_features_df)
-    pred_df = pred_engine.classify_sector_state(pred_df)
-
-    if not pred_df.empty and "sector" in stock_master.columns:
-        pred_merge = pred_df[["sector", "prediction_score", "sector_state_pred"]].copy().drop_duplicates(subset=["sector"], keep="last")
-        stock_master = stock_master.merge(pred_merge, on="sector", how="left")
-        stock_master["sector_prediction_score"] = pd.to_numeric(stock_master.get("prediction_score"), errors="coerce").fillna(50.0)
-    else:
-        stock_master["sector_prediction_score"] = pd.to_numeric(stock_master.get("sector_prediction_score"), errors="coerce").fillna(50.0)
+    stock_flow_df = pd.DataFrame()
+    sector_flow_df = pd.DataFrame()
+    stock_master["money_flow_score"] = 50.0
+    pred_df = pd.DataFrame()
+    stock_master["sector_prediction_score"] = 50.0
 
     investment_engine = InvestmentEngine()
     investment_df = investment_engine.build_investment_df(
@@ -298,7 +238,7 @@ def _render_decision_orchestrator_card(
     )
     investment_df = investment_engine.compute_investment_score(
         investment_df,
-        use_adaptive_weights=use_adaptive_weights,
+        use_adaptive_weights=False,
         data_dir=data_dir,
     )
     buy_df = investment_engine.filter_buy_candidates(investment_df)
@@ -307,36 +247,11 @@ def _render_decision_orchestrator_card(
     orchestrator = DecisionOrchestrator()
     orchestrator_data = orchestrator.collect_inputs(
         regime=regime_result,
-        money_flow={"stock_flow_df": stock_flow_df, "sector_flow_df": sector_flow_df},
-        sector_prediction=pred_df,
+        money_flow={},
+        sector_prediction=pd.DataFrame(),
         investment_df=ranked_df if not ranked_df.empty else investment_df,
     )
     decision = orchestrator.build_final_decision(orchestrator_data)
-
-    decision_date = selected_ts.strftime("%Y-%m-%d")
-    for _, row in (ranked_df.head(5) if not ranked_df.empty else investment_df.head(5)).iterrows():
-        log_decision(
-            {
-                "source": "decision_orchestrator",
-                "decision_date": decision_date,
-                "code": row.get("code", ""),
-                "stock": row.get("stock", ""),
-                "sector": row.get("sector", ""),
-                "signal": row.get("signal", "BUY"),
-                "triggered_strategy": row.get("triggered_strategy", ""),
-                "market_regime": row.get("market_regime", regime_result.get("primary_regime", "UNKNOWN")),
-                "market_bias": decision.get("market_bias", "NEUTRAL"),
-                "investment_score": row.get("investment_score", None),
-                "sector_power": row.get("sector_power", None),
-                "financial_score": row.get("financial_score", None),
-                "momentum_score": row.get("momentum_score", None),
-                "signal_strength": row.get("signal_strength", None),
-                "strategy_fit": row.get("strategy_fit", None),
-                "money_flow_score": row.get("money_flow_score", None),
-                "sector_prediction_score": row.get("sector_prediction_score", None),
-                "confidence": decision.get("confidence", None),
-            }
-        )
 
     sectors = decision.get("recommended_sectors", [])
     strategies = decision.get("recommended_strategies", [])
@@ -353,8 +268,6 @@ def _render_decision_orchestrator_card(
             st.metric("Confidence", f"{float(decision.get('confidence', 0.0)):.1f}")
         with row1[3]:
             st.metric("Top Candidates", str(len(top_candidates)))
-        st.caption(f"Adaptive Weights: {'ON' if use_adaptive_weights else 'OFF'}")
-
         row2 = st.columns(2)
         with row2[0]:
             st.markdown("**Recommended Sectors**")
@@ -429,7 +342,6 @@ def _render_decision_orchestrator_card(
                 st.caption(f"모델: {params.get('openai_insight_model', os.getenv('OPENAI_INSIGHT_MODEL') or os.getenv('OPENAI_MODEL') or 'gpt-3.5-turbo')}")
                 st.caption(f"오류: {str(e)[:100]}")
 
-
 def render_sidebar(current_tab: str = "시그널") -> dict:
     with st.sidebar:
         st.header("⚙️ 설정")
@@ -451,8 +363,8 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
         default_window = st.session_state.get('applied_turnover_window', 10)
         default_multiplier = st.session_state.get('applied_turnover_multiplier', 3.0)
         
-        # OpenAI 모델 설정 (용도별)
-        with st.expander("🤖 OpenAI 모델 설정 (용도별 선택)", expanded=False):
+        # AI 모델 설정 (용도별)
+        with st.expander("🤖 AI 모델 설정 (Claude / OpenAI)", expanded=False):
             st.markdown("### 📊 **인사이트 생성** (종목 선정 근거, 뉴스 감성, 시장 국면)")
             st.caption(f"기본값: `{os.getenv('OPENAI_INSIGHT_MODEL', 'gpt-3.5-turbo')}`")
             
@@ -564,12 +476,10 @@ def render_sidebar(current_tab: str = "시그널") -> dict:
         "openai_general_model": general_model,
     }
 
-
 def apply_signal_filters(signals: pd.DataFrame, signal_filter: list[str]) -> pd.DataFrame:
     if signal_filter:
         return signals[signals["signal"].isin(signal_filter)]
     return signals
-
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def generate_strategy_signals_cached(
@@ -607,7 +517,6 @@ def generate_strategy_signals_cached(
         signals["features_json"] = "{}"
 
     return signals
-
 
 def merge_strategy_signals(signals: pd.DataFrame) -> pd.DataFrame:
     """Merge multiple strategy outputs into a single consensus signal per date/code."""
@@ -665,7 +574,6 @@ def merge_strategy_signals(signals: pd.DataFrame) -> pd.DataFrame:
 
     return merged.sort_values(["date", "signal_strength"], ascending=[False, False]).reset_index(drop=True)
 
-
 def _get_runtime_strategy_params(strategy_id: str, params: dict, rolling_days: int | None = None, volume_threshold: float | None = None) -> dict:
     strategy = get_strategy(strategy_id)
     strategy_params = dict(strategy.spec.default_params)
@@ -682,7 +590,6 @@ def _get_runtime_strategy_params(strategy_id: str, params: dict, rolling_days: i
         )
 
     return strategy_params
-
 
 def select_date(signals: pd.DataFrame, price_df: pd.DataFrame | None = None) -> pd.Timestamp | None:
     signal_dates = pd.to_datetime(signals.get("date"), errors="coerce").dropna() if signals is not None else pd.Series(dtype="datetime64[ns]")
@@ -711,7 +618,6 @@ def select_date(signals: pd.DataFrame, price_df: pd.DataFrame | None = None) -> 
     elif signals is not None and not signals.empty:
         st.caption("최신 시그널 날짜: -")
     return pd.to_datetime(selected_date)
-
 
 def _build_recent_sector_flow_rank_map(
     price_df: pd.DataFrame,
@@ -767,7 +673,6 @@ def _build_recent_sector_flow_rank_map(
 
     sector_rank["sector_flow_rank"] = sector_rank["total_turnover"].rank(method="dense", ascending=False).astype(int)
     return sector_rank[["sector", "sector_flow_rank"]]
-
 
 def build_latest_table(
     signals: pd.DataFrame,
@@ -942,7 +847,6 @@ def build_latest_table(
     
     return latest, cols
 
-
 def build_buy_recommendation_reasons(row: pd.Series) -> list[str]:
     """매수 후보에 대한 추천 근거 문장을 생성한다."""
     reasons: list[str] = []
@@ -1002,45 +906,8 @@ def build_buy_recommendation_reasons(row: pd.Series) -> list[str]:
 
     return reasons[:7]
 
-
 def render_table(latest: pd.DataFrame, cols: list[str]) -> None:
-    # 포트폴리오 정보 로드
-    from app.portfolio import PortfolioManager
-    portfolio_mgr = PortfolioManager()
-    portfolio = portfolio_mgr.load_portfolio()
-    
-    # 포트폴리오에서 코드와 종목명 모두 수집
-    portfolio_codes = set()
-    portfolio_names = set()
-    for key, value in portfolio.items():
-        portfolio_codes.add(key)  # 키가 코드 또는 종목명
-        if 'name' in value:
-            portfolio_names.add(value['name'])  # 종목명도 추가
-    
-    # 포트폴리오 보유 여부 확인 함수
-    def is_in_portfolio(row):
-        code = row.get('code', '')
-        name = row.get('name', '')
-        # HTML 태그 제거
-        import re
-        clean_name = re.sub(r'<[^>]+>', '', str(name))
-        
-        # 코드 또는 종목명으로 확인
-        return '💼' if (code in portfolio_codes or 
-                       code in portfolio_names or 
-                       clean_name in portfolio_codes or 
-                       clean_name in portfolio_names) else ''
-    
-    # 포트폴리오 보유 여부 컬럼 추가
     latest_copy = latest.copy()
-    latest_copy['보유'] = latest_copy.apply(is_in_portfolio, axis=1)
-    
-    # cols에 '보유' 컬럼 추가 (code 다음에)
-    if 'code' in cols:
-        code_idx = cols.index('code')
-        cols_with_portfolio = cols[:code_idx+1] + ['보유'] + cols[code_idx+1:]
-    else:
-        cols_with_portfolio = ['보유'] + cols
     
     def color_signal(val: str) -> str:
         if val == "BUY":
@@ -1102,7 +969,7 @@ def render_table(latest: pd.DataFrame, cols: list[str]) -> None:
             return "color: blue; font-weight: 600;"
         return ""
 
-    styled = latest_copy[cols_with_portfolio].style.applymap(color_signal, subset=["signal"]).format(format_map)
+    styled = latest_copy[cols].style.applymap(color_signal, subset=["signal"]).format(format_map)
 
     if "sector_flow_rank" in latest_copy.columns:
         styled = styled.applymap(color_sector_rank, subset=["sector_flow_rank"])
@@ -1115,7 +982,6 @@ def render_table(latest: pd.DataFrame, cols: list[str]) -> None:
     
     st.markdown(styled.hide(axis="index").to_html(escape=False), unsafe_allow_html=True)
 
-
 def render_table_with_finance(
     latest: pd.DataFrame,
     cols: list[str],
@@ -1124,19 +990,6 @@ def render_table_with_finance(
     focus_code: str | None = None,
 ) -> None:
     """재무정보를 포함하여 각 종목별로 개별 펼치기로 표시"""
-    
-    # 포트폴리오 정보 로드
-    from app.portfolio import PortfolioManager
-    portfolio_mgr = PortfolioManager()
-    portfolio = portfolio_mgr.load_portfolio()
-    
-    # 포트폴리오에서 코드와 종목명 모두 수집
-    portfolio_codes = set()
-    portfolio_names = set()
-    for key, value in portfolio.items():
-        portfolio_codes.add(key)  # 키가 코드 또는 종목명
-        if 'name' in value:
-            portfolio_names.add(value['name'])  # 종목명도 추가
     
     # 재무정보 컬럼 확인
     finance_cols_available = [col for col in ['per', 'pbr', 'eps', 'bps', 'dvr', 'foreigner_ratio'] 
@@ -1149,13 +1002,6 @@ def render_table_with_finance(
         clean_name = re.sub(r'<[^>]+>', '', str(row.get('name', '')))
         code = row.get('code', '')
         signal = row.get('signal', '')
-        
-        # 포트폴리오 보유 여부 확인 (코드 또는 종목명으로 확인)
-        is_in_portfolio = (code in portfolio_codes or 
-                          code in portfolio_names or 
-                          clean_name in portfolio_codes or 
-                          clean_name in portfolio_names)
-        portfolio_badge = "💼 " if is_in_portfolio else ""
         
         # 신호 색상
         signal_color = "🔴" if signal == "BUY" else "🔵" if signal == "SELL" else "⚪"
@@ -1182,9 +1028,9 @@ def render_table_with_finance(
         
         # 제목 구성
         if pd.notna(change_rate):
-            title = f"{portfolio_badge}{signal_color} **{clean_name}** ({code}) | {signal} | 다음날 :{change_color}[{change_text}] {change_emoji}"
+            title = f"{signal_color} **{clean_name}** ({code}) | {signal} | 다음날 :{change_color}[{change_text}] {change_emoji}"
         else:
-            title = f"{portfolio_badge}{signal_color} **{clean_name}** ({code}) | {signal}"
+            title = f"{signal_color} **{clean_name}** ({code}) | {signal}"
         
         # 최상위 종목(idx=0) 또는 선택 종목은 자동으로 펼치기
         if focus_code is not None:
@@ -1242,12 +1088,6 @@ def render_table_with_finance(
                                 st.text(f"{key}: {value}")
                         else:
                             st.info("재무 정보가 없습니다.")
-                    else:
-                        st.markdown("##### 💼 포트폴리오")
-                        if st.button(f"💼 {clean_name} 포트폴리오 추가하기", key=f"add_portfolio_{code}_{idx}"):
-                            st.session_state.selected_menu = "💼 포트폴리오"
-                            st.session_state.portfolio_add_stock = {'code': code, 'name': clean_name}
-                            st.rerun()
                 
                 # 날짜 정보
                 if 'date' in row and pd.notna(row['date']):
@@ -1525,7 +1365,6 @@ def render_table_with_finance(
                         
                         st.markdown(card_html, unsafe_allow_html=True)
 
-
 def build_forward_return_series_by_stock(
     price_df: pd.DataFrame,
     signal_df: pd.DataFrame,
@@ -1557,7 +1396,6 @@ def build_forward_return_series_by_stock(
     return merged[["target_date", "return_pct", "label", "signal"]].rename(
         columns={"target_date": "date"}
     )
-
 
 def render_backtest_curve(
     equity_df: pd.DataFrame,
@@ -1652,7 +1490,6 @@ def render_backtest_curve(
     </script>
     """
     components.html(chart_html, height=440, scrolling=False)
-
 
 def run_turnover_strategy_backtest(
     price_df: pd.DataFrame,
@@ -1948,7 +1785,6 @@ def run_turnover_strategy_backtest(
 
     return pd.DataFrame(equity_records), pd.DataFrame(trades)
 
-
 def render_news_page(signals: pd.DataFrame, selected_date: pd.Timestamp, selected_stock: str | None) -> None:
     st.divider()
     st.subheader("📰 종목별 뉴스")
@@ -2010,7 +1846,6 @@ def render_news_page(signals: pd.DataFrame, selected_date: pd.Timestamp, selecte
             body = bodies.get(news_url, "") if news_url else ""
             st.write(body if body else "본문을 가져올 수 없습니다.")
 
-
 def render_kakao_section(signals_df: pd.DataFrame, selected_date: pd.Timestamp) -> None:
     """카카오톡 전송 섹션 렌더링"""
     # 세션 상태 초기화
@@ -2018,11 +1853,6 @@ def render_kakao_section(signals_df: pd.DataFrame, selected_date: pd.Timestamp) 
         st.session_state.kakao_sender = KakaoMessageSender()
     
     kakao = st.session_state.kakao_sender
-    
-    # 포트폴리오 로드
-    from app.portfolio import PortfolioManager
-    portfolio_mgr = PortfolioManager()
-    portfolio = portfolio_mgr.load_portfolio()
     
     # URL 쿼리 파라미터에서 code 자동 추출
     query_params = st.query_params
@@ -2066,14 +1896,11 @@ def render_kakao_section(signals_df: pd.DataFrame, selected_date: pd.Timestamp) 
             # 메시지 전송 버튼
             if st.button("📤 카카오톡으로 전송", use_container_width=True):
                 with st.spinner("전송 중..."):
-                    success, message = kakao.send_message(signals_df, str(selected_date.date()), portfolio)
+                    success, message = kakao.send_message(signals_df, str(selected_date.date()))
                     if success:
                         st.success(message)
                     else:
                         st.error(message)
-
-
-
 
 def render_stock_analysis_page(
     price_df: pd.DataFrame,
@@ -2085,14 +1912,12 @@ def render_stock_analysis_page(
     st.title("📈 종목분석")
     st.caption("개별 종목의 주가 추이와 매매 신호를 분석합니다")
 
-    # KOSPI 200/포트폴리오 로드 (캐시)
+    # KOSPI 200 종목 로드 (캐시)
     kospi_dict = load_kospi_stocks_cached()  # {종목코드: 종목명}
     
     if not kospi_dict:
         st.error("KOSPI 200 종목 데이터를 불러올 수 없습니다.")
         return
-    
-    portfolio_codes = load_portfolio_codes_cached()  # 보유 종목 코드
     
     # 최신 신호 발생 종목 추출
     latest_signals = signals[signals['signal'].isin(['BUY', 'SELL'])].copy()
@@ -2102,36 +1927,26 @@ def render_stock_analysis_page(
     # 종목 선택 (UI 개선: 한 줄에 모두 배치)
     st.subheader("📊 종목 분석")
     
-    # 보유 종목 분리 및 통합 리스트 생성
-    held_stocks = []
-    unheld_stocks = []
+    signal_stocks = []
+    other_stocks = []
     code_to_name = {}
     
-    # 신호 발생 종목 먼저 처리
+    # 신호 발생 종목 먼저
     for code in signal_codes:
         if code in kospi_dict:
             name = kospi_dict[code]
-            if code in portfolio_codes:
-                display_name = f"💼 {name} ({code})"  # 보유 + 신호
-                held_stocks.append(display_name)
-            else:
-                display_name = f"⭐ {name} ({code})"  # 신호만
-                unheld_stocks.append(display_name)
+            display_name = f"⭐ {name} ({code})"
+            signal_stocks.append(display_name)
             code_to_name[display_name] = code
     
-    # 신호 없는 종목 처리
+    # 나머지 종목
     for code, name in sorted(kospi_dict.items()):
         if code not in signal_codes:
-            if code in portfolio_codes:
-                display_name = f"💼 {name} ({code})"  # 보유만
-                held_stocks.append(display_name)
-            else:
-                display_name = f"{name} ({code})"  # 일반
-                unheld_stocks.append(display_name)
+            display_name = f"{name} ({code})"
+            other_stocks.append(display_name)
             code_to_name[display_name] = code
     
-    # 통합 리스트 생성 (보유 종목 먼저, 신호 있는 것 먼저)
-    all_stocks = held_stocks + unheld_stocks
+    all_stocks = signal_stocks + other_stocks
     
     if not all_stocks:
         st.error("분석 가능한 종목이 없습니다.")
@@ -2141,12 +1956,7 @@ def render_stock_analysis_page(
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        # 기본값: 첫 번째 보유 종목, 없으면 신호 발생 종목, 없으면 첫 번째 종목
         default_index = 0
-        if held_stocks:
-            default_index = 0
-        elif unheld_stocks:
-            default_index = len(held_stocks)
         
         selected_stock = st.selectbox(
             "종목",
@@ -2724,570 +2534,6 @@ def render_stock_analysis_page(
                 if pd.notna(latest_finance.get('dvr')):
                     st.metric("배당수익률", f"{latest_finance['dvr']:.2f}%")
 
-
-def render_sector_analysis_page(
-    price_df: pd.DataFrame,
-    signals: pd.DataFrame,
-    params: dict,
-) -> None:
-    st.title("🏭 섹터분석")
-    st.caption("수집된 섹터 정보를 기반으로 전체 섹터 요약 대시보드와 섹터별 상세 분석을 제공합니다")
-
-    stock_master_df = build_stock_master_df(params.get("data_dir", "data"))
-    sector_df = stock_master_df[["code", "name", "sector"]].copy() if not stock_master_df.empty else pd.DataFrame()
-    if sector_df.empty:
-        sector_df = load_sector_info_cached(params.get("data_dir", "data")).copy()
-
-    if sector_df.empty or "code" not in sector_df.columns or "sector" not in sector_df.columns:
-        st.info("섹터 정보가 없습니다. 데이터 탭에서 'KOSPI 섹터 수집 실행'을 먼저 진행해주세요.")
-        return
-
-    sector_df["code"] = sector_df["code"].astype(str).str.zfill(6)
-    sector_df["sector"] = sector_df["sector"].astype(str).str.strip()
-    sector_df = sector_df[sector_df["sector"] != ""].drop_duplicates(subset=["code"], keep="last")
-
-    if sector_df.empty:
-        st.info("유효한 섹터 정보가 없습니다. 섹터 수집 결과를 확인해주세요.")
-        return
-
-    px = price_df.copy()
-    px["date"] = pd.to_datetime(px["date"], errors="coerce")
-    px = px.dropna(subset=["date", "code", "close"]).copy()
-    px["code"] = px["code"].astype(str).str.zfill(6)
-
-    period_col1, period_col2 = st.columns(2)
-    min_date = px["date"].min().date()
-    max_date = px["date"].max().date()
-    default_sector_start = max(px["date"].max() - pd.Timedelta(days=180), px["date"].min()).date()
-
-    sector_start = period_col1.date_input(
-        "섹터 분석 시작일",
-        value=st.session_state.get("sector_analysis_start", default_sector_start),
-        min_value=min_date,
-        max_value=max_date,
-        key="sector_analysis_start",
-    )
-    sector_end = period_col2.date_input(
-        "섹터 분석 종료일",
-        value=st.session_state.get("sector_analysis_end", max_date),
-        min_value=min_date,
-        max_value=max_date,
-        key="sector_analysis_end",
-    )
-
-    if pd.to_datetime(sector_start) > pd.to_datetime(sector_end):
-        st.error("섹터 분석 시작일은 종료일보다 빠르거나 같아야 합니다.")
-        return
-
-    px_period = px[
-        (px["date"] >= pd.to_datetime(sector_start))
-        & (px["date"] <= pd.to_datetime(sector_end))
-    ].copy()
-    if px_period.empty:
-        st.warning("선택한 기간의 가격 데이터가 없습니다.")
-        return
-
-    first_px = px_period.sort_values(["code", "date"]).groupby("code", as_index=False).first()[["code", "close"]]
-    first_px = first_px.rename(columns={"close": "start_close"})
-    last_px = px_period.sort_values(["code", "date"]).groupby("code", as_index=False).last()[["code", "close"]]
-    last_px = last_px.rename(columns={"close": "end_close"})
-
-    stock_perf = sector_df.merge(first_px, on="code", how="left").merge(last_px, on="code", how="left")
-    stock_perf = stock_perf.dropna(subset=["start_close", "end_close"]).copy()
-    stock_perf["return_pct"] = (stock_perf["end_close"] / stock_perf["start_close"] - 1.0) * 100.0
-
-    sig = signals.copy()
-    sig["date"] = pd.to_datetime(sig["date"], errors="coerce")
-    sig["code"] = sig["code"].astype(str).str.zfill(6)
-    sig = sig[
-        (sig["date"] >= pd.to_datetime(sector_start))
-        & (sig["date"] <= pd.to_datetime(sector_end))
-        & (sig["signal"].isin(["BUY", "SELL"]))
-    ]
-    sig = sig.merge(sector_df[["code", "sector"]], on="code", how="left")
-
-    buy_count_by_sector = sig[sig["signal"] == "BUY"].groupby("sector").size().rename("buy_signals")
-    sell_count_by_sector = sig[sig["signal"] == "SELL"].groupby("sector").size().rename("sell_signals")
-
-    sector_summary = stock_perf.groupby("sector", as_index=False).agg(
-        stock_count=("code", "nunique"),
-        avg_return_pct=("return_pct", "mean"),
-        median_return_pct=("return_pct", "median"),
-        positive_count=("return_pct", lambda s: int((s > 0).sum())),
-    )
-    sector_summary = sector_summary.merge(buy_count_by_sector, on="sector", how="left")
-    sector_summary = sector_summary.merge(sell_count_by_sector, on="sector", how="left")
-    sector_summary["buy_signals"] = sector_summary["buy_signals"].fillna(0).astype(int)
-    sector_summary["sell_signals"] = sector_summary["sell_signals"].fillna(0).astype(int)
-    sector_summary["positive_ratio_pct"] = (
-        sector_summary["positive_count"] / sector_summary["stock_count"].replace(0, 1)
-    ) * 100.0
-    sector_summary = sector_summary.sort_values("avg_return_pct", ascending=False).reset_index(drop=True)
-
-    if sector_summary.empty:
-        st.warning("선택 기간에 섹터 요약을 만들 데이터가 없습니다.")
-        return
-
-    s1, s2, s3, s4 = st.columns(4)
-    with s1:
-        st.metric("전체 섹터 수", int(sector_summary["sector"].nunique()))
-    with s2:
-        st.metric("분석 종목 수", int(stock_perf["code"].nunique()))
-    with s3:
-        st.metric("섹터 평균 수익률", f"{sector_summary['avg_return_pct'].mean():+.2f}%")
-    with s4:
-        st.metric("상승 섹터 수", int((sector_summary["avg_return_pct"] > 0).sum()))
-
-    st.markdown("##### 전체 섹터 요약 대시보드")
-    st.dataframe(
-        sector_summary,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "sector": st.column_config.TextColumn("섹터"),
-            "stock_count": st.column_config.NumberColumn("종목수", format="%d"),
-            "avg_return_pct": st.column_config.NumberColumn("평균 수익률(%)", format="%.2f"),
-            "median_return_pct": st.column_config.NumberColumn("중앙값 수익률(%)", format="%.2f"),
-            "positive_count": st.column_config.NumberColumn("상승 종목수", format="%d"),
-            "positive_ratio_pct": st.column_config.NumberColumn("상승 비율(%)", format="%.1f"),
-            "buy_signals": st.column_config.NumberColumn("BUY 신호수", format="%d"),
-            "sell_signals": st.column_config.NumberColumn("SELL 신호수", format="%d"),
-        },
-    )
-
-    # 랭킹/트렌드 공통 원천 데이터: 섹터별 일자 거래대금(종가*거래량)
-    turnover_base = px_period[["date", "code", "close"]].copy()
-    turnover_base["date"] = pd.to_datetime(turnover_base["date"], errors="coerce").dt.normalize()
-    turnover_base["code"] = turnover_base["code"].astype(str).str.zfill(6)
-    if "volume" in px_period.columns:
-        turnover_base["volume"] = pd.to_numeric(px_period["volume"], errors="coerce").fillna(0.0)
-    else:
-        turnover_base["volume"] = 1.0
-    turnover_base["close"] = pd.to_numeric(turnover_base["close"], errors="coerce").fillna(0.0)
-    turnover_base = turnover_base.merge(sector_df[["code", "sector"]], on="code", how="left")
-    turnover_base = turnover_base.dropna(subset=["date", "sector"]) 
-    turnover_base["turnover"] = turnover_base["close"] * turnover_base["volume"]
-    sector_turnover_ts = turnover_base.groupby(["date", "sector"], as_index=False).agg(turnover=("turnover", "sum"))
-
-    st.markdown("##### 섹터별 랭킹 차트")
-    st.caption("일자별 섹터 총 거래대금(거래량×종가) 기준으로 순위 변화를 표시합니다")
-
-    rank_col1, rank_col2, rank_col3, rank_col4 = st.columns(4)
-    with rank_col1:
-        rank_freq = st.selectbox(
-            "순위 집계 주기",
-            options=["일간", "주간"],
-            key="sector_rank_freq",
-        )
-    with rank_col2:
-        rank_top_n = int(
-            st.slider(
-                "Top N 섹터",
-                min_value=5,
-                max_value=min(30, max(5, int(len(sector_summary)))),
-                value=min(10, max(5, int(len(sector_summary)))),
-                step=1,
-                key="sector_rank_top_n",
-            )
-        )
-
-    rank_min_date = pd.to_datetime(sector_turnover_ts["date"], errors="coerce").min()
-    rank_max_date = pd.to_datetime(sector_turnover_ts["date"], errors="coerce").max()
-    if pd.isna(rank_min_date) or pd.isna(rank_max_date):
-        rank_min_date = pd.to_datetime(sector_start)
-        rank_max_date = pd.to_datetime(sector_end)
-
-    rank_start_key = "sector_rank_start_date"
-    rank_end_key = "sector_rank_end_date"
-
-    default_rank_start = max(rank_min_date, rank_max_date - pd.Timedelta(days=90)).date()
-    default_rank_end = rank_max_date.date()
-
-    if rank_start_key not in st.session_state:
-        st.session_state[rank_start_key] = default_rank_start
-    else:
-        cur = st.session_state[rank_start_key]
-        if cur < rank_min_date.date():
-            st.session_state[rank_start_key] = rank_min_date.date()
-        elif cur > rank_max_date.date():
-            st.session_state[rank_start_key] = rank_max_date.date()
-
-    if rank_end_key not in st.session_state:
-        st.session_state[rank_end_key] = default_rank_end
-    else:
-        cur = st.session_state[rank_end_key]
-        if cur < rank_min_date.date():
-            st.session_state[rank_end_key] = rank_min_date.date()
-        elif cur > rank_max_date.date():
-            st.session_state[rank_end_key] = rank_max_date.date()
-
-    with rank_col3:
-        rank_start_date = st.date_input(
-            "랭킹 시작일",
-            min_value=rank_min_date.date(),
-            max_value=rank_max_date.date(),
-            key=rank_start_key,
-        )
-    with rank_col4:
-        rank_end_date = st.date_input(
-            "랭킹 종료일",
-            min_value=rank_min_date.date(),
-            max_value=rank_max_date.date(),
-            key=rank_end_key,
-        )
-
-    norm_mode = st.selectbox(
-        "거래대금 정규화 방식",
-        options=["선형(min-max)", "로그(log1p)+min-max"],
-        key="sector_turnover_norm_mode",
-    )
-
-    def _transform_turnover(series: pd.Series) -> pd.Series:
-        s = pd.to_numeric(series, errors="coerce").fillna(0.0).clip(lower=0.0)
-        if norm_mode == "로그(log1p)+min-max":
-            return np.log1p(s)
-        return s
-
-    # 날짜별 섹터 랭킹 점수 생성 (거래대금 기준)
-    sector_rank_timeseries = pd.DataFrame()
-    if pd.to_datetime(rank_start_date) > pd.to_datetime(rank_end_date):
-        st.error("랭킹 시작일은 종료일보다 빠르거나 같아야 합니다.")
-    elif not sector_turnover_ts.empty:
-        sector_rank_timeseries = sector_turnover_ts[
-            (sector_turnover_ts["date"] >= pd.to_datetime(rank_start_date))
-            & (sector_turnover_ts["date"] <= pd.to_datetime(rank_end_date))
-        ].copy()
-        sector_rank_timeseries["score"] = _transform_turnover(sector_rank_timeseries["turnover"])
-
-    if rank_freq == "주간" and not sector_rank_timeseries.empty:
-        sector_rank_timeseries = sector_rank_timeseries.copy()
-        sector_rank_timeseries["date"] = pd.to_datetime(sector_rank_timeseries["date"]).dt.to_period("W").dt.end_time
-        sector_rank_timeseries = sector_rank_timeseries.groupby(["date", "sector"], as_index=False).agg(score=("score", "sum"))
-
-    if not sector_rank_timeseries.empty:
-        sector_rank_timeseries["score"] = pd.to_numeric(sector_rank_timeseries["score"], errors="coerce")
-        sector_rank_timeseries = sector_rank_timeseries.dropna(subset=["date", "sector", "score"]).copy()
-
-    if sector_rank_timeseries.empty:
-        st.info("랭킹 추이를 그릴 데이터가 부족합니다. (기간을 늘리거나 랭킹 기준을 바꿔보세요)")
-    else:
-        sector_rank_timeseries["rank"] = (
-            sector_rank_timeseries.groupby("date")["score"]
-            .rank(method="dense", ascending=False)
-            .astype(int)
-        )
-
-        latest_rank_df = (
-            sector_rank_timeseries.sort_values("date")
-            .groupby("sector", as_index=False)
-            .tail(1)
-            .sort_values("rank", ascending=True)
-        )
-        all_rank_sectors = latest_rank_df["sector"].tolist()
-        display_sectors = all_rank_sectors[: max(1, min(rank_top_n, len(all_rank_sectors)))]
-        all_dates = sorted(pd.to_datetime(sector_rank_timeseries["date"]).dropna().unique().tolist())
-
-        rank_plot_df = sector_rank_timeseries[
-            sector_rank_timeseries["sector"].isin(display_sectors)
-        ].copy()
-
-        if rank_plot_df.empty:
-            st.info("표시할 섹터 랭킹 데이터가 없습니다.")
-        else:
-            fig_rank = go.Figure()
-            for sector_name, group_df in rank_plot_df.groupby("sector"):
-                group_df = group_df.sort_values("date").set_index("date").reindex(all_dates)
-                fig_rank.add_trace(
-                    go.Scatter(
-                        x=all_dates,
-                        y=group_df["rank"],
-                        mode="lines+markers",
-                        name=str(sector_name),
-                        marker=dict(size=6),
-                        line=dict(width=1.6),
-                        connectgaps=False,
-                        opacity=0.78,
-                    )
-                )
-
-            max_rank = int(rank_plot_df["rank"].max())
-            fig_rank.update_layout(
-                height=560,
-                template="plotly_dark",
-                margin=dict(l=10, r=10, t=30, b=10),
-                xaxis_title="년/월",
-                yaxis_title="랭킹 (1=상위)",
-                legend_title="섹터",
-            )
-            fig_rank.update_yaxes(
-                autorange="reversed",
-                tickmode="array",
-                tickvals=list(range(1, max_rank + 1)),
-            )
-            st.plotly_chart(fig_rank, use_container_width=True)
-            st.caption(f"기준: 섹터별 총 거래대금(거래량×종가) · 기간: {rank_start_date} ~ {rank_end_date} · 집계: {rank_freq} · 표시 섹터: Top {len(display_sectors)}")
-
-    st.markdown("##### 일자별 섹터 수급 트렌드")
-    st.caption("섹터별 총 일자별 거래대금(거래량×종가) 기준으로 자금 흐름을 보여줍니다")
-
-    if sector_turnover_ts.empty:
-        st.info("선택 기간에 거래대금 기반 섹터 트렌드를 표시할 데이터가 없습니다.")
-    else:
-        daily_sector_flow = sector_turnover_ts.rename(columns={"turnover": "daily_turnover"}).copy()
-
-        trend_col1, trend_col2 = st.columns(2)
-        with trend_col1:
-            st.caption(f"공유 기간(시작): {rank_start_date}")
-        with trend_col2:
-            st.caption(f"공유 기간(종료): {rank_end_date}")
-
-        control_col = st.columns(1)[0]
-        with control_col:
-            top_sector_count = int(
-                st.slider(
-                    "표시 섹터 수",
-                    min_value=3,
-                    max_value=12,
-                    value=6,
-                    step=1,
-                    key="sector_flow_top_count",
-                )
-            )
-
-        trend_start = pd.to_datetime(rank_start_date)
-        trend_end = pd.to_datetime(rank_end_date)
-        trend_window_df = daily_sector_flow[
-            (daily_sector_flow["date"] >= trend_start)
-            & (daily_sector_flow["date"] <= trend_end)
-        ].copy()
-
-        if trend_window_df.empty:
-            st.info("공유된 기간에 표시할 수급 트렌드 데이터가 없습니다.")
-            return
-
-        sector_flow_rank = trend_window_df.groupby("sector", as_index=False).agg(
-            total_turnover=("daily_turnover", "sum"),
-            avg_daily_turnover=("daily_turnover", "mean"),
-        )
-
-        # 수급량이 과도하게 큰 경우를 대비해 화면 표시용 정규화 지수(0~100, 순수급은 -100~100) 생성
-        def _norm_0_100(series: pd.Series) -> pd.Series:
-            s = _transform_turnover(series)
-            valid = s.dropna()
-            if valid.empty:
-                return pd.Series(50.0, index=series.index, dtype=float)
-            min_v = float(valid.min())
-            max_v = float(valid.max())
-            if max_v == min_v:
-                return pd.Series(50.0, index=series.index, dtype=float)
-            return (((s - min_v) / (max_v - min_v)) * 100.0).fillna(50.0).clip(0.0, 100.0)
-
-        sector_flow_rank["turnover_idx"] = _norm_0_100(sector_flow_rank["total_turnover"])
-        sector_flow_rank["avg_turnover_idx"] = _norm_0_100(sector_flow_rank["avg_daily_turnover"])
-
-        sector_flow_rank = sector_flow_rank.sort_values(
-            ["total_turnover", "avg_daily_turnover"],
-            ascending=[False, False],
-        ).reset_index(drop=True)
-
-        if sector_flow_rank.empty:
-            st.info("트렌드 집계 결과가 없습니다.")
-        else:
-            best_inflow = sector_flow_rank.iloc[0]
-            lowest_flow = sector_flow_rank.iloc[-1]
-            m1, m2, m3 = st.columns(3)
-            with m1:
-                st.metric("거래대금 1위", str(best_inflow["sector"]))
-            with m2:
-                st.metric("거래대금 하위", str(lowest_flow["sector"]))
-            with m3:
-                st.metric("활성 섹터 수", int(len(sector_flow_rank)))
-
-            top_sector_names = sector_flow_rank.head(top_sector_count)["sector"].tolist()
-            top_trend_df = trend_window_df[trend_window_df["sector"].isin(top_sector_names)].copy()
-            top_trend_df["turnover_idx"] = _norm_0_100(top_trend_df["daily_turnover"])
-
-            line_df = top_trend_df.pivot_table(index="date", columns="sector", values="turnover_idx", aggfunc="mean").fillna(0.0)
-            st.caption(f"일자별 거래대금지수(정규화) 추이 ({trend_start.date()} ~ {trend_end.date()})")
-            if not line_df.empty:
-                st.line_chart(line_df)
-
-            heatmap_df = top_trend_df.pivot_table(index="sector", columns="date", values="turnover_idx", aggfunc="mean").fillna(0.0)
-            if not heatmap_df.empty:
-                heatmap_fig = go.Figure(
-                    data=go.Heatmap(
-                        z=heatmap_df.values,
-                        x=[d.strftime("%Y-%m-%d") for d in heatmap_df.columns],
-                        y=heatmap_df.index.tolist(),
-                        colorscale="YlOrRd",
-                        zmin=0,
-                        zmax=100,
-                        colorbar=dict(title="거래대금지수"),
-                    )
-                )
-                heatmap_fig.update_layout(
-                    height=360,
-                    margin=dict(l=0, r=0, t=20, b=0),
-                    xaxis_title="일자",
-                    yaxis_title="섹터",
-                )
-                st.plotly_chart(heatmap_fig, use_container_width=True)
-
-            st.dataframe(
-                sector_flow_rank.head(top_sector_count),
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "sector": st.column_config.TextColumn("섹터"),
-                    "total_turnover": st.column_config.NumberColumn("총 거래대금", format="%,.0f"),
-                    "avg_daily_turnover": st.column_config.NumberColumn("일평균 거래대금", format="%,.0f"),
-                    "turnover_idx": st.column_config.NumberColumn("거래대금지수", format="%.1f"),
-                    "avg_turnover_idx": st.column_config.NumberColumn("일평균지수", format="%.1f"),
-                },
-            )
-
-    st.markdown("##### 📈 시총 상위종목 변화")
-    st.caption("Top N 시가총액 종목의 순위 변화를 주간/월간으로 확인합니다")
-
-    mc_col1, mc_col2, mc_col3 = st.columns(3)
-    with mc_col1:
-        freq_label = st.selectbox(
-            "집계 주기",
-            options=["주간", "월간"],
-            index=0,
-            key="marketcap_bump_freq",
-        )
-    with mc_col2:
-        top_n_marketcap = int(
-            st.selectbox(
-                "Top N",
-                options=[10, 20, 30],
-                index=0,
-                key="marketcap_bump_top_n",
-            )
-        )
-    with mc_col3:
-        color_mode_label = st.selectbox(
-            "색상 모드",
-            options=["종목별", "섹터별"],
-            index=0,
-            key="marketcap_bump_color_mode",
-        )
-
-    freq_code = "W" if freq_label == "주간" else "M"
-    color_mode = "stock" if color_mode_label == "종목별" else "sector"
-
-    marketcap_df = load_marketcap_history(params.get("data_dir", "data"))
-    rank_history_df = build_marketcap_rank_history(
-        marketcap_df=marketcap_df,
-        sector_map_df=sector_df[["code", "sector"]].copy(),
-        freq=freq_code,
-        top_n=top_n_marketcap,
-    )
-
-    if rank_history_df.empty:
-        st.info("시가총액 랭킹 데이터를 만들 수 없습니다. 데이터 수집 후 다시 시도해주세요.")
-    else:
-        fig_mc = render_marketcap_bump_chart(rank_history_df, color_mode=color_mode)
-        st.plotly_chart(fig_mc, use_container_width=True)
-
-        change_summary = summarize_rank_changes(rank_history_df)
-        latest_date = change_summary.get("latest_date")
-        prev_date = change_summary.get("prev_date")
-
-        latest_df = rank_history_df.copy()
-        latest_df["date"] = pd.to_datetime(latest_df["date"], errors="coerce")
-        latest_df = latest_df[latest_df["date"] == latest_df["date"].max()].copy()
-
-        sector_count = int(latest_df["sector"].nunique()) if not latest_df.empty else 0
-        sector_stat = (
-            latest_df.groupby("sector", as_index=False)
-            .agg(count_in_top_n=("code", "nunique"), avg_rank=("rank", "mean"))
-            .sort_values(["count_in_top_n", "avg_rank"], ascending=[False, True])
-            .reset_index(drop=True)
-        ) if not latest_df.empty else pd.DataFrame(columns=["sector", "count_in_top_n", "avg_rank"])
-
-        top_sector = "-"
-        if not sector_stat.empty:
-            top_sector = f"{sector_stat.iloc[0]['sector']} ({int(sector_stat.iloc[0]['count_in_top_n'])})"
-
-        top3_names = "-"
-        if not latest_df.empty:
-            top3_rows = latest_df.sort_values("rank").head(3)
-            top3_names = ", ".join(
-                [
-                    f"{int(r['rank'])}위 {r['name']}"
-                    for _, r in top3_rows.iterrows()
-                ]
-            )
-
-        sum1, sum2, sum3 = st.columns(3)
-        with sum1:
-            st.metric("현재 Top N 포함 섹터 수", sector_count)
-        with sum2:
-            st.metric("최다 대표 섹터", top_sector)
-        with sum3:
-            st.metric("현재 Top 3", top3_names)
-
-        st.caption(
-            f"비교 구간: {prev_date.strftime('%Y-%m-%d') if pd.notna(prev_date) else '-'} "
-            f"→ {latest_date.strftime('%Y-%m-%d') if pd.notna(latest_date) else '-'}"
-        )
-
-        entry_col, exit_col = st.columns(2)
-        with entry_col:
-            st.markdown("**신규 진입 종목**")
-            new_entries = change_summary.get("new_entries", [])
-            if not new_entries:
-                st.caption("없음")
-            else:
-                entry_df = pd.DataFrame(new_entries)
-                st.dataframe(
-                    entry_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "code": st.column_config.TextColumn("코드"),
-                        "name": st.column_config.TextColumn("종목"),
-                        "sector": st.column_config.TextColumn("섹터"),
-                        "current_rank": st.column_config.NumberColumn("현재순위", format="%d"),
-                    },
-                )
-
-        with exit_col:
-            st.markdown("**이탈 종목**")
-            exits = change_summary.get("exits", [])
-            if not exits:
-                st.caption("없음")
-            else:
-                exit_df = pd.DataFrame(exits)
-                st.dataframe(
-                    exit_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "code": st.column_config.TextColumn("코드"),
-                        "name": st.column_config.TextColumn("종목"),
-                        "sector": st.column_config.TextColumn("섹터"),
-                        "previous_rank": st.column_config.NumberColumn("이전순위", format="%d"),
-                    },
-                )
-
-        st.markdown("**Top N 섹터 구성 요약**")
-        if sector_stat.empty:
-            st.caption("표시할 섹터 구성 데이터가 없습니다.")
-        else:
-            st.dataframe(
-                sector_stat,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "sector": st.column_config.TextColumn("섹터"),
-                    "count_in_top_n": st.column_config.NumberColumn("Top N 내 종목수", format="%d"),
-                    "avg_rank": st.column_config.NumberColumn("평균 랭킹", format="%.2f"),
-                },
-            )
-
 def render_kospi_crawling_page() -> None:
     st.subheader("🔄 KOSPI 데이터 업데이트")
     st.caption("최신 주가 데이터를 수집합니다")
@@ -3424,7 +2670,6 @@ def render_kospi_crawling_page() -> None:
                     st.code("\n".join(log_lines), language="text")
         except Exception as exc:
             st.error(f"섹터 수집 실패: {exc}")
-
 
 def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: dict) -> None:
     """최적화 탭 UX 리팩토링: 탐색공간 미리보기 + Top N 비교 + 적용/내보내기"""
@@ -3910,7 +3155,6 @@ def render_optimizer_page(df: pd.DataFrame, kospi_index: pd.DataFrame, params: d
                 mime="application/json",
                 use_container_width=True,
             )
-
 
 def run_app(current_tab: str = "📊 시그널") -> None:
     # 페이지 설정은 streamlit_app.py에서 수행

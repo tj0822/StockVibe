@@ -15,7 +15,6 @@ from app.market_regime_rules import (
     generate_regime_interpretation,
     map_regime_to_strategy_guidance,
 )
-from app.market_thermometer import compute_market_temperature
 
 
 def _to_num(series: pd.Series) -> pd.Series:
@@ -111,7 +110,7 @@ def compute_market_regime_features(
                 merged["rank_change"] = merged["previous_rank"] - merged["current_rank"]
                 rotation_strength = float(merged["rank_change"].abs().mean())
 
-    market_temperature = float(compute_market_temperature(sm).get("temperature_score", 50.0))
+    market_temperature = 50.0
 
     top_sector_concentration = 0.0
     mc = marketcap_rank_df.copy() if marketcap_rank_df is not None else pd.DataFrame()

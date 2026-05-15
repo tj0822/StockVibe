@@ -4,8 +4,17 @@ from typing import Any
 
 import pandas as pd
 
-from app.adaptive_weights import DEFAULT_WEIGHTS, load_adaptive_weights
 from app.strategies.registry_store import load_registry
+
+DEFAULT_WEIGHTS = {
+    "sector_power": 0.17,
+    "financial_score": 0.17,
+    "momentum_score": 0.15,
+    "signal_strength": 0.15,
+    "strategy_fit": 0.14,
+    "money_flow_score": 0.10,
+    "sector_prediction_score": 0.12,
+}
 
 
 class InvestmentEngine:
@@ -153,8 +162,6 @@ class InvestmentEngine:
             return df
 
         resolved_weights = dict(weights or DEFAULT_WEIGHTS)
-        if use_adaptive_weights:
-            resolved_weights = load_adaptive_weights(f"{data_dir}/adaptive_weights.json")
 
         work = df.copy()
         work["sector_power"] = pd.to_numeric(self._series_or_default(work, "sector_power", 0.0), errors="coerce").fillna(0.0)
